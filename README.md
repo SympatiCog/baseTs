@@ -34,7 +34,7 @@ t = np.linspace(0, 10, 1000)
 y = np.sin(2 * np.pi * t) + 0.2 * np.random.randn(len(t))
 
 # Create baseTs object
-ts = baseTs(y, t)
+ts = baseTs(data=y, times=t)
 
 # Apply filtering and processing
 filtered_ts = ts.lowpass_filter(cutoff=0.5).remove_outliers()
