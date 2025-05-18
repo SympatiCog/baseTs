@@ -16,11 +16,15 @@ A Python library for time series analysis, focusing on filtering, outlier detect
 
 ```bash
 # Clone the repository
-git clone https://github.com/YourUsername/baseTs.git
+git clone https://github.com/SympatiCog/baseTs.git
 cd baseTs
 
 # Install dependencies
 pip install numpy scipy pandas matplotlib
+
+OR
+
+pip install git+https://github.com/SympatiCog/baseTs.git
 ```
 
 ## Usage
