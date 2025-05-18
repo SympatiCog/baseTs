@@ -98,6 +98,7 @@ filt.plot(ax=ax[0], show=False)
 filt.plot_fft_power(ax=ax[1], max_rate=2, show=False)
 fig.tight_layout()
 ```
+
 ![Pipelined](imgs/baseTs_pipelined.png)
 
 ## Documentation
