@@ -85,7 +85,7 @@ plt.savefig("baseTs_example.png")
 
 plt.show()
 ```
-[Stepwise](imgs/baseTs_example.png)
+![Stepwise](imgs/baseTs_example.png)
 
 ### We can also chain filters/transforms
 ```python
@@ -98,7 +98,7 @@ filt.plot(ax=ax[0], show=False)
 filt.plot_fft_power(ax=ax[1], max_rate=2, show=False)
 fig.tight_layout()
 ```
-[Pipelined](imgs/baseTs_pipelined.png)
+![Pipelined](imgs/baseTs_pipelined.png)
 
 ## Documentation
 
