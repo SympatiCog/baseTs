@@ -92,7 +92,8 @@ plt.show()
 fig, ax = plt.subplots(2,1,figsize=(9,6))
 filt = baseTs(signal, t, signal_name="Filtered Signal")\
             .set_outlier_filter(frac=0.07, z_threshold=3)\
-            .filter_outliers().bandpass_at(hp_hz=0.2, lp_hz=2)
+            .filter_outliers()\
+            .bandpass_at(hp_hz=0.2, lp_hz=2)
 
 filt.plot(ax=ax[0], show=False)
 filt.plot_fft_power(ax=ax[1], max_rate=2, show=False)
