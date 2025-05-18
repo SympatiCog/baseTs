@@ -16,7 +16,7 @@ from .utils import shift_timeseries
 zscale = lambda x: (x - x.mean()) / x.std()
 
 def setup_plot(ax: Optional[plt.Axes] = None, 
-               figsize: Tuple[float, float] = (10, 6),
+               figsize: Tuple[float, float] = (9, 3),
                title: Optional[str] = None,
                xlabel: Optional[str] = None,
                ylabel: Optional[str] = None,
