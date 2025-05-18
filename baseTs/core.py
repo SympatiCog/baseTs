@@ -10,11 +10,17 @@ import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
+from typing import List, Optional, Union, Dict, Any, Tuple
+from numpy.typing import NDArray
+from scipy import signal
+from scipy.stats import zscore
+from scipy.interpolate import interp1d
 
 # Import modules - now using relative imports
-from .filters import bbf, bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter
+from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter
 from .lowess_filter import lowess_outlier_filter
-from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks
+from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, shift_timeseries, ClosestMatch
+from .plotting import qc_plot, hist, plot
 
 
 def from_df(df: pd.DataFrame, time_col: str = "time", data_col: str = "value", signal_name: str = None) -> "baseTs":
@@ -282,11 +288,11 @@ class baseTs(object):
             baseTs: Trimmed data
         """
         if start_val != np.nan:
-            start_idx = find_closest(start_val, self.times)["location"]
+            start_idx = find_closest(start_val, self.times).location
         else:
             start_idx = 0
         if end_val != -1:
-            end_idx = find_closest(end_val, self.times)["location"]
+            end_idx = find_closest(end_val, self.times).location
         else:
             end_idx = -1
 
@@ -444,7 +450,7 @@ class baseTs(object):
         Returns:
             baseTs: Butterworth pass filtered data
         """
-        filt = bbf(self.data, highpass_freq=hp_freq, lowpass_freq=lp_freq, sampling_freq=self.freq)
+        filt = bandpass_filter(self.data, highpass_freq=hp_freq, lowpass_freq=lp_freq, sampling_freq=self.freq)
         hist_msg = f"Butterworth pass filtered at {hp_freq} Hz and {lp_freq} Hz"
         last_process = "_btrp_" + str(lp_freq) + ":" + str(hp_freq) + "Hz"
         if inplace == True:
@@ -637,14 +643,19 @@ class baseTs(object):
         """
         return compute_fft_power(self, max_rate=max_rate, demean=demean, scale_power=scale_power)
 
-    def get_closest_time(self, sec: float) -> dict:
+    def get_closest_time(self, sec: float) -> ClosestMatch:
         """
         Find the closest time in the timeseries to a target time in seconds.
-        Returns a dictionary with the following keys:
-            "location": the index of the closest time
-            "time": the value of the closest time
-            "distance": the difference between the closest time and the target time
-                        in seconds. Useful for QC/debugging.
+        
+        Args:
+            sec: Target time in seconds
+            
+        Returns:
+            ClosestMatch object containing:
+                - location: the index of the closest time
+                - value: the value of the closest time
+                - abs_err: the difference between the closest time and the target time in seconds
+                - target: the original target time
         """
         return find_closest_time(self, sec)
 

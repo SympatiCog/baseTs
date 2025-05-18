@@ -4,16 +4,85 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
+from typing import Union, Optional, Tuple, Literal
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, firwin, savgol_filter
+from dataclasses import dataclass
+import sys
+sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
 
-zscale = lambda x: (x - x.mean()) / x.std()
+# Type aliases
+ArrayLike = Union[np.ndarray, list]
+InterpolationMethod = Literal['linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic']
 
-def sg_filter(data: np.array, window_length: int = 11, polyorder: int = 2):
+def zscale(x: ArrayLike) -> np.ndarray:
+    """Standardize data by removing the mean and scaling to unit variance."""
+    return (x - np.mean(x)) / np.std(x)
+
+@dataclass
+class FilterConfig:
+    """Configuration for filter parameters."""
+    order: int = 5
+    window_length: int = 11
+    polyorder: int = 2
+    reset_mean: bool = True
+
+class FilterError(Exception):
+    """Base exception for filter-related errors."""
+    pass
+
+class InvalidParameterError(FilterError):
+    """Exception raised for invalid filter parameters."""
+    pass
+
+def validate_filter_params(data: ArrayLike, 
+                          sampling_freq: float,
+                          cutoff_freq: float,
+                          order: int) -> None:
+    """
+    Validate filter parameters.
+    
+    Args:
+        data: Input data array
+        sampling_freq: Sampling frequency in Hz
+        cutoff_freq: Cutoff frequency in Hz
+        order: Filter order
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
+    """
+    if not isinstance(data, (np.ndarray, list)):
+        raise InvalidParameterError("Data must be a numpy array or list")
+    
+    if sampling_freq <= 0:
+        raise InvalidParameterError("Sampling frequency must be positive")
+        
+    if cutoff_freq <= 0 or cutoff_freq >= sampling_freq/2:
+        raise InvalidParameterError("Cutoff frequency must be positive and less than Nyquist frequency")
+        
+    if order <= 0:
+        raise InvalidParameterError("Filter order must be positive")
+
+def sg_filter(data: ArrayLike, 
+              window_length: int = 11, 
+              polyorder: int = 2) -> np.ndarray:
     """
     Apply a Savitzky-Golay filter to the input data.
+    
+    Args:
+        data: Input data array
+        window_length: Length of the filter window (must be odd)
+        polyorder: Order of the polynomial fit
+        
+    Returns:
+        Filtered data array
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
     """
+    data = np.asarray(data)
+    
     # Adjust window length if necessary
     if window_length >= len(data):
         window_length = len(data) - 1 if len(data) % 2 == 0 else len(data)
@@ -24,116 +93,142 @@ def sg_filter(data: np.array, window_length: int = 11, polyorder: int = 2):
         
     return savgol_filter(data, window_length, polyorder)
 
-
-def highpass_filter(data: np.array, highpass_freq: float, sampling_freq: float, order: int = 5):
+def highpass_filter(data: ArrayLike, 
+                    highpass_freq: float, 
+                    sampling_freq: float, 
+                    order: int = 5) -> np.ndarray:
     """
     Apply a symmetric highpass filter to the input data.
+    
+    Args:
+        data: Input data array
+        highpass_freq: Highpass cutoff frequency in Hz
+        sampling_freq: Sampling frequency in Hz
+        order: Filter order
+        
+    Returns:
+        Filtered data array
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
     """
+    data = np.asarray(data)
+    validate_filter_params(data, sampling_freq, highpass_freq, order)
+    
     nyquist_rate = sampling_freq / 2.0
     high = highpass_freq / nyquist_rate
     b, a = butter(order, high, btype='high')
-    filtered_data = filtfilt(b, a, data)
-    return filtered_data    
+    return filtfilt(b, a, data)
 
-def lowpass_filter(data: np.array, cutoff: float, fs: float, order: int = 5):
+def lowpass_filter(data: ArrayLike, 
+                   cutoff: float, 
+                   fs: float, 
+                   order: int = 5) -> np.ndarray:
     """
     Apply a symmetric lowpass filter to the input data.
-    """
-    nyq = 0.5 * fs  # Nyquist Frequency
-    normal_cutoff = cutoff / nyq
-    # Get the filter coefficients
-    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    filtered_data = filtfilt(b, a, data)
-    return filtered_data
-
-def bbf(data: np.array, highpass_freq: float, lowpass_freq: float, sampling_freq: float, order: int = 5):
-    """
-    Apply a symmetric bandpass Butterworth filter to the input data.
-
-    Parameters:
-    - data: Original data vector.
-    - highpass_freq: High-pass cutoff frequency in Hz.
-    - lowpass_freq: Low-pass cutoff frequency in Hz.
-    - sampling_freq: Sampling frequency in Hz.
-    - order: Order of the Butterworth filter.
-
+    
+    Args:
+        data: Input data array
+        cutoff: Cutoff frequency in Hz
+        fs: Sampling frequency in Hz
+        order: Filter order
+        
     Returns:
-    - filtered_data: The filtered data vector.
+        Filtered data array
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
     """
-    nyquist_rate = sampling_freq / 2.0
+    data = np.asarray(data)
+    validate_filter_params(data, fs, cutoff, order)
+    
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return filtfilt(b, a, data)
 
-    # Convert cutoff frequencies to the Nyquist rate
-    low = highpass_freq / nyquist_rate
-    high = lowpass_freq / nyquist_rate
-
-    # Design the Butterworth bandpass filter
-    b, a = butter(order, [low, high], btype='band')
-
-    # Apply the filter symmetrically (zero-phase filtering)
-    filtered_data = filtfilt(b, a, data)
-
-    return filtered_data
-
-def bandpass_filter(data: np.array,
-                    hp_hz: float = 0.01,
-                    lp_hz: float = 0.1,
-                    sample_Hz: float = 30,
-                    window_step: int = 1,
-                    overlap: int = 0,
-                    reset_mean: bool = True):
+def bandpass_filter(data: ArrayLike,
+                   hp_hz: float = 0.01,
+                   lp_hz: float = 0.1,
+                   sample_Hz: float = 30,
+                   window_step: int = 1,
+                   overlap: int = 0,
+                   reset_mean: bool = True) -> np.ndarray:
     """
     Apply a symmetric bandpass filter to the input data.
-
-    Parameters:
-    - data: Original data vector.
-    - hp_hz: High-pass cutoff frequency in Hz.
-    - lp_hz: Low-pass cutoff frequency in Hz.
-    - sample_Hz: Sampling frequency in Hz.
-    - window_step: Step size for the windowed analysis.
-    - overlap: Overlap size for the windowed analysis.
-    - reset_mean: Boolean flag to reset the mean of the filtered data
-      to the mean of the original data.
-
+    
+    Args:
+        data: Input data array
+        hp_hz: High-pass cutoff frequency in Hz
+        lp_hz: Low-pass cutoff frequency in Hz
+        sample_Hz: Sampling frequency in Hz
+        window_step: Step size for windowed analysis
+        overlap: Overlap size for windowed analysis
+        reset_mean: Whether to reset the mean of filtered data to original mean
+        
     Returns:
-    - filtered: The filtered data vector.
+        Filtered data array
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
     """
     from scipy import signal
+    
+    data = np.asarray(data)
+    validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
+    
     # Effective sampling rate of windowed analysis
-    window_step -= overlap
+    window_step = max(1, window_step - overlap)
     effective_fs = sample_Hz / window_step
     
     nyq = effective_fs / 2
     b, a = signal.butter(3, [hp_hz/nyq, lp_hz/nyq], btype='band')
     filtered = signal.filtfilt(b, a, data)
 
-    if reset_mean == True:
-        delta = data.mean() - filtered.mean()
-        filtered += delta
+    if reset_mean:
+        filtered += (data.mean() - filtered.mean())
     
-    return(filtered)
+    return filtered
 
-def interpolate_missing_values(
-    ts,
-    interpolation_method: str = 'linear',
-    order: int = 1,
-    inplace: bool = False,
-):
+def interpolate_missing_values(ts: 'baseTs',
+                             interpolation_method: InterpolationMethod = 'linear',
+                             order: int = 1,
+                             inplace: bool = False) -> Optional['baseTs']:
     """
-    Interpolate missing values in the data.
+    Interpolate missing values in the time series data.
+    
+    Args:
+        ts: Time series object
+        interpolation_method: Method to use for interpolation
+        order: Order of the interpolation (for polynomial methods)
+        inplace: Whether to modify the input time series
+        
+    Returns:
+        Modified time series if inplace=False, None otherwise
+        
+    Raises:
+        ValueError: If interpolation method is invalid
     """
+    if interpolation_method not in ['linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic']:
+        raise ValueError(f"Invalid interpolation method: {interpolation_method}")
+        
     data = ts.data
     time_index = ts.times
     
     cleaned_series = pd.Series(data, index=time_index)
-    interpolated_series = cleaned_series.interpolate(method=interpolation_method, order=order)
+    interpolated_series = cleaned_series.interpolate(
+        method=interpolation_method, 
+        order=order
+    )
+    
+    # Handle any remaining NaN values
     if interpolated_series.isnull().any():
-        interpolated_series = interpolated_series.fillna(method='ffill')
-        interpolated_series = interpolated_series.fillna(method='backfill')
+        interpolated_series = interpolated_series.fillna(method='ffill').fillna(method='bfill')
         
     if inplace:
         ts.data = interpolated_series.values
-        return ts
-    else:
-        res = ts.copy()
-        res.data = interpolated_series.values
-        return res
+        return None
+    
+    res = ts.copy()
+    res.data = interpolated_series.values
+    return res

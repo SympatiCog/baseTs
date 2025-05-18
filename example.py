@@ -23,31 +23,37 @@ signal[outlier_indices] += 3 * np.random.randn(len(outlier_indices))
 ts = baseTs(signal, t, signal_name="Example Signal")
 
 # Plot the raw signal
-plt.figure(figsize=(12, 10))
-plt.subplot(4, 1, 1)
-ts.plot(show=False)
-plt.title("Raw Signal with Outliers")
+plt.figure(figsize=(12, 12))
+ax = plt.subplot(5, 1, 1)
+ts.plot(show=False, ax=ax)
+plt.title("Raw Signal with Spikes/Outliers")
 
 # Remove outliers using LOWESS
-ts_filtered = ts.set_outlier_filter(frac=0.1, z_threshold=3).filter_outliers()
+ts_filtered = ts.set_outlier_filter(frac=0.07, z_threshold=3).filter_outliers()
 
 # Plot the filtered signal
-plt.subplot(4, 1, 2)
-ts_filtered.plot(show=False)
-plt.title("Signal with Outliers Removed")
-
+ax = plt.subplot(5, 1, 2)
+ts_filtered.plot(show=False, lowess=True, ax=ax)
+plt.title("Lowess Filtered to Remove Spikes")
+plt.legend(["De-Spiked Signal", "Lowess Fit Line"])
+                 
 # Apply bandpass filter
-ts_bandpass = ts_filtered.bandpass_at(hp_hz=0.4, lp_hz=0.6)
+ts_bandpass = ts_filtered.bandpass_at(hp_hz=0.2, lp_hz=2)
 
 # Plot the bandpass filtered signal
-plt.subplot(4, 1, 3)
-ts_bandpass.plot(show=False)
-plt.title("Bandpass Filtered Signal (0.4-0.6 Hz)")
+ax = plt.subplot(5, 1, 3)
+ts_bandpass.plot(show=False, ax=ax)
+plt.title("Bandpass Filtered Signal (0.2-2 Hz)")
 
 # Plot FFT power spectrum
-plt.subplot(4, 1, 4)
-ts_filtered.plot_fft_power(show=False)
+ax = plt.subplot(5, 1, 4)
+ts_filtered.plot_fft_power(show=False, ax=ax)
 plt.title("FFT Power Spectrum")
+
+# Plot Zoomed FFT power spectrum
+ax = plt.subplot(5, 1, 5)
+ts_filtered.plot_fft_power(show=False, max_rate=2, ax=ax)
+plt.title("FFT Power Spectrum - Zoomed")
 
 plt.tight_layout()
 plt.show()
