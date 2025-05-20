@@ -11,6 +11,12 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
 
+
+def round_values(x: Any, decimals: int = 4) -> Any:
+    """Round a float to a specified number of decimal places,
+    or return the value unchanged if not a float."""
+    return round(x, decimals) if isinstance(x, float) else x
+
 class TimeSeriesError(Exception):
     """Base exception for time series related errors."""
     pass

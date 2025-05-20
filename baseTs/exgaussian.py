@@ -6,7 +6,7 @@ Created on Oct 19 2024
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 from numpy.typing import NDArray
 from scipy.stats import exponnorm, chi2, kstest

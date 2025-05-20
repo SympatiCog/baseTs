@@ -4,13 +4,18 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
-from typing import Union, Optional, Tuple, Literal
+from __future__ import annotations
+from typing import Union, Optional, Literal, TYPE_CHECKING
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt, firwin, savgol_filter
+from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
 import sys
 sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
+from scipy import signal
+
+if TYPE_CHECKING:
+    from .core import baseTs
 
 # Type aliases
 ArrayLike = Union[np.ndarray, list]
@@ -93,6 +98,33 @@ def sg_filter(data: ArrayLike,
         
     return savgol_filter(data, window_length, polyorder)
 
+def notch_filter(data: ArrayLike, 
+                 cutoff_hz: float, 
+                 fs_hz: float, 
+                 order: int = 5) -> np.ndarray:
+    """
+    Apply a symmetric notch filter to the input data.
+    
+    Args:
+        data: Input data array
+        cutoff_hz: Notch frequency in Hz
+        fs_hz: Sampling frequency in Hz
+        order: Filter order
+        
+    Returns:
+        Filtered data array
+        
+    Raises:
+        InvalidParameterError: If parameters are invalid
+    """
+    data = np.asarray(data)
+    validate_filter_params(data, fs_hz, cutoff_hz, order)
+    
+    nyquist_rate = fs_hz / 2.0
+    notch = cutoff_hz / nyquist_rate
+    b, a = butter(order, [notch - 0.01, notch + 0.01], btype='bandstop')
+    return filtfilt(b, a, data)
+    
 def highpass_filter(data: ArrayLike, 
                     highpass_freq: float, 
                     sampling_freq: float, 
@@ -172,8 +204,6 @@ def bandpass_filter(data: ArrayLike,
     Raises:
         InvalidParameterError: If parameters are invalid
     """
-    from scipy import signal
-    
     data = np.asarray(data)
     validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
     
@@ -190,24 +220,22 @@ def bandpass_filter(data: ArrayLike,
     
     return filtered
 
-def interpolate_missing_values(ts: 'baseTs',
-                             interpolation_method: InterpolationMethod = 'linear',
+def interpolate_missing_values(ts: baseTs,
+                             interpolation_method: str = 'linear',
                              order: int = 1,
-                             inplace: bool = False) -> Optional['baseTs']:
+                             inplace: bool = False) -> Optional[baseTs]:
     """
-    Interpolate missing values in the time series data.
-    
+    Interpolate missing values in a time series.
+
     Args:
         ts: Time series object
-        interpolation_method: Method to use for interpolation
-        order: Order of the interpolation (for polynomial methods)
-        inplace: Whether to modify the input time series
-        
+        interpolation_method: Method of interpolation ('linear', 'cubic', etc.)
+        order: Order of interpolation (for spline methods)
+        inplace: Whether to modify the existing object or return a new one
+
     Returns:
-        Modified time series if inplace=False, None otherwise
-        
-    Raises:
-        ValueError: If interpolation method is invalid
+        Optional[baseTs]: New time series with interpolated values if inplace=False,
+                         None if inplace=True
     """
     if interpolation_method not in ['linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic']:
         raise ValueError(f"Invalid interpolation method: {interpolation_method}")

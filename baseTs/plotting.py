@@ -7,13 +7,15 @@ Created on Oct 19 2024
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
-import sys
 from typing import Union, Optional, Tuple
 
 # local imports
 #sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
 from .utils import shift_timeseries
-zscale = lambda x: (x - x.mean()) / x.std()
+
+def zscale(x: np.ndarray) -> np.ndarray:
+    """Standardize data by removing the mean and scaling to unit variance."""
+    return (x - np.mean(x)) / np.std(x)
 
 def setup_plot(ax: Optional[plt.Axes] = None, 
                figsize: Tuple[float, float] = (9, 3),
@@ -286,7 +288,8 @@ def lag_plot(ts,
     
     try:
         sig_name = ts.signal_name.upper()
-    except:
+    except Exception as e:
+        print(f"An error occurred: {e}")
         sig_name = "Signal"
 
     title = f'{sig_name} Lag Plot at {lag_secs} seconds ({lag_idx}items)'

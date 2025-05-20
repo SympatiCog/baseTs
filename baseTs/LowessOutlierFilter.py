@@ -3,14 +3,17 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
-from typing import Tuple, List, Union, Optional
+from __future__ import annotations
+from typing import Union, List, Tuple, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
-import sys
 import logging
 from dataclasses import dataclass
 from enum import Enum, auto
+
+if TYPE_CHECKING:
+    from .core import baseTs
 
 # sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
 
@@ -56,7 +59,7 @@ class LowessOutlierFilter:
         self.config = config or FilterConfig()
         
     def filter(self,
-               data: Union[np.ndarray, List[float], 'baseTs'],
+               data: Union[np.ndarray, List[float], baseTs],
                time_index: Optional[Union[np.ndarray, List[float]]] = None,
                return_lowess: bool = True) -> Tuple:
         """
@@ -81,7 +84,6 @@ class LowessOutlierFilter:
                 (cleaned_data, outlier_indices)
         """
         from baseTs import baseTs
-        from moepy import lowess
 
         # Validate inputs
         data_values = self._validate_data(data)
@@ -152,7 +154,7 @@ class LowessOutlierFilter:
         outliers = self._identify_outliers(residuals, center, scale)
         return outliers & ~previous_outliers
 
-    def _validate_data(self, data: Union[np.ndarray, List[float], 'baseTs']) -> np.ndarray:
+    def _validate_data(self, data: Union[np.ndarray, List[float], baseTs]) -> np.ndarray:
         """Validate and convert input data to a NumPy array."""
         from baseTs import baseTs
 
@@ -167,7 +169,7 @@ class LowessOutlierFilter:
         return data_values
 
     def _validate_time_index(self,
-                           data: Union[np.ndarray, List[float], 'baseTs'],
+                           data: Union[np.ndarray, List[float], baseTs],
                            data_values: np.ndarray,
                            time_index: Optional[Union[np.ndarray, List[float]]],
                            ) -> np.ndarray:

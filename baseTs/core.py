@@ -4,32 +4,83 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
+from __future__ import annotations
 import numpy as np
 from scipy import interpolate
 import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import List, Optional, Union, Dict, Any, Tuple
-from numpy.typing import NDArray
-from scipy import signal
-from scipy.stats import zscore
-from scipy.interpolate import interp1d
+from typing import Optional, TYPE_CHECKING
 
 # Import modules - now using relative imports
-from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter
+from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .lowess_filter import lowess_outlier_filter
-from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, shift_timeseries, ClosestMatch
-from .plotting import qc_plot, hist, plot
+from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch
+# from .plotting import qc_plot, hist, plot
 
+if TYPE_CHECKING:
+    from .plotting import plt
 
-def from_df(df: pd.DataFrame, time_col: str = "time", data_col: str = "value", signal_name: str = None) -> "baseTs":
+def from_df(df: pd.DataFrame, 
+            time_col: str = "time", 
+            data_col: str = "value", 
+            signal_name: Optional[str] = None,
+            freq: Optional[float] = None,
+            ts_offset: Optional[float] = None) -> "baseTs":
     """
     Create a baseTs object from a pandas DataFrame.
+
+    Args:
+        df: Input DataFrame containing time series data
+        time_col: Name of the column containing time values
+        data_col: Name of the column containing data values
+        signal_name: Name of the signal (defaults to data_col if None)
+        freq: Sampling frequency in Hz (optional)
+        ts_offset: Timestamp offset in seconds (optional)
+
+    Returns:
+        baseTs: A new baseTs object initialized with the DataFrame data
+
+    Raises:
+        ValueError: If required columns are missing or data is invalid
+        TypeError: If input types are incorrect
     """
-    if signal_name is None:
-        signal_name = data_col
-    return baseTs(df[data_col].values, df[time_col].values, signal_name=signal_name)
+    # Input validation
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame")
+    
+    # Check for required columns
+    missing_cols = [col for col in [time_col, data_col] if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+    
+    # Validate data types
+    if not np.issubdtype(df[time_col].dtype, np.number):
+        raise ValueError(f"Time column '{time_col}' must be numeric")
+    if not np.issubdtype(df[data_col].dtype, np.number):
+        raise ValueError(f"Data column '{data_col}' must be numeric")
+    
+    # Check for missing values
+    if df[time_col].isnull().any():
+        raise ValueError(f"Time column '{time_col}' contains missing values")
+    if df[data_col].isnull().any():
+        raise ValueError(f"Data column '{data_col}' contains missing values")
+    
+    # Sort by time if not already sorted
+    if not df[time_col].is_monotonic_increasing:
+        df = df.sort_values(time_col)
+    
+    # Create baseTs object
+    ts = baseTs(
+        data=df[data_col].values,
+        times=df[time_col].values,
+        signal_name=signal_name if signal_name is not None else data_col,
+        freq=freq,
+        ts_offset=ts_offset if ts_offset is not None else np.nan
+    )
+    
+    return ts
 
 
 class baseTs(object):
@@ -140,7 +191,7 @@ class baseTs(object):
         transfer = f1(new_ts)
         last_process = "_interpto_" + str(new_len) + "samples"
         hist_msg = f"Interpolated to {new_len} samples"
-        if inplace == False:
+        if inplace is False:
             newTs = self.copy()  # Create a new deep copy of the baseTs object
             newTs.data = transfer
             newTs.times = new_ts
@@ -190,7 +241,7 @@ class baseTs(object):
         hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {new_freq}Hz"
         last_process = "_unigrid"
         transfer = f1(new_grid)
-        if inplace == False:
+        if inplace is False:
             newTs = self.copy()
             newTs.data = transfer
             newTs.times = new_grid
@@ -253,7 +304,7 @@ class baseTs(object):
         transfer = f1(new_ts)
         hist_msg = f"Interpolated to {new_freq}Hz"
         last_process = "_interpto_" + str(new_freq) + "Hz"
-        if inplace == False:
+        if inplace is False:
             newTs = self.copy()
             newTs.data = transfer   
             newTs.times = new_ts
@@ -300,7 +351,7 @@ class baseTs(object):
         new_ts = self.times[start_idx:end_idx]
         hist_msg = f"Trimmed to {start_idx} to {end_idx}"
         last_process = "_trimto_[" + str(start_idx) + ":" + str(end_idx) + "]"
-        if inplace == False:
+        if inplace is False:
             newTs = self.copy()
             newTs.data = new_data
             newTs.times = new_ts
@@ -334,14 +385,30 @@ class baseTs(object):
             newTs.history.append(f"Detrended with lowess fit frac={frac}")
             newTs.last_process = "_lowess_detrend"
             return newTs
+    
+    def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
+        filt = notch_filter(self.data, cutoff_hz, self.freq, order)
+        hist_msg = f"Notch filtered at {cutoff_hz} Hz"
+        last_process = "_notch_" + str(cutoff_hz) + "Hz"
+        if inplace is True:
+            self.data = filt
+            self.is_filtered = True
+            self.history.append(hist_msg)
+            self.last_process = last_process
+            return self
+        else:
+            newTs = self.copy()
+            newTs.data = filt
+            newTs.is_filtered = True    
+            newTs.history.append(hist_msg)
+            newTs.last_process = last_process
+            return newTs
         
     def highpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
-        nyq = 0.5 * self.freq  # Nyquist Frequency
-        normal_cutoff = cutoff / nyq
         filt = highpass_filter(self.data, cutoff, self.freq, order)
         hist_msg = f"Highpass filtered at {cutoff} Hz"
         last_process = "_hp_" + str(cutoff) + "Hz"
-        if inplace == True:
+        if inplace is True:
             self.data = filt
             self.is_filtered = True
             self.history.append(hist_msg)
@@ -356,12 +423,10 @@ class baseTs(object):
             return newTs
         
     def lowpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
-        nyq = 0.5 * self.freq  # Nyquist Frequency
-        normal_cutoff = cutoff / nyq
         filt = lowpass_filter(self.data, cutoff, self.freq, order)
         hist_msg = f"Lowpass filtered at {cutoff} Hz"
         last_process = "_lp_" + str(cutoff) + "Hz"
-        if inplace == True:
+        if inplace is True:
             self.data = filt
             self.is_filtered = True
             self.history.append(hist_msg)
@@ -386,7 +451,7 @@ class baseTs(object):
         filt = gaussian_filter(self.data, sigma)
         hist_msg = f"Applied Gaussian filter with sigma={sigma}"
         last_process = "_gauss_" + str(sigma)
-        if inplace == True:
+        if inplace is True:
             self.data = filt
             self.history.append(hist_msg)
             self.last_process = last_process
@@ -424,7 +489,7 @@ class baseTs(object):
                                reset_mean=reset_mean)
         hist_msg = f"Bandpass filtered at {lp_hz} Hz and {hp_hz} Hz"
         last_process = "_bp_" + str(lp_hz) + ":" + str(hp_hz) + "Hz"
-        if inplace == True:
+        if inplace is True:
             self.data = filt
             self.is_filtered = True
             self.history.append(hist_msg)
@@ -453,7 +518,7 @@ class baseTs(object):
         filt = bandpass_filter(self.data, highpass_freq=hp_freq, lowpass_freq=lp_freq, sampling_freq=self.freq)
         hist_msg = f"Butterworth pass filtered at {hp_freq} Hz and {lp_freq} Hz"
         last_process = "_btrp_" + str(lp_freq) + ":" + str(hp_freq) + "Hz"
-        if inplace == True:
+        if inplace is True:
             self.data = filt
             self.is_filtered = True
             self.history.append(hist_msg)
@@ -577,7 +642,7 @@ class baseTs(object):
         hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.__dict__}"
         last_process = "_outfilt"
                    
-        if inplace == True:
+        if inplace is True:
             self.data = filt.data
             self.times = filt.times
             self.freq = filt.freq
@@ -613,7 +678,7 @@ class baseTs(object):
         filt = sg_filter(self.data, window_length, polyorder)
         hist_msg = f"Applied Savitzky-Golay filter wl={window_length}, polyorder={polyorder}"
         last_process = "_sgFilter"
-        if inplace == True:
+        if inplace is True:
             self.data = filt    
             self.is_filtered = True
             self.history.append(hist_msg)
@@ -817,8 +882,7 @@ class baseTs(object):
         Display information about the data, times, outlier
         filter parameters, and history.
         """
-        round_values = lambda x: round(x, 4) if isinstance(x, float) else x
-        
+        from .utils import round_values
         data_info = {
             "Length": len(self.data),
             "Min": np.min(self.data),
