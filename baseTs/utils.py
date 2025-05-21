@@ -30,8 +30,8 @@ class ClosestMatch:
     """Data class for storing closest match results."""
     value: float
     location: int
-    target: Optional[float] = None
-    abs_err: Optional[float] = None
+    target: Optional[float] = 0
+    abs_err: Optional[float] = 0
 
 def compute_fft_power(
     ts: Any,  # TODO: Replace with proper baseTs type
@@ -138,7 +138,7 @@ def find_closest(val: float, in_list: Union[List[float], NDArray[np.float64]]) -
     """
     in_array = np.asarray(in_list)
     loc = np.abs(in_array - val).argmin()
-    return ClosestMatch(value=in_array[loc], location=loc)
+    return ClosestMatch(value=in_array[loc], location=loc, abs_err=np.abs(val - in_array[loc]), target=val)
 
 def find_closest_time(
     ts: Any,

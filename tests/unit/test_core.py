@@ -1,0 +1,253 @@
+"""
+Unit tests for baseTs core functionality.
+"""
+import pytest
+import numpy as np
+from baseTs import baseTs
+from baseTs.core import from_df
+
+
+class TestBaseTsInitialization:
+    """Tests for baseTs initialization and basic properties."""
+    
+    def test_init_with_data_and_times(self, sample_data):
+        """Test initializing baseTs with data and times."""
+        ts = baseTs(
+            data=sample_data['data'],
+            times=sample_data['times'],
+            signal_name="TestSignal"
+        )
+        
+        assert ts.data is not None
+        assert ts.times is not None
+        assert len(ts.data) == len(sample_data['data'])
+        assert len(ts.times) == len(sample_data['times'])
+        assert ts.signal_name == "TESTSIGNAL"  # Uppercase in the class implementation
+        
+    def test_init_with_data_and_freq(self):
+        """Test initializing baseTs with data and frequency."""
+        data = np.sin(np.linspace(0, 10, 1000))
+        freq = 100  # 100 Hz
+        
+        ts = baseTs(data=data, freq=freq)
+        
+        assert ts.data is not None
+        assert ts.times is not None
+        assert len(ts.data) == 1000
+        assert len(ts.times) == 1000
+        assert ts.freq == freq
+        
+    def test_init_validation(self):
+        """Test initialization validation requirements."""
+        data = np.sin(np.linspace(0, 10, 1000))
+        
+        # Should raise an error if neither times nor freq is provided
+        with pytest.raises(ValueError):
+            baseTs(data=data)
+            
+    def test_len_and_duration(self, simple_baseTsObj):
+        """Test length and duration calculations."""
+        assert simple_baseTsObj.len() == 1000
+        assert simple_baseTsObj.duration() == 10.0
+        
+    def test_from_df(self, sample_dataframe):
+        """Test creating baseTs from DataFrame."""
+        ts = from_df(sample_dataframe)
+        
+        assert ts.data is not None
+        assert ts.times is not None
+        assert len(ts.data) == len(sample_dataframe)
+        assert ts.signal_name == "VALUE"  # Default to column name, uppercase
+
+
+class TestBaseTsTransformations:
+    """Tests for baseTs data transformations."""
+    
+    def test_interpolation_to_samples(self, simple_baseTsObj):
+        """Test interpolation to specified number of samples."""
+        new_len = 500
+        ts_interp = simple_baseTsObj.interpto_samples(new_len)
+        
+        assert len(ts_interp.data) == new_len
+        assert len(ts_interp.times) == new_len
+        assert ts_interp.is_interpolated is True
+        
+        # Check that original object is unchanged
+        assert len(simple_baseTsObj.data) == 1000
+        
+        # Test inplace version
+        ts_inplace = simple_baseTsObj.interpto_samples(new_len, inplace=True)
+        assert len(simple_baseTsObj.data) == new_len
+        assert ts_inplace is simple_baseTsObj  # Should return self
+        
+    def test_interpolation_to_frequency(self, simple_baseTsObj):
+        """Test interpolation to specified frequency."""
+        original_len = len(simple_baseTsObj.data)
+        new_freq = 200  # 200 Hz
+        ts_interp = simple_baseTsObj.interpto_hz(new_freq)
+        
+        # Duration is 10 seconds, so 200 Hz should give 2000 points
+        assert len(ts_interp.data) == 2000
+        assert ts_interp.freq == new_freq
+        assert ts_interp.is_interpolated is True
+        
+        # Check that original object is unchanged
+        assert len(simple_baseTsObj.data) == original_len
+        
+    def test_normalization(self, simple_baseTsObj):
+        """Test data normalization functions."""
+        # Z-scale
+        ts_z = simple_baseTsObj.zscale()
+        assert np.isclose(ts_z.data.mean(), 0, atol=1e-10)
+        assert np.isclose(ts_z.data.std(), 1, atol=1e-10)
+        
+        # Normalize to 0-1 range
+        ts_norm = simple_baseTsObj.normalize_range()
+        assert np.isclose(ts_norm.data.min(), 0, atol=1e-10)
+        assert np.isclose(ts_norm.data.max(), 1, atol=1e-10)
+        
+    def test_trimming(self, simple_baseTsObj):
+        """Test trimming functionality."""
+        start_val = 2.0  # Start at t=2s
+        end_val = 8.0    # End at t=8s
+        
+        ts_trimmed = simple_baseTsObj.trimto_timepoints(start_val, end_val)
+        
+        # Check that the trimming worked
+        assert ts_trimmed.times[0] >= start_val
+        assert ts_trimmed.times[-1] <= end_val
+        
+        # Original should be unchanged
+        assert simple_baseTsObj.times[0] < start_val
+        assert simple_baseTsObj.times[-1] > end_val
+
+
+class TestBaseTsFiltering:
+    """Tests for baseTs filtering functionality."""
+    
+    def test_lowpass_filter(self, noisy_baseTsObj):
+        """Test lowpass filter."""
+        cutoff = 1.0  # 1 Hz cutoff
+        ts_filtered = noisy_baseTsObj.lowpass_at(cutoff)
+        
+        assert ts_filtered.is_filtered is True
+        assert ts_filtered is not noisy_baseTsObj  # Not modified in place
+        
+        # Basic verification - filter should reduce high frequency components
+        # Calculate power in high frequencies before and after filtering
+        f1, p1 = noisy_baseTsObj.compute_fft_power()
+        f2, p2 = ts_filtered.compute_fft_power()
+        
+        # Find indices for frequencies > cutoff
+        high_freq_indices = np.where(f1 > cutoff)[0]
+        
+        # Check that power in high frequencies is reduced
+        high_freq_power_before = np.sum(p1[high_freq_indices])
+        high_freq_power_after = np.sum(p2[high_freq_indices])
+        assert high_freq_power_after < high_freq_power_before
+        
+    def test_highpass_filter(self, noisy_baseTsObj):
+        """Test highpass filter."""
+        cutoff = 1.0  # 1 Hz cutoff
+        ts_filtered = noisy_baseTsObj.highpass_at(cutoff)
+        
+        assert ts_filtered.is_filtered is True
+        
+        # Basic verification - filter should reduce low frequency components
+        f1, p1 = noisy_baseTsObj.compute_fft_power()
+        f2, p2 = ts_filtered.compute_fft_power()
+        
+        # Find indices for frequencies < cutoff
+        low_freq_indices = np.where(f1 < cutoff)[0]
+        if len(low_freq_indices) > 0:  # Skip DC component
+            low_freq_indices = low_freq_indices[1:]
+            
+        # Check that power in low frequencies is reduced
+        if len(low_freq_indices) > 0:
+            low_freq_power_before = np.sum(p1[low_freq_indices])
+            low_freq_power_after = np.sum(p2[low_freq_indices])
+            assert low_freq_power_after < low_freq_power_before
+        
+    def test_bandpass_filter(self, noisy_baseTsObj):
+        """Test bandpass filter."""
+        hp_hz = 0.3  # High-pass cutoff
+        lp_hz = 0.8  # Low-pass cutoff
+        
+        ts_filtered = noisy_baseTsObj.bandpass_at(hp_hz=hp_hz, lp_hz=lp_hz)
+        
+        assert ts_filtered.is_filtered is True
+        
+        # Test with reset_mean=False
+        ts_filtered_no_mean = noisy_baseTsObj.bandpass_at(
+            hp_hz=hp_hz, lp_hz=lp_hz, reset_mean=False
+        )
+        
+        # Mean should be closer to zero when reset_mean is False
+        assert abs(ts_filtered_no_mean.data.mean()) < abs(noisy_baseTsObj.data.mean())
+        
+    def test_sg_filter(self, noisy_baseTsObj):
+        """Test Savitzky-Golay filter."""
+        window_length = 11
+        polyorder = 2
+        
+        ts_filtered = noisy_baseTsObj.sg_filter(window_length, polyorder)
+        
+        assert ts_filtered.is_filtered is True
+        
+        # SG filter should smooth the data, so the standard deviation should be smaller
+        assert ts_filtered.data.std() < noisy_baseTsObj.data.std()
+
+
+class TestOutlierDetection:
+    """Tests for outlier detection functionality."""
+    
+    def test_set_outlier_filter(self, outlier_baseTsObj):
+        """Test setting outlier filter parameters."""
+        # Test with individual parameters
+        outlier_baseTsObj.set_outlier_filter(
+            z_threshold=3.0,
+            frac=0.1,
+            max_iterations=5
+        )
+        
+        params = outlier_baseTsObj.get_outlier_filter_params()
+        assert params['z_threshold'] == 3.0
+        assert params['frac'] == 0.1
+        assert params['max_iterations'] == 5
+        
+        # Test with params dictionary
+        params_dict = {
+            'z_threshold': 4.0,
+            'frac': 0.2,
+            'use_median': False
+        }
+        
+        outlier_baseTsObj.set_outlier_filter(params=params_dict)
+        
+        new_params = outlier_baseTsObj.get_outlier_filter_params()
+        assert new_params['z_threshold'] == 4.0
+        assert new_params['frac'] == 0.2
+        assert new_params['use_median'] is False
+        assert new_params['max_iterations'] == 5  # Unchanged from before
+        
+    def test_filter_outliers(self, outlier_baseTsObj, data_with_outliers):
+        """Test outlier filtering."""
+        # Configure the filter
+        outlier_baseTsObj.set_outlier_filter(
+            z_threshold=3.0,
+            frac=0.07
+        )
+        
+        # Apply the filter
+        filtered_ts = outlier_baseTsObj.filter_outliers()
+        
+        assert filtered_ts.is_outlier_filtered is True
+        assert filtered_ts.lowess_fit is not None
+        
+        # Check that the standard deviation is reduced after filtering
+        assert filtered_ts.data.std() < outlier_baseTsObj.data.std()
+        
+        # Test the inplace version
+        original_std = outlier_baseTsObj.data.std()
+        outlier_baseTsObj.filter_outliers(inplace=True)
+        assert outlier_baseTsObj.data.std() < original_std

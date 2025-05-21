@@ -15,7 +15,7 @@ from typing import Optional, TYPE_CHECKING
 
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
-from .lowess_filter import lowess_outlier_filter
+from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch
 # from .plotting import qc_plot, hist, plot
 
@@ -153,7 +153,7 @@ class baseTs(object):
             self.freq = self.len() / self.duration()
 
         # instantiate outlier filter w/ default parameters
-        self.outlier_filter = lowess_outlier_filter()
+        self.outlier_filter = LowessOutlierFilter()
 
     def duration(self) -> float:
         """
@@ -944,11 +944,7 @@ class baseTs(object):
         Returns:
             pd.DataFrame: A DataFrame containing the times, data, and timestamps.
         """
-        if self.has_timestamp_offset:
-            timestamps = self.times + self.ts_offset
-        else:
-            timestamps = self.times * np.nan
-        df = pd.DataFrame({"times": self.times, "data": self.data, "timestamps": timestamps})
+        df = pd.DataFrame({"times": self.times, "data": self.data})
         if set_index:  # set times as index if desired ;
             df.set_index("times", inplace=True)
         return df
