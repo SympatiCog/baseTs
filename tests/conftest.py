@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from baseTs import baseTs
 
-
 @pytest.fixture
 def sample_data():
     """Generate a simple sine wave dataset for testing."""
