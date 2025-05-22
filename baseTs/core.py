@@ -16,7 +16,7 @@ from typing import Optional, TYPE_CHECKING
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .LowessOutlierFilter import LowessOutlierFilter
-from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch
+from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch, diff, dediff
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -698,7 +698,61 @@ class baseTs(object):
         """
         Interpolate missing values in the data.
         """
-        return interpolate_missing_values(self, inplace=inplace)
+        res = interpolate_missing_values(self, inplace=inplace)
+        hist_msg = "Interpolated missing values in timeseries"
+        last_process = "_interp"
+
+        if inplace is True:
+            self.data = res.data
+            self.times = res.times
+            self.history.append(hist_msg)
+            self.last_process = last_process
+            return self
+        else:
+            res.history.append(hist_msg)
+            res.last_process = last_process
+            return res
+    
+    def diff_ts(self, zeropad: bool = False, inplace: bool = False) -> "baseTs":
+        """
+        Compute the first difference of the timeseries.
+        """
+        res = diff(self, zeropad=zeropad)
+        if res is None:
+            raise ValueError("Failed to compute first difference of timeseries")
+        hist_msg = "Computed first difference of timeseries"
+        last_process = "_diff"
+        if inplace is True:
+            self.data = res.data
+            self.times = res.times
+            self.history.append(hist_msg)
+            self.last_process = last_process
+            return self
+        else:
+            res.history.append(hist_msg)
+            res.last_process = last_process   
+            return res
+
+    def dediff_ts(self, inplace: bool = False) -> "baseTs":
+        """
+        Compute the cumulative sum of the timeseries.
+        """
+        res = dediff(self)
+        if res is None:
+            raise ValueError("Failed to compute cumulative sum of timeseries")
+        hist_msg = "Computed cumulative sum of timeseries"
+        last_process = "_dediff"
+        if inplace is True:
+            self.data = res    
+            self.history.append(hist_msg)
+            self.last_process = last_process
+            return self
+        else:
+            newTs = self.copy()
+            newTs.data = res
+            newTs.history.append(hist_msg)
+            newTs.last_process = last_process   
+            return newTs
     
     # Utility functions
     
@@ -777,6 +831,8 @@ class baseTs(object):
                     title: str = None,
                     xlabel: str = None,
                     ylabel: str = None, 
+                    start_idx: int = 0,
+                    end_idx: int = -1,
                     show: bool = True) -> plt.Axes:
         """
         Plot this timeseries against one or more other timeseries.
@@ -790,7 +846,9 @@ class baseTs(object):
                 ax=ax,
                 title=title,
                 xlabel=xlabel,
-                ylabel=ylabel, 
+                ylabel=ylabel,
+                start_idx=start_idx,
+                end_idx=end_idx,
                 show=show)
 
     def plot_hist(self,
@@ -949,16 +1007,14 @@ class baseTs(object):
             df.set_index("times", inplace=True)
         return df
 
-
-def gauss_filter(data, sigma):
-    """
-    Apply a Gaussian filter to the data.
-
-    Args:
-        data (np.array): The input data to be filtered.
-        sigma (float): The standard deviation for Gaussian kernel.
-
-    Returns:
-        np.array: The filtered data.
-    """
-    return gaussian_filter(data, sigma)
+    def diff(self, zeropad: bool = False) -> "baseTs":
+        """
+        Compute the first difference of the timeseries.
+        """
+        return diff(self, zeropad=zeropad)
+    
+    def dediff(self) -> "baseTs":
+        """
+        Compute the cumulative sum of the timeseries.
+        """
+        return dediff(self)

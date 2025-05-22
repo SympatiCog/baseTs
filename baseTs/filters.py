@@ -10,8 +10,6 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
-import sys
-sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
 from scipy import signal
 
 if TYPE_CHECKING:

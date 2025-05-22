@@ -6,18 +6,58 @@ Created on Oct 19 2024
 """
 
 from dataclasses import dataclass
-from typing import Union, Dict, Tuple, List, Any, Optional
+from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
 
+# if TYPE_CHECKING:
+#     from .core import baseTs
 
 def round_values(x: Any, decimals: int = 4) -> Any:
     """Round a float to a specified number of decimal places,
     or return the value unchanged if not a float."""
     return round(x, decimals) if isinstance(x, float) else x
 
-class TimeSeriesError(Exception):
+def add_constant(ts: Any, constant: float = 0, inplace: bool = False) -> Any:
+    """Add a constant to a time series."""
+    from .core import baseTs
+    x = ts.data.copy()
+    t = ts.times.copy()
+    x = x + constant
+    
+    if inplace:
+        ts.data = x
+        ts.times = t
+        return ts
+    else:
+        res = baseTs(data=x, times=t)
+        return res
+
+def diff(ts: Any, zeropad: bool = False) -> Any:
+    """Diff a time series."""
+    from .core import baseTs
+    x = ts.data.copy()
+    t = ts.times.copy()
+    if zeropad:
+        d = np.diff(x)
+        d = np.insert(d, 0, d[0])
+    else:
+        d = np.diff(x)
+        t = t[1:]
+    res = baseTs(data=d, times=t)
+    return(res)
+
+def dediff(ts: Any) -> Any:
+    """Dediff a time series."""
+    from .core import baseTs
+    x = ts.data.copy()
+    t = ts.times.copy()
+    res = np.cumsum(x)
+    res = baseTs(data=res, times=t)
+    return(res)
+
+class TimeSeriesError(Exception):   
     """Base exception for time series related errors."""
     pass
 
