@@ -155,6 +155,42 @@ class baseTs(object):
         # instantiate outlier filter w/ default parameters
         self.outlier_filter = LowessOutlierFilter()
 
+    def _update_history_and_process(self, hist_msg: str, last_process: str):
+        """Helper method to update history and last_process."""
+        self.history.append(hist_msg)
+        self.last_process = last_process
+
+    def _update_flags(self, **flags):
+        """Helper method to update object flags."""
+        for flag_name, flag_value in flags.items():
+            setattr(self, flag_name, flag_value)
+
+    def _process_inplace(self, func, *args, **kwargs):
+        """Helper method to process data in-place."""
+        result = func(self.data, *args, **kwargs)
+        self.data = result
+        return self
+
+    def _process_new(self, func, *args, **kwargs):
+        """Helper method to process data and return new object."""
+        new_obj = self.copy()
+        result = func(new_obj.data, *args, **kwargs)
+        new_obj.data = result
+        return new_obj
+
+    def _process_with_flags(self, func, hist_msg: str, last_process: str, inplace: bool = False, **flags):
+        """Helper method to process data with history and flag updates."""
+        if inplace:
+            result = self._process_inplace(func)
+            self._update_history_and_process(hist_msg, last_process)
+            self._update_flags(**flags)
+            return self
+        else:
+            result = self._process_new(func)
+            result._update_history_and_process(hist_msg, last_process)
+            result._update_flags(**flags)
+            return result
+
     def duration(self) -> float:
         """
         Calculates the duration of the times.
@@ -172,6 +208,63 @@ class baseTs(object):
             int: Length of the data
         """
         return len(self.data)
+    
+    def zscale(self, inplace: bool = False) -> "baseTs":
+        """
+        Z-scale the data.
+        """
+        def zscale_func(data):
+            return (data - data.mean()) / data.std()
+
+        return self._process_with_flags(
+            func=zscale_func,
+            hist_msg="Z-scaled the data",
+            last_process="_zscale",
+            inplace=inplace
+        )
+    
+    def interpto_hz(self, new_freq: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
+        """
+        Interpolate the times to a new frequency.
+
+        Args:
+            new_freq (int): The desired new frequency of the interpolated times.
+            kind (str, optional): The type of interpolation to use. Defaults to 'linear'.
+            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
+
+        Returns:
+            baseTs: Interpolated data at new frequency
+        """
+        def interp_func(data):
+            new_ts = np.linspace(self.times[0], self.times[-1], int(self.duration() * new_freq))
+            f1 = interpolate.interp1d(self.times, data, kind=kind)
+            return f1(new_ts), new_ts, new_freq
+            
+        def process_result(result):
+            data, times, freq = result
+            if inplace:
+                self.data = data
+                self.times = times
+                self.freq = freq
+                self.is_interpolated = True
+                self.is_uniform_grid = True
+                return self
+            else:
+                new_obj = self.copy()
+                new_obj.data = data
+                new_obj.times = times
+                new_obj.freq = freq
+                new_obj.is_interpolated = True
+                new_obj.is_uniform_grid = True
+                return new_obj
+                
+        result = interp_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg=f"Interpolated to {new_freq}Hz",
+            last_process=f"_interpto_{new_freq}Hz"
+        )
+        return processed
 
     def interpto_samples(self, new_len: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
         """
@@ -179,40 +272,87 @@ class baseTs(object):
 
         Args:
             new_len (int): The desired new length of the interpolated times.
-            kind (str, optional): The type of interpolation to use. Defaults to 'quadratic'.
+            kind (str, optional): The type of interpolation to use. Defaults to 'linear'.
             inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
 
         Returns:
             baseTs: Interpolated data
         """
-        new_ts = np.linspace(self.times[0], self.times[-1], new_len)
-        new_freq = new_len / self.duration()
-        f1 = interpolate.interp1d(self.times, self.data, kind=kind)
-        transfer = f1(new_ts)
-        last_process = "_interpto_" + str(new_len) + "samples"
-        hist_msg = f"Interpolated to {new_len} samples"
-        if inplace is False:
-            newTs = self.copy()  # Create a new deep copy of the baseTs object
-            newTs.data = transfer
-            newTs.times = new_ts
-            newTs.is_interpolated = True
-            newTs.freq = new_freq
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            newTs.is_interpolated = True
-            newTs.is_uniform_grid = True
-            return newTs
-        else:
-            self.data = transfer
-            self.times = new_ts
-            self.is_interpolated = True
-            self.freq = new_freq
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            self.is_interpolated = True
-            self.is_uniform_grid = True
-            return self
+        def interp_func(data):
+            new_ts = np.linspace(self.times[0], self.times[-1], new_len)
+            new_freq = new_len / self.duration()
+            f1 = interpolate.interp1d(self.times, data, kind=kind)
+            return f1(new_ts), new_ts, new_freq
             
+        def process_result(result):
+            data, times, freq = result
+            if inplace:
+                self.data = data
+                self.times = times
+                self.freq = freq
+                self.is_interpolated = True
+                self.is_uniform_grid = True
+                return self
+            else:
+                new_obj = self.copy()
+                new_obj.data = data
+                new_obj.times = times
+                new_obj.freq = freq
+                new_obj.is_interpolated = True
+                new_obj.is_uniform_grid = True
+                return new_obj
+                
+        result = interp_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg=f"Interpolated to {new_len} samples",
+            last_process=f"_interpto_{new_len}samples"
+        )
+        return processed
+
+    def trimto_timepoints(self, start_val: float = np.nan, end_val: float = -1, inplace: bool = False) -> "baseTs":
+        """
+        Trims the data between specified timepoints.
+
+        Args:
+            start_val (float, optional): Start value for trimming. Defaults to np.nan (start of series).
+            end_val (float, optional): End value for trimming. Defaults to -1 (end of series).
+            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
+
+        Returns:
+            baseTs: Trimmed data
+        """
+        def trim_func(data):
+            if start_val != np.nan:
+                start_idx = find_closest(start_val, self.times).location
+            else:
+                start_idx = 0
+            if end_val != -1:
+                end_idx = find_closest(end_val, self.times).location
+            else:
+                end_idx = -1
+            return data[start_idx:end_idx], self.times[start_idx:end_idx]
+            
+        def process_result(result):
+            data, times = result
+            if inplace:
+                self.data = data
+                self.times = times
+                return self
+            else:
+                new_obj = self.copy()
+                new_obj.data = data
+                new_obj.times = times
+                return new_obj
+                
+        result = trim_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg=f"Trimmed data to [{start_val}:{end_val}]",
+            last_process=f"_trimto_[{start_val}:{end_val}]"
+        )
+        return processed
+
     def interp_to_uniform_grid(self, new_grid: np.array = None, kind: str = 'linear', inplace: bool = True) -> "baseTs":
         """
         Interpolate data to a uniform sampling grid.
@@ -263,203 +403,78 @@ class baseTs(object):
             self.is_uniform_grid = True
             return self
         
-    def zscale(self, inplace: bool = False) -> "baseTs":
-        """
-        Z-scale the data.
-        """
-        if inplace:
-            self.data = (self.data - self.data.mean()) / self.data.std()
-            return self
-        else:
-            new_ts = self.copy()
-            new_ts.data = (new_ts.data - new_ts.data.mean()) / new_ts.data.std()
-            return new_ts
-    
     def normalize_range(self, inplace: bool = False) -> "baseTs":
         """
         Normalize the data to the range 0-1.
         """
-        if inplace:
-            self.data = (self.data - self.data.min()) / (self.data.max() - self.data.min())
-            return self
-        else:
-            new_ts = self.copy()
-            new_ts.data = (new_ts.data - new_ts.data.min()) / (new_ts.data.max() - new_ts.data.min())
-            return new_ts
-    
-    def interpto_hz(self, new_freq: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
-        """
-        Interpolate the times to a new frequency.
-
-        Args:
-            new_freq (int): The desired new frequency of the interpolated times.
-            kind (str, optional): The type of interpolation to use. Defaults to 'quadratic'.
-            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
-
-        Returns:
-            baseTs: Interpolated data at new frequency
-        """
-        new_ts = np.linspace(self.times[0], self.times[-1], int(self.duration() * new_freq))
-        f1 = interpolate.interp1d(self.times, self.data, kind=kind)
-        transfer = f1(new_ts)
-        hist_msg = f"Interpolated to {new_freq}Hz"
-        last_process = "_interpto_" + str(new_freq) + "Hz"
-        if inplace is False:
-            newTs = self.copy()
-            newTs.data = transfer   
-            newTs.times = new_ts
-            newTs.freq = new_freq
-            newTs.is_interpolated = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            newTs.is_interpolated = True
-            newTs.is_uniform_grid = True
-            return newTs
-        
-        else:
-            self.freq = new_freq
-            self.data = transfer
-            self.times = new_ts
-            self.is_interpolated = True
-            self.is_uniform_grid = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        
-    def trimto_timepoints(self, start_val: float = np.nan, end_val: float = -1, inplace: bool = False) -> "baseTs":
-        """
-        Trims the data between specified timepoints.
-
-        Args:
-            start_val (float, optional): Start value for trimming. Defaults to np.nan (start of series).
-            end_val (float, optional): End value for trimming. Defaults to -1 (end of series).
-            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
-
-        Returns:
-            baseTs: Trimmed data
-        """
-        if start_val != np.nan:
-            start_idx = find_closest(start_val, self.times).location
-        else:
-            start_idx = 0
-        if end_val != -1:
-            end_idx = find_closest(end_val, self.times).location
-        else:
-            end_idx = -1
-
-        new_data = self.data[start_idx:end_idx]
-        new_ts = self.times[start_idx:end_idx]
-        hist_msg = f"Trimmed to {start_idx} to {end_idx}"
-        last_process = "_trimto_[" + str(start_idx) + ":" + str(end_idx) + "]"
-        if inplace is False:
-            newTs = self.copy()
-            newTs.data = new_data
-            newTs.times = new_ts
-            newTs.freq = self.freq
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            return newTs
-        else:
-            self.data = new_data
-            self.times = new_ts
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-
-    def lowess_detrend(self, frac: float = 0.25, inplace: bool = False) -> "baseTs":
-        """
-        Detrend the data using a lowess fit.
-        """
-        if inplace:
-            self.lowess_fit = self.set_outlier_filter(frac=frac)
-            self.filter_outliers(inplace=True)
-            self.data = self.data - self.lowess_fit
-            self.history.append(f"Detrended with lowess fit frac={frac}")
-            self.last_process = "_lowess_detrend"
-            return self
-        else:
-            newTs = self.copy()
-            newTs.lowess_fit = self.set_outlier_filter(frac=frac)
-            newTs.filter_outliers(inplace=True)
-            newTs.data = newTs.data - newTs.lowess_fit
-            newTs.history.append(f"Detrended with lowess fit frac={frac}")
-            newTs.last_process = "_lowess_detrend"
-            return newTs
+        def normalize_func(data):
+            return (data - data.min()) / (data.max() - data.min())
+            
+        return self._process_with_flags(
+            func=normalize_func,
+            hist_msg="Normalized data to range 0-1",
+            last_process="_normalize",
+            inplace=inplace
+        )
     
     def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
-        filt = notch_filter(self.data, cutoff_hz, self.freq, order)
-        hist_msg = f"Notch filtered at {cutoff_hz} Hz"
-        last_process = "_notch_" + str(cutoff_hz) + "Hz"
-        if inplace is True:
-            self.data = filt
-            self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True    
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            return newTs
+        """
+        Apply a notch filter at the specified frequency.
+        """
+        def notch_func(data):
+            return notch_filter(data, cutoff_hz, self.freq, order)
+            
+        return self._process_with_flags(
+            func=notch_func,
+            hist_msg=f"Notch filtered at {cutoff_hz} Hz",
+            last_process=f"_notch_{cutoff_hz}Hz",
+            inplace=inplace,
+            is_filtered=True
+        )
         
     def highpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
-        filt = highpass_filter(self.data, cutoff, self.freq, order)
-        hist_msg = f"Highpass filtered at {cutoff} Hz"
-        last_process = "_hp_" + str(cutoff) + "Hz"
-        if inplace is True:
-            self.data = filt
-            self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            return newTs
+        """
+        Apply a highpass filter at the specified cutoff frequency.
+        """
+        def highpass_func(data):
+            return highpass_filter(data, cutoff, self.freq, order)
+            
+        return self._process_with_flags(
+            func=highpass_func,
+            hist_msg=f"Highpass filtered at {cutoff} Hz",
+            last_process=f"_hp_{cutoff}Hz",
+            inplace=inplace,
+            is_filtered=True
+        )
         
     def lowpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
-        filt = lowpass_filter(self.data, cutoff, self.freq, order)
-        hist_msg = f"Lowpass filtered at {cutoff} Hz"
-        last_process = "_lp_" + str(cutoff) + "Hz"
-        if inplace is True:
-            self.data = filt
-            self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            return newTs
-
+        """
+        Apply a lowpass filter at the specified cutoff frequency.
+        """
+        def lowpass_func(data):
+            return lowpass_filter(data, cutoff, self.freq, order)
+            
+        return self._process_with_flags(
+            func=lowpass_func,
+            hist_msg=f"Lowpass filtered at {cutoff} Hz",
+            last_process=f"_lp_{cutoff}Hz",
+            inplace=inplace,
+            is_filtered=True
+        )
 
     def gauss_filter(self, sigma: float = 1, inplace: bool = False) -> "baseTs":
         """
         Apply a Gaussian filter to the data.
-
-        Returns:
-            baseTs: The filtered data.
         """
-        filt = gaussian_filter(self.data, sigma)
-        hist_msg = f"Applied Gaussian filter with sigma={sigma}"
-        last_process = "_gauss_" + str(sigma)
-        if inplace is True:
-            self.data = filt
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            return newTs
+        def gauss_func(data):
+            return gaussian_filter(data, sigma)
+            
+        return self._process_with_flags(
+            func=gauss_func,
+            hist_msg=f"Applied Gaussian filter with sigma={sigma}",
+            last_process=f"_gauss_{sigma}",
+            inplace=inplace
+        )
     
     def bandpass_at(self,
                     hp_hz: float = 0.01,
@@ -482,26 +497,22 @@ class baseTs(object):
         Returns:
             baseTs: Bandpass filtered data
         """
-        filt = bandpass_filter(self.data,
-                               hp_hz=hp_hz,
-                               lp_hz=lp_hz,
-                               sample_Hz=self.freq,
-                               reset_mean=reset_mean)
-        hist_msg = f"Bandpass filtered at {lp_hz} Hz and {hp_hz} Hz"
-        last_process = "_bp_" + str(lp_hz) + ":" + str(hp_hz) + "Hz"
-        if inplace is True:
-            self.data = filt
-            self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
-            return newTs
+        def bandpass_func(data):
+            return bandpass_filter(
+                data,
+                hp_hz=hp_hz,
+                lp_hz=lp_hz,
+                sample_Hz=self.freq,
+                reset_mean=reset_mean
+            )
+            
+        return self._process_with_flags(
+            func=bandpass_func,
+            hist_msg=f"Bandpass filtered at {lp_hz} Hz and {hp_hz} Hz",
+            last_process=f"_bp_{lp_hz}:{hp_hz}Hz",
+            inplace=inplace,
+            is_filtered=True
+        )
 
     def butterpass_at(self, hp_freq: float, lp_freq: float, inplace: bool = False) -> "baseTs":
         """
@@ -675,84 +686,86 @@ class baseTs(object):
         """
         Apply a Savitzky-Golay filter to the signal.
         """
-        filt = sg_filter(self.data, window_length, polyorder)
-        hist_msg = f"Applied Savitzky-Golay filter wl={window_length}, polyorder={polyorder}"
-        last_process = "_sgFilter"
-        if inplace is True:
-            self.data = filt    
-            self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            self.is_filtered = True
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process   
-            newTs.is_filtered = True
-            return newTs
+        def sg_func(data):
+            return sg_filter(data, window_length, polyorder)
+            
+        return self._process_with_flags(
+            func=sg_func,
+            hist_msg=f"Applied Savitzky-Golay filter wl={window_length}, polyorder={polyorder}",
+            last_process="_sgFilter",
+            inplace=inplace,
+            is_filtered=True
+        )
         
     def interpolate_missing(self, inplace: bool = False) -> "baseTs":
         """
         Interpolate missing values in the data.
         """
-        res = interpolate_missing_values(self, inplace=inplace)
-        hist_msg = "Interpolated missing values in timeseries"
-        last_process = "_interp"
-
-        if inplace is True:
-            self.data = res.data
-            self.times = res.times
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            res.history.append(hist_msg)
-            res.last_process = last_process
-            return res
+        def interp_func(data):
+            return interpolate_missing_values(self, inplace=inplace)
+            
+        def process_result(result):
+            if inplace:
+                self.data = result.data
+                self.times = result.times
+                return self
+            else:
+                return result
+                
+        result = interp_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg="Interpolated missing values in timeseries",
+            last_process="_interp"
+        )
+        return processed
     
     def diff_ts(self, zeropad: bool = False, inplace: bool = False) -> "baseTs":
         """
         Compute the first difference of the timeseries.
         """
-        res = diff(self, zeropad=zeropad)
-        if res is None:
-            raise ValueError("Failed to compute first difference of timeseries")
-        hist_msg = "Computed first difference of timeseries"
-        last_process = "_diff"
-        if inplace is True:
-            self.data = res.data
-            self.times = res.times
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            res.history.append(hist_msg)
-            res.last_process = last_process   
-            return res
+        def diff_func(data):
+            result = diff(self, zeropad=zeropad)
+            if result is None:
+                raise ValueError("Failed to compute first difference of timeseries")
+            return result.data, result.times
+            
+        def process_result(result):
+            data, times = result
+            if inplace:
+                self.data = data
+                self.times = times
+                return self
+            else:
+                new_obj = self.copy()
+                new_obj.data = data
+                new_obj.times = times
+                return new_obj
+                
+        result = diff_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg="Computed first difference of timeseries",
+            last_process="_diff"
+        )
+        return processed
 
     def dediff_ts(self, inplace: bool = False) -> "baseTs":
         """
         Compute the cumulative sum of the timeseries.
         """
-        res = dediff(self)
-        if res is None:
-            raise ValueError("Failed to compute cumulative sum of timeseries")
-        hist_msg = "Computed cumulative sum of timeseries"
-        last_process = "_dediff"
-        if inplace is True:
-            self.data = res    
-            self.history.append(hist_msg)
-            self.last_process = last_process
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = res
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process   
-            return newTs
+        def dediff_func(data):
+            result = dediff(self)
+            if result is None:
+                raise ValueError("Failed to compute cumulative sum of timeseries")
+            return result
+            
+        return self._process_with_flags(
+            func=dediff_func,
+            hist_msg="Computed cumulative sum of timeseries",
+            last_process="_dediff",
+            inplace=inplace
+        )
     
     # Utility functions
     
@@ -1007,14 +1020,31 @@ class baseTs(object):
             df.set_index("times", inplace=True)
         return df
 
-    def diff(self, zeropad: bool = False) -> "baseTs":
+    def lowess_detrend(self, frac: float = 0.25, inplace: bool = False) -> "baseTs":
         """
-        Compute the first difference of the timeseries.
+        Detrend the data using a lowess fit.
         """
-        return diff(self, zeropad=zeropad)
-    
-    def dediff(self) -> "baseTs":
-        """
-        Compute the cumulative sum of the timeseries.
-        """
-        return dediff(self)
+        def detrend_func(data):
+            lowess_fit = self.set_outlier_filter(frac=frac)
+            self.filter_outliers(inplace=True)
+            return data - lowess_fit, lowess_fit
+            
+        def process_result(result):
+            data, lowess_fit = result
+            if inplace:
+                self.data = data
+                self.lowess_fit = lowess_fit
+                return self
+            else:
+                new_obj = self.copy()
+                new_obj.data = data
+                new_obj.lowess_fit = lowess_fit
+                return new_obj
+                
+        result = detrend_func(self.data)
+        processed = process_result(result)
+        processed._update_history_and_process(
+            hist_msg=f"Detrended with lowess fit frac={frac}",
+            last_process="_lowess_detrend"
+        )
+        return processed
