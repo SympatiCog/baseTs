@@ -20,7 +20,7 @@ git clone https://github.com/SympatiCog/baseTs.git
 cd baseTs
 
 # Install dependencies
-pip install numpy scipy pandas matplotlib
+pip install numpy scipy pandas matplotlib moepy
 
 OR
 
