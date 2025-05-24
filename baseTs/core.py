@@ -284,14 +284,33 @@ class baseTs(ArrayCompatMixin):
             value: New data array
         """
         if self._backend == 'series':
-            # Update the Series with new data, preserving index
-            self._series = self._series.__class__(value, index=self._series.index, 
-                                                 freq=self._series.freq, 
-                                                 signal_name=self._series.signal_name)
-            # Preserve metadata
+            # Check if lengths match
+            if len(value) == len(self._series.index):
+                # Same length, can preserve index
+                old_index = self._series.index
+            else:
+                # Different length, create new index with same time range
+                start_time = self._series.index[0] if len(self._series) > 0 else 0
+                end_time = self._series.index[-1] if len(self._series) > 0 else len(value)-1
+                old_index = np.linspace(start_time, end_time, len(value))
+            
+            # Create new Series with new data
+            old_metadata = {}
             for attr in self._series._metadata:
-                if hasattr(self._series, attr) and attr not in ['freq', 'signal_name']:
-                    continue  # These are already set
+                if hasattr(self._series, attr):
+                    old_metadata[attr] = getattr(self._series, attr)
+            
+            self._series = self._series.__class__(
+                value, 
+                index=old_index, 
+                freq=old_metadata.get('freq', self._series.freq),
+                signal_name=old_metadata.get('signal_name', self._series.signal_name)
+            )
+            
+            # Restore metadata
+            for attr, val in old_metadata.items():
+                if attr not in ['freq', 'signal_name']:
+                    setattr(self._series, attr, val)
         else:
             self._data = value
     
@@ -426,6 +445,89 @@ class baseTs(ArrayCompatMixin):
             result._update_flags(**flags)
             return result
 
+    def _create_new_with_data(self, new_data: np.ndarray, new_times: np.ndarray = None, 
+                             preserve_metadata: bool = True, **kwargs) -> "baseTs":
+        """
+        Create a new baseTs object with new data, preserving backend and metadata.
+        
+        Args:
+            new_data: New data array
+            new_times: New time array (optional, uses existing if None)
+            preserve_metadata: Whether to copy metadata from current object
+            **kwargs: Additional parameters for new object
+            
+        Returns:
+            New baseTs object with same backend as current object
+        """
+        if new_times is None:
+            new_times = self.times
+            
+        # Create new object with same backend
+        new_kwargs = {
+            'backend': self._backend,
+            'freq': self.freq,
+            'signal_name': self.signal_name
+        }
+        new_kwargs.update(kwargs)
+        
+        new_obj = baseTs(new_data, new_times, **new_kwargs)
+        
+        if preserve_metadata:
+            # Copy metadata
+            metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
+                            'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
+                            'filtered_indices', 'lowess_fit', 'last_process']
+            
+            for attr in metadata_attrs:
+                if hasattr(self, attr):
+                    new_obj._set_metadata_attr(attr, self._get_metadata_attr(attr))
+            
+            # Copy history (make a copy to avoid reference issues)
+            new_obj.history = self.history.copy()
+        
+        return new_obj
+
+    def _enhanced_process_with_flags(self, func, hist_msg: str, last_process: str, 
+                                   inplace: bool = False, modify_times: bool = False, 
+                                   **flags) -> "baseTs":
+        """
+        Enhanced processing method that handles both data and time modifications.
+        
+        Args:
+            func: Function to apply to data (should return data or (data, times) tuple)
+            hist_msg: History message
+            last_process: Last process identifier
+            inplace: Whether to modify in place
+            modify_times: Whether the function modifies times
+            **flags: Metadata flags to update
+            
+        Returns:
+            Processed baseTs object
+        """
+        result = func(self.data)
+        
+        if modify_times:
+            if isinstance(result, tuple) and len(result) == 2:
+                new_data, new_times = result
+            else:
+                raise ValueError("Function must return (data, times) tuple when modify_times=True")
+        else:
+            new_data = result
+            new_times = None
+        
+        if inplace:
+            self.data = new_data
+            if new_times is not None:
+                self.times = new_times
+            self._update_history_and_process(hist_msg, last_process)
+            self._update_flags(**flags)
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)
+            new_obj._update_history_and_process(hist_msg, last_process)
+            new_obj._update_flags(**flags)
+            return new_obj
+
     def duration(self) -> float:
         """
         Calculates the duration of the times.
@@ -446,15 +548,110 @@ class baseTs(ArrayCompatMixin):
     
     def zscale(self, inplace: bool = False) -> "baseTs":
         """
-        Z-scale the data.
+        Z-scale the data (zero mean, unit variance).
+        
+        Args:
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Z-scaled baseTs object
         """
         def zscale_func(data):
             return (data - data.mean()) / data.std()
 
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=zscale_func,
             hist_msg="Z-scaled the data",
             last_process="_zscale",
+            inplace=inplace
+        )
+
+    def normalize_range(self, target_min: float = 0.0, target_max: float = 1.0, 
+                       inplace: bool = False) -> "baseTs":
+        """
+        Normalize the data to a specified range.
+        
+        Args:
+            target_min: Minimum value of target range
+            target_max: Maximum value of target range
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Normalized baseTs object
+        """
+        def normalize_func(data):
+            data_min, data_max = data.min(), data.max()
+            data_range = data_max - data_min
+            if data_range == 0:
+                return np.full_like(data, (target_min + target_max) / 2)
+            target_range = target_max - target_min
+            return target_min + (data - data_min) * target_range / data_range
+
+        return self._enhanced_process_with_flags(
+            func=normalize_func,
+            hist_msg=f"Normalized data to range [{target_min}, {target_max}]",
+            last_process="_normalize",
+            inplace=inplace
+        )
+
+    def center(self, inplace: bool = False) -> "baseTs":
+        """
+        Center the data around zero (remove mean).
+        
+        Args:
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Centered baseTs object
+        """
+        def center_func(data):
+            return data - data.mean()
+
+        return self._enhanced_process_with_flags(
+            func=center_func,
+            hist_msg="Centered data (removed mean)",
+            last_process="_center",
+            inplace=inplace
+        )
+
+    def scale(self, factor: float, inplace: bool = False) -> "baseTs":
+        """
+        Scale the data by a constant factor.
+        
+        Args:
+            factor: Scaling factor
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Scaled baseTs object
+        """
+        def scale_func(data):
+            return data * factor
+
+        return self._enhanced_process_with_flags(
+            func=scale_func,
+            hist_msg=f"Scaled data by factor {factor}",
+            last_process=f"_scale_{factor}",
+            inplace=inplace
+        )
+
+    def abs(self, inplace: bool = False) -> "baseTs":
+        """
+        Take absolute value of the data.
+        
+        Args:
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Absolute value baseTs object
+        """
+        def abs_func(data):
+            return np.abs(data)
+
+        return self._enhanced_process_with_flags(
+            func=abs_func,
+            hist_msg="Took absolute value of data",
+            last_process="_abs",
             inplace=inplace
         )
     
@@ -638,28 +835,23 @@ class baseTs(ArrayCompatMixin):
             self.is_uniform_grid = True
             return self
         
-    def normalize_range(self, inplace: bool = False) -> "baseTs":
-        """
-        Normalize the data to the range 0-1.
-        """
-        def normalize_func(data):
-            return (data - data.min()) / (data.max() - data.min())
-            
-        return self._process_with_flags(
-            func=normalize_func,
-            hist_msg="Normalized data to range 0-1",
-            last_process="_normalize",
-            inplace=inplace
-        )
     
     def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a notch filter at the specified frequency.
+        
+        Args:
+            cutoff_hz: Notch frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Notch filtered baseTs object
         """
         def notch_func(data):
             return notch_filter(data, cutoff_hz, self.freq, order)
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=notch_func,
             hist_msg=f"Notch filtered at {cutoff_hz} Hz",
             last_process=f"_notch_{cutoff_hz}Hz",
@@ -667,14 +859,22 @@ class baseTs(ArrayCompatMixin):
             is_filtered=True
         )
         
-    def highpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
+    def highpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a highpass filter at the specified cutoff frequency.
+        
+        Args:
+            cutoff: Highpass cutoff frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Highpass filtered baseTs object
         """
         def highpass_func(data):
             return highpass_filter(data, cutoff, self.freq, order)
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=highpass_func,
             hist_msg=f"Highpass filtered at {cutoff} Hz",
             last_process=f"_hp_{cutoff}Hz",
@@ -682,14 +882,22 @@ class baseTs(ArrayCompatMixin):
             is_filtered=True
         )
         
-    def lowpass_at(self, cutoff, order: int = 5, inplace: bool = False) -> "baseTs":
+    def lowpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a lowpass filter at the specified cutoff frequency.
+        
+        Args:
+            cutoff: Lowpass cutoff frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Lowpass filtered baseTs object
         """
         def lowpass_func(data):
             return lowpass_filter(data, cutoff, self.freq, order)
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=lowpass_func,
             hist_msg=f"Lowpass filtered at {cutoff} Hz",
             last_process=f"_lp_{cutoff}Hz",
@@ -700,15 +908,23 @@ class baseTs(ArrayCompatMixin):
     def gauss_filter(self, sigma: float = 1, inplace: bool = False) -> "baseTs":
         """
         Apply a Gaussian filter to the data.
+        
+        Args:
+            sigma: Standard deviation for Gaussian kernel
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Gaussian filtered baseTs object
         """
         def gauss_func(data):
             return gaussian_filter(data, sigma)
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=gauss_func,
             hist_msg=f"Applied Gaussian filter with sigma={sigma}",
             last_process=f"_gauss_{sigma}",
-            inplace=inplace
+            inplace=inplace,
+            is_filtered=True
         )
     
     def bandpass_at(self,
@@ -720,17 +936,13 @@ class baseTs(ArrayCompatMixin):
         Apply a bandpass filter to the signal at specified low-pass and high-pass frequencies.
 
         Args:
-            hp_hz (float): High-pass cutoff frequency in Hz.
-            lp_hz (float): Low-pass cutoff frequency in Hz.
-            inplace (bool, optional): If True, modifies existing object.
-                    Otherwise returns a new filtered data.
-                    Defaults to False.
-            reset_mean (bool, optional): If True, resets the mean of the
-                    filtered data to the mean of the original data.
-                    Defaults to True.
+            hp_hz: High-pass cutoff frequency in Hz
+            lp_hz: Low-pass cutoff frequency in Hz
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            reset_mean: If True, resets the mean of the filtered data to the mean of the original data
 
         Returns:
-            baseTs: Bandpass filtered data
+            Bandpass filtered baseTs object
         """
         def bandpass_func(data):
             return bandpass_filter(
@@ -741,7 +953,7 @@ class baseTs(ArrayCompatMixin):
                 reset_mean=reset_mean
             )
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=bandpass_func,
             hist_msg=f"Bandpass filtered at {lp_hz} Hz and {hp_hz} Hz",
             last_process=f"_bp_{lp_hz}:{hp_hz}Hz",
@@ -920,11 +1132,19 @@ class baseTs(ArrayCompatMixin):
     def sg_filter(self, window_length: int = 11, polyorder: int = 2, inplace: bool = False) -> "baseTs":
         """
         Apply a Savitzky-Golay filter to the signal.
+        
+        Args:
+            window_length: Length of the filter window (must be odd)
+            polyorder: Order of the polynomial fit
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Savitzky-Golay filtered baseTs object
         """
         def sg_func(data):
             return sg_filter(data, window_length, polyorder)
             
-        return self._process_with_flags(
+        return self._enhanced_process_with_flags(
             func=sg_func,
             hist_msg=f"Applied Savitzky-Golay filter wl={window_length}, polyorder={polyorder}",
             last_process="_sgFilter",
@@ -1024,6 +1244,129 @@ class baseTs(ArrayCompatMixin):
             new_obj._update_history_and_process(hist_msg, last_process)
             # new_obj._update_flags(...) # Call if specific flags need to be set/updated
             return new_obj
+
+    # Enhanced Pandas-Powered Methods
+    
+    def rolling_mean(self, window: int, center: bool = True, inplace: bool = False) -> "baseTs":
+        """
+        Apply a rolling mean to the data.
+        
+        Args:
+            window: Size of the rolling window (number of samples)
+            center: Whether to center the window
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Rolling mean baseTs object
+        """
+        if self._backend == 'series':
+            # Use pandas rolling capabilities
+            rolling_result = self._series.rolling(window, center=center).mean()
+            # Remove NaN values and corresponding times
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = rolling_result[valid_mask].index.values
+        else:
+            # Fallback for numpy backend
+            import pandas as pd
+            temp_series = pd.Series(self.data)
+            rolling_result = temp_series.rolling(window, center=center).mean()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = self.times[valid_mask]
+        
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Applied rolling mean with window={window}",
+                f"_rolling_mean_{window}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)
+            new_obj._update_history_and_process(
+                f"Applied rolling mean with window={window}",
+                f"_rolling_mean_{window}"
+            )
+            return new_obj
+
+    def time_slice(self, start_time: float = None, end_time: float = None, 
+                  inplace: bool = False) -> "baseTs":
+        """
+        Slice the time series between start and end times.
+        
+        Args:
+            start_time: Start time (if None, uses beginning)
+            end_time: End time (if None, uses end)
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Time-sliced baseTs object
+        """
+        if self._backend == 'series':
+            # Use pandas time-based indexing
+            if start_time is None:
+                start_time = self._series.index[0]
+            if end_time is None:
+                end_time = self._series.index[-1]
+            
+            # Use pandas boolean indexing for time range
+            mask = (self._series.index >= start_time) & (self._series.index <= end_time)
+            sliced_series = self._series[mask]
+            new_data = sliced_series.values
+            new_times = sliced_series.index.values
+        else:
+            # Use numpy indexing
+            mask = np.ones(len(self.times), dtype=bool)
+            if start_time is not None:
+                mask &= (self.times >= start_time)
+            if end_time is not None:
+                mask &= (self.times <= end_time)
+            
+            new_data = self.data[mask]
+            new_times = self.times[mask]
+        
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Time sliced from {start_time} to {end_time}",
+                f"_time_slice"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)
+            new_obj._update_history_and_process(
+                f"Time sliced from {start_time} to {end_time}",
+                f"_time_slice"
+            )
+            return new_obj
+
+    def get_statistics(self) -> dict:
+        """
+        Get comprehensive statistics for the time series.
+        
+        Returns:
+            Dictionary containing various statistics
+        """
+        data = self.data
+        
+        stats = {
+            'count': len(data),
+            'mean': np.mean(data),
+            'std': np.std(data),
+            'min': np.min(data),
+            'max': np.max(data),
+            'median': np.median(data),
+            'q25': np.percentile(data, 25),
+            'q75': np.percentile(data, 75),
+            'duration': self.duration(),
+            'frequency': self.freq,
+            'sample_rate': len(data) / self.duration() if self.duration() > 0 else 0
+        }
+        
+        return stats
     
     # Utility functions
     
