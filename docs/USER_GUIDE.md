@@ -15,12 +15,12 @@
 ### Installation
 
 ```bash
-pip install basets
+pip install baseTs
 ```
 
 For full Series backend functionality:
 ```bash
-pip install basets[series]  # Includes pandas
+pip install baseTs[series]  # Includes pandas
 ```
 
 ### Your First baseTs Object
