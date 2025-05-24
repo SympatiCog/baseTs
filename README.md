@@ -13,7 +13,7 @@ A Python library for time series analysis with dual backend architecture, suppor
 
 ### New in Latest Version
 - **Pandas Series Backend**: Enhanced time-series operations with native datetime support
-- **Rolling Operations**: `rolling_mean()`, `rolling_std()`, `rolling_max()`, `rolling_min()`
+- **Rolling Operations**: `rolling_mean()`, `rolling_std()`, `rolling_max()`, `rolling_min()`, `rolling_median()`
 - **Time-Based Slicing**: Extract data by date ranges with `time_slice()`
 - **Rich Statistics**: Comprehensive analysis with `get_statistics()`
 - **Metadata Preservation**: Processing history and filter state tracking
