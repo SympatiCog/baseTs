@@ -17,6 +17,7 @@ from typing import Optional, TYPE_CHECKING
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch, diff, dediff
+from .compat import BackendManager, ArrayCompatMixin, convert_to_series, validate_time_index
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -83,14 +84,18 @@ def from_df(df: pd.DataFrame,
     return ts
 
 
-class baseTs(object):
+class baseTs(ArrayCompatMixin):
     """
     Basic data class to hold a timeseries and data.
-
+    
+    Now supports dual backends: numpy arrays (legacy) and pandas Series (new).
+    
     Args:
         data (np.array): The actual observational data.
         times (np.array): The timestamps corresponding to the data.
         freq (float, optional): The frequency of data collection. Defaults to np.nan.
+        use_series (bool, optional): Use pandas Series backend. Defaults to False.
+        backend (str, optional): Explicit backend choice ('numpy' or 'series').
 
     """
 
@@ -108,14 +113,45 @@ class baseTs(object):
                  lowess_fit: np.array = None,
                  signal_name: str = "",
                  history: list = None,
-                 last_process: str = ""):
+                 last_process: str = "",
+                 use_series: bool = None,
+                 backend: str = None):
         
         """
-        Initialize the baseTs object.
+        Initialize the baseTs object with dual backend support.
         """
         
-        self.data = data
-        self.times = times
+        # Determine backend to use
+        if backend is not None:
+            if backend not in ['numpy', 'series']:
+                raise ValueError(f"Invalid backend: {backend}. Must be 'numpy' or 'series'")
+            self._backend = backend
+        elif use_series is not None:
+            self._backend = 'series' if use_series else 'numpy'
+        else:
+            self._backend = 'series' if BackendManager.should_use_series() else 'numpy'
+        
+        # Initialize based on backend
+        if self._backend == 'series':
+            self._init_series_backend(
+                data, times, freq, ts_offset, is_filtered, is_interpolated,
+                is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
+                filtered_indices, lowess_fit, signal_name, history, last_process
+            )
+        else:
+            self._init_numpy_backend(
+                data, times, freq, ts_offset, is_filtered, is_interpolated,
+                is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
+                filtered_indices, lowess_fit, signal_name, history, last_process
+            )
+
+    def _init_numpy_backend(self, data, times, freq, ts_offset, is_filtered,
+                           is_interpolated, is_uniform_grid, is_outlier_filtered,
+                           has_timestamp_offset, filtered_indices, lowess_fit,
+                           signal_name, history, last_process):
+        """Initialize with legacy numpy backend."""
+        self._data = data
+        self._times = times
         self.is_filtered = is_filtered
         self.is_interpolated = is_interpolated
         self.is_uniform_grid = is_uniform_grid
@@ -133,11 +169,11 @@ class baseTs(object):
             
         if times is None:
             if freq is not np.nan:
-                self.times = np.arange(0, len(data)) / freq
+                self._times = np.arange(0, len(data)) / freq
             else:
                 raise ValueError("You must provide either a times array or a frequency")
         else:
-            self.times = times
+            self._times = times
 
         if history is None:
             self.history = [f"Created baseTs object with {self.len()} samples"]
@@ -155,15 +191,214 @@ class baseTs(object):
         # instantiate outlier filter w/ default parameters
         self.outlier_filter = LowessOutlierFilter()
 
+    def _init_series_backend(self, data, times, freq, ts_offset, is_filtered,
+                            is_interpolated, is_uniform_grid, is_outlier_filtered,
+                            has_timestamp_offset, filtered_indices, lowess_fit,
+                            signal_name, history, last_process):
+        """Initialize with pandas Series backend."""
+        from .series import TimeSeriesData
+        
+        # Handle times array
+        if times is None:
+            if freq is not np.nan:
+                times = np.arange(0, len(data)) / freq
+            else:
+                raise ValueError("You must provide either a times array or a frequency")
+        
+        # Validate time index
+        validate_time_index(times)
+        
+        # Create TimeSeriesData object
+        if history is None:
+            history = [f"Created baseTs object with {len(data)} samples"]
+        
+        self._series = TimeSeriesData(
+            data=data,
+            index=times,
+            freq=freq if freq is not np.nan else None,
+            signal_name=signal_name
+        )
+        
+        # Set metadata
+        self._series.is_filtered = is_filtered
+        self._series.is_interpolated = is_interpolated
+        self._series.is_uniform_grid = is_uniform_grid
+        self._series.is_outlier_filtered = is_outlier_filtered
+        self._series.has_timestamp_offset = has_timestamp_offset
+        self._series.filtered_indices = filtered_indices
+        self._series.lowess_fit = lowess_fit
+        self._series.last_process = last_process
+        self._series.history = history
+        
+        # Handle timestamp offset
+        if ts_offset is not np.nan:
+            self._series.ts_offset = ts_offset
+            self._series.has_timestamp_offset = True
+        else:
+            self._series.ts_offset = 0
+            self._series.has_timestamp_offset = False
+        
+        # Calculate frequency if not provided
+        if freq is np.nan:
+            self._series.freq = self._series._calculate_effective_frequency()
+        
+        # instantiate outlier filter w/ default parameters
+        self.outlier_filter = LowessOutlierFilter()
+
+    # Backend Management Properties
+    @property
+    def backend(self) -> str:
+        """Get the current backend type."""
+        return self._backend
+    
+    @property
+    def is_series_backend(self) -> bool:
+        """Check if using Series backend."""
+        return self._backend == 'series'
+    
+    @property
+    def is_numpy_backend(self) -> bool:
+        """Check if using numpy backend."""
+        return self._backend == 'numpy'
+
+    # Compatibility Properties - Override ArrayCompatMixin for better integration
+    @property
+    def data(self) -> np.ndarray:
+        """
+        Get the data values as numpy array (backward compatibility).
+        
+        Returns:
+            Numpy array of data values
+        """
+        if self._backend == 'series':
+            return self._series.values
+        else:
+            return self._data
+    
+    @data.setter
+    def data(self, value: np.ndarray):
+        """
+        Set the data values (backward compatibility).
+        
+        Args:
+            value: New data array
+        """
+        if self._backend == 'series':
+            # Update the Series with new data, preserving index
+            self._series = self._series.__class__(value, index=self._series.index, 
+                                                 freq=self._series.freq, 
+                                                 signal_name=self._series.signal_name)
+            # Preserve metadata
+            for attr in self._series._metadata:
+                if hasattr(self._series, attr) and attr not in ['freq', 'signal_name']:
+                    continue  # These are already set
+        else:
+            self._data = value
+    
+    @property
+    def times(self) -> np.ndarray:
+        """
+        Get the time values as numpy array (backward compatibility).
+        
+        Returns:
+            Numpy array of time values
+        """
+        if self._backend == 'series':
+            return self._series.index.values
+        else:
+            return self._times
+    
+    @times.setter
+    def times(self, value: np.ndarray):
+        """
+        Set the time values (backward compatibility).
+        
+        Args:
+            value: New time array
+        """
+        if self._backend == 'series':
+            # Update the Series with new index, preserving data
+            self._series.index = pd.Index(value)
+            # Recalculate frequency
+            self._series.freq = self._series._calculate_effective_frequency()
+        else:
+            self._times = value
+            # Recalculate frequency
+            if len(value) > 1:
+                self.freq = len(value) / (value[-1] - value[0])
+
+    # Metadata Properties - Use backend-appropriate storage
+    @property
+    def signal_name(self) -> str:
+        """Get signal name."""
+        if self._backend == 'series':
+            return self._series.signal_name
+        else:
+            return getattr(self, '_signal_name', "")
+    
+    @signal_name.setter
+    def signal_name(self, value: str):
+        """Set signal name."""
+        if self._backend == 'series':
+            self._series.signal_name = value.upper()
+        else:
+            self._signal_name = value.upper()
+
+    @property
+    def freq(self) -> float:
+        """Get sampling frequency."""
+        if self._backend == 'series':
+            return self._series.freq
+        else:
+            return getattr(self, '_freq', np.nan)
+    
+    @freq.setter
+    def freq(self, value: float):
+        """Set sampling frequency."""
+        if self._backend == 'series':
+            self._series.freq = value
+        else:
+            self._freq = value
+
+    @property
+    def history(self) -> list:
+        """Get processing history."""
+        if self._backend == 'series':
+            return self._series.history
+        else:
+            return getattr(self, '_history', [])
+    
+    @history.setter
+    def history(self, value: list):
+        """Set processing history."""
+        if self._backend == 'series':
+            self._series.history = value
+        else:
+            self._history = value
+
+    def _get_metadata_attr(self, attr_name, default=None):
+        """Helper to get metadata attributes from appropriate backend."""
+        if self._backend == 'series':
+            return getattr(self._series, attr_name, default)
+        else:
+            return getattr(self, attr_name, default)
+    
+    def _set_metadata_attr(self, attr_name, value):
+        """Helper to set metadata attributes on appropriate backend."""
+        if self._backend == 'series':
+            setattr(self._series, attr_name, value)
+        else:
+            setattr(self, attr_name, value)
+
     def _update_history_and_process(self, hist_msg: str, last_process: str):
         """Helper method to update history and last_process."""
         self.history.append(hist_msg)
-        self.last_process = last_process
+        self._set_metadata_attr('last_process', last_process)
 
     def _update_flags(self, **flags):
         """Helper method to update object flags."""
         for flag_name, flag_value in flags.items():
-            setattr(self, flag_name, flag_value)
+            self._set_metadata_attr(flag_name, flag_value)
 
     def _process_inplace(self, func, *args, **kwargs):
         """Helper method to process data in-place."""
@@ -742,7 +977,7 @@ class baseTs(object):
                 new_obj.times = times
                 return new_obj
                 
-        result = diff_func(self.data)
+        result = diff_func(self)
         processed = process_result(result)
         processed._update_history_and_process(
             hist_msg="Computed first difference of timeseries",
@@ -754,18 +989,41 @@ class baseTs(object):
         """
         Compute the cumulative sum of the timeseries.
         """
-        def dediff_func(data):
-            result = dediff(self)
-            if result is None:
-                raise ValueError("Failed to compute cumulative sum of timeseries")
-            return result
+        # Assuming utils.dediff(self) returns a baseTs object
+        # containing the dedifferenced data and corresponding times.
+        dediffed_result_ts = dediff(self)
+
+        if dediffed_result_ts is None:
+            raise ValueError("Failed to compute cumulative sum of timeseries (dediff returned None)")
+
+        hist_msg = "Computed cumulative sum of timeseries"
+        last_process = "_dediff"
+
+        if inplace:
+            self.data = dediffed_result_ts.data
+            self.times = dediffed_result_ts.times
+            # If dediff might change frequency or other relevant attributes, update them here.
+            # For example:
+            # if hasattr(dediffed_result_ts, 'freq'):
+            #     self.freq = dediffed_result_ts.freq
+            # Add any other attributes from dediffed_result_ts that should be copied.
             
-        return self._process_with_flags(
-            func=dediff_func,
-            hist_msg="Computed cumulative sum of timeseries",
-            last_process="_dediff",
-            inplace=inplace
-        )
+            self._update_history_and_process(hist_msg, last_process)
+            # self._update_flags(...) # Call if specific flags need to be set/updated
+            return self
+        else:
+            new_obj = self.copy()  # Start with a copy of the original state
+            new_obj.data = dediffed_result_ts.data
+            new_obj.times = dediffed_result_ts.times
+            # If dediff might change frequency or other relevant attributes, update them here on new_obj.
+            # For example:
+            # if hasattr(dediffed_result_ts, 'freq'):
+            #     new_obj.freq = dediffed_result_ts.freq
+            # Add any other attributes from dediffed_result_ts that should be copied to new_obj.
+
+            new_obj._update_history_and_process(hist_msg, last_process)
+            # new_obj._update_flags(...) # Call if specific flags need to be set/updated
+            return new_obj
     
     # Utility functions
     

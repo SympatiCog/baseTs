@@ -196,6 +196,126 @@ class TestDataCompatibility:
         assert base_ts.times[-1] == ts_data.index.values[-1]
 
 
+class TestDualBackendBaseTs:
+    """Test dual backend functionality in baseTs."""
+    
+    @pytest.fixture
+    def sample_data(self):
+        """Generate sample time series data."""
+        n_points = 50
+        times = np.linspace(0, 5, n_points)
+        data = np.sin(2 * np.pi * times) + 0.1 * np.random.randn(n_points)
+        return data, times
+    
+    def test_backend_selection(self, sample_data):
+        """Test backend selection mechanisms."""
+        data, times = sample_data
+        
+        # Test default backend
+        ts_default = baseTs(data, times)
+        assert ts_default.backend == 'numpy'  # Current default
+        
+        # Test explicit numpy
+        ts_numpy = baseTs(data, times, backend='numpy')
+        assert ts_numpy.backend == 'numpy'
+        assert ts_numpy.is_numpy_backend
+        assert not ts_numpy.is_series_backend
+        
+        # Test explicit series
+        ts_series = baseTs(data, times, backend='series')
+        assert ts_series.backend == 'series'
+        assert ts_series.is_series_backend
+        assert not ts_series.is_numpy_backend
+        
+        # Test use_series parameter
+        ts_use_series = baseTs(data, times, use_series=True)
+        assert ts_use_series.backend == 'series'
+    
+    def test_data_property_compatibility(self, sample_data):
+        """Test that data and times properties work identically."""
+        data, times = sample_data
+        
+        ts_numpy = baseTs(data, times, freq=10.0, backend='numpy')
+        ts_series = baseTs(data, times, freq=10.0, backend='series')
+        
+        # Test data access
+        np.testing.assert_array_equal(ts_numpy.data, ts_series.data)
+        np.testing.assert_array_equal(ts_numpy.times, ts_series.times)
+        
+        # Test data modification
+        new_data = data * 2
+        ts_numpy.data = new_data
+        ts_series.data = new_data
+        
+        np.testing.assert_array_equal(ts_numpy.data, new_data)
+        np.testing.assert_array_equal(ts_series.data, new_data)
+    
+    def test_metadata_property_compatibility(self, sample_data):
+        """Test that metadata properties work identically."""
+        data, times = sample_data
+        
+        ts_numpy = baseTs(data, times, freq=10.0, signal_name="test", backend='numpy')
+        ts_series = baseTs(data, times, freq=10.0, signal_name="test", backend='series')
+        
+        # Test basic properties
+        assert ts_numpy.freq == ts_series.freq
+        assert ts_numpy.signal_name == ts_series.signal_name
+        assert ts_numpy.len() == ts_series.len()
+        assert abs(ts_numpy.duration() - ts_series.duration()) < 1e-10
+        
+        # Test property modification
+        ts_numpy.signal_name = "new_name"
+        ts_series.signal_name = "new_name"
+        
+        assert ts_numpy.signal_name == "NEW_NAME"
+        assert ts_series.signal_name == "NEW_NAME"
+    
+    def test_method_equivalence(self, sample_data):
+        """Test that basic methods produce equivalent results."""
+        data, times = sample_data
+        
+        ts_numpy = baseTs(data, times, freq=10.0, backend='numpy')
+        ts_series = baseTs(data, times, freq=10.0, backend='series')
+        
+        # Test basic methods
+        assert ts_numpy.len() == ts_series.len()
+        assert abs(ts_numpy.duration() - ts_series.duration()) < 1e-10
+        
+        # Test copy
+        copy_numpy = ts_numpy.copy()
+        copy_series = ts_series.copy()
+        
+        assert copy_numpy.backend == 'numpy'
+        assert copy_series.backend == 'series'
+        np.testing.assert_array_equal(copy_numpy.data, copy_series.data)
+    
+    def test_backend_manager_integration(self, sample_data):
+        """Test BackendManager integration with baseTs."""
+        data, times = sample_data
+        
+        # Save original default
+        original_default = BackendManager.get_default_backend()
+        
+        try:
+            # Test with numpy default
+            BackendManager.set_default_backend('numpy')
+            ts = baseTs(data, times)
+            assert ts.backend == 'numpy'
+            
+            # Test with series default
+            BackendManager.set_default_backend('series')
+            ts = baseTs(data, times)
+            assert ts.backend == 'series'
+            
+            # Test override
+            ts_override = baseTs(data, times, use_series=False)
+            assert ts_override.backend == 'numpy'
+            
+        finally:
+            # Restore original default
+            BackendManager.set_default_backend(original_default)
+
+
 class TestErrorHandling:
     """Test error handling in migration components."""
     
@@ -211,6 +331,14 @@ class TestErrorHandling:
         """Test error handling for invalid backend settings."""
         with pytest.raises(ValueError):
             BackendManager.set_default_backend('invalid_backend')
+    
+    def test_invalid_basetseries_backend(self):
+        """Test error handling for invalid backend in baseTs."""
+        data = np.array([1, 2, 3])
+        times = np.array([0.0, 0.1, 0.2])
+        
+        with pytest.raises(ValueError):
+            baseTs(data, times, backend='invalid')
     
     def test_empty_data_handling(self):
         """Test handling of empty data."""
