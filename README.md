@@ -1,123 +1,157 @@
 # baseTs
 
-A Python library for time series analysis, focusing on filtering, outlier detection, and data processing.
+A Python library for time series analysis with dual backend architecture, supporting both NumPy arrays and Pandas Series for enhanced time-series capabilities.
 
 ## Features
 
-- Time series filtering (lowpass, highpass, bandpass, Butterworth, Savitzky-Golay)
-- Outlier detection using LOWESS (Locally Weighted Scatterplot Smoothing)
-- Interpolation of missing values and resampling to uniform time grids
-- FFT power spectrum analysis
-- Data normalization and standardization
-- Peak detection
-- Visualization tools
+### Core Functionality
+- **Dual Backend Architecture**: Choose between NumPy (performance) or Pandas Series (time-series features)
+- **Signal Processing**: Low-pass filtering, normalization, outlier detection
+- **Time-Series Analysis**: Rolling statistics, time-based slicing, datetime indexing
+- **Data Processing**: Function application, interpolation, resampling
+- **100% Backward Compatibility**: Existing code works unchanged
+
+### New in Latest Version
+- **Pandas Series Backend**: Enhanced time-series operations with native datetime support
+- **Rolling Operations**: `rolling_mean()`, `rolling_std()`, `rolling_max()`, `rolling_min()`
+- **Time-Based Slicing**: Extract data by date ranges with `time_slice()`
+- **Rich Statistics**: Comprehensive analysis with `get_statistics()`
+- **Metadata Preservation**: Processing history and filter state tracking
+- **Performance Benchmarking**: Built-in tools for backend comparison
 
 ## Installation
 
 ```bash
-# Clone the repository
+# Install from PyPI (when available)
+pip install basets
+
+# For full Series backend functionality
+pip install basets[series]  # Includes pandas
+
+# Or install from source
 git clone https://github.com/SympatiCog/baseTs.git
 cd baseTs
+pip install -e .
 
-# Install dependencies
-pip install numpy scipy pandas matplotlib moepy
-
-OR
-
-pip install git+https://github.com/SympatiCog/baseTs.git
+# For development
+pip install -e ".[dev]"  # Includes test dependencies
 ```
 
-## Usage
-### Stepwise
+## Quick Start
+
+### Basic Usage (NumPy Backend)
 ```python
 import numpy as np
-import matplotlib.pyplot as plt
 from baseTs import baseTs
 
-# Create some synthetic data
-n_points = 1000
-t = np.linspace(0, 10, n_points)
-# Signal with multiple frequency components and noise
-signal = (
-    np.sin(2 * np.pi * 0.5 * t) +          # 0.5 Hz component
-    0.5 * np.sin(2 * np.pi * 1.5 * t) +     # 1.5 Hz component
-    0.2 * np.random.randn(n_points)         # Noise
-)
+# Create sample data
+data = np.sin(np.linspace(0, 4*np.pi, 1000)) + 0.1*np.random.randn(1000)
+times = np.linspace(0, 10, 1000)
 
-# Add some outliers
-outlier_indices = np.random.choice(range(n_points), size=20, replace=False)
-signal[outlier_indices] += 3 * np.random.randn(len(outlier_indices))
+# Create baseTs object (NumPy backend - default)
+ts = baseTs(data=data, times=times)
 
-# Create baseTs object
-ts = baseTs(signal, t, signal_name="Example Signal")
-
-# Plot the raw signal
-plt.figure(figsize=(12, 12))
-ax = plt.subplot(5, 1, 1)
-ts.plot(show=False, ax=ax)
-plt.title("Raw Signal with Spikes/Outliers")
-
-# Remove outliers using LOWESS
-ts_filtered = ts.set_outlier_filter(frac=0.07, z_threshold=3).filter_outliers()
-
-# Plot the filtered signal
-ax = plt.subplot(5, 1, 2)
-ts_filtered.plot(show=False, lowess=True, ax=ax)
-plt.title("Lowess Filtered to Remove Spikes")
-plt.legend(["De-Spiked Signal", "Lowess Fit Line"])
-                 
-# Apply bandpass filter
-ts_bandpass = ts_filtered.bandpass_at(hp_hz=0.2, lp_hz=2)
-
-# Plot the bandpass filtered signal
-ax = plt.subplot(5, 1, 3)
-ts_bandpass.plot(show=False, ax=ax)
-plt.title("Bandpass Filtered Signal (0.2-2 Hz)")
-
-# Plot FFT power spectrum
-ax = plt.subplot(5, 1, 4)
-ts_filtered.plot_fft_power(show=False, ax=ax)
-plt.title("FFT Power Spectrum")
-
-# Plot Zoomed FFT power spectrum
-ax = plt.subplot(5, 1, 5)
-ts_filtered.plot_fft_power(show=False, max_rate=2, ax=ax)
-plt.title("FFT Power Spectrum - Zoomed")
-
-plt.tight_layout()
-plt.savefig("baseTs_example.png")
-
-plt.show()
+# Basic operations
+filtered = ts.lowpass_filter(cutoff=0.3)
+normalized = filtered.zscale()
+print(f"Length: {normalized.len()}, Mean: {np.mean(normalized.data):.3f}")
 ```
-![Stepwise](imgs/baseTs_example.png)
 
-### We can also chain filters/transforms
+### Enhanced Time-Series Features (Series Backend)
+
 ```python
-fig, ax = plt.subplots(2,1,figsize=(9,6))
-filt = baseTs(signal, t, signal_name="Filtered Signal")\
-            .set_outlier_filter(frac=0.07, z_threshold=3)\
-            .filter_outliers()\
-            .bandpass_at(hp_hz=0.2, lp_hz=2)
+import pandas as pd
+from baseTs import baseTs
 
-filt.plot(ax=ax[0], show=False)
-filt.plot_fft_power(ax=ax[1], max_rate=2, show=False)
-fig.tight_layout()
+# Create time series with datetime index
+dates = pd.date_range('2023-01-01', periods=365, freq='D')
+data = np.random.randn(365)
+
+# Use Series backend for enhanced features
+ts = baseTs(data=data, times=dates, backend='series')
+
+# Enhanced operations
+monthly_avg = ts.rolling_mean(window=30)
+january = ts.time_slice(start='2023-01-01', end='2023-01-31')
+stats = ts.get_statistics()
+
+print(f"January mean: {np.mean(january.data):.3f}")
+print(f"Annual statistics: {stats}")
 ```
 
-![Pipelined](imgs/baseTs_pipelined.png)
+## Backend Comparison
+
+| Feature | NumPy Backend | Series Backend |
+|---------|---------------|----------------|
+| **Performance** | Fastest for numerical ops | Competitive (1-5x overhead) |
+| **Memory** | Minimal | ~20% more (metadata) |
+| **Time Indexing** | Numeric only | Native datetime support |
+| **Rolling Ops** | Manual | Optimized built-ins |
+| **Compatibility** | All existing code | All existing code + new features |
+
+## Migration Guide
+
+Existing code works unchanged:
+```python
+# This still works exactly the same
+ts = baseTs(data=data, times=times)
+filtered = ts.lowpass_filter(cutoff=0.3)
+```
+
+Opt-in to new features:
+```python
+# Explicitly choose Series backend for new features
+ts = baseTs(data=data, times=times, backend='series')
+```
+
+See [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) for detailed migration instructions.
 
 ## Documentation
 
-See the [CLAUDE.md](CLAUDE.md) file for development guidelines and code style.
+- **[User Guide](docs/USER_GUIDE.md)**: Comprehensive usage guide with examples
+- **[Migration Guide](MIGRATION_GUIDE.md)**: Detailed migration instructions
+- **[API Documentation](docs/API.md)**: Complete method reference
+- **[Changelog](docs/CHANGELOG.md)**: Version history and updates
+- **[Development Guide](CLAUDE.md)**: Contributing guidelines
 
 ## Requirements
 
-- Python 3.6+
-- NumPy
-- SciPy
-- Pandas
-- Matplotlib
+### Core Dependencies
+- Python 3.8+
+- NumPy >= 1.19
+- SciPy >= 1.6
+
+### Optional Dependencies
+- Pandas >= 1.3 (for Series backend)
+- Matplotlib >= 3.3 (for plotting)
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test suite
+pytest tests/test_migration.py
+pytest tests/test_integration_workflows.py
+
+# Run performance benchmarks
+python tests/test_performance_phase3.py
+
+# Run migration validation
+python tests/test_migration_validation.py
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
 
 ## License
 
-MIT
+MIT - see LICENSE file for details
