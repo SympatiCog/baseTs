@@ -133,7 +133,7 @@ def plot(ts,
          title: Optional[str] = None,
          xlabel: Optional[str] = None,
          ylabel: Optional[str] = None, 
-         show: bool = True,
+         show: bool = False,
          lowess: bool = False,
          start_idx: int = 0,
          end_idx: int = -1) -> plt.Axes: 
@@ -172,7 +172,7 @@ def plot_series(base_ts,
                 title: Optional[str] = None,
                 xlabel: Optional[str] = None,
                 ylabel: Optional[str] = None, 
-                show: bool = True,
+                show: bool = False,
                 start_idx: int = 0,
                 end_idx: int = -1) -> plt.Axes: 
     """

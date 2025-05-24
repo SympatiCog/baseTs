@@ -132,18 +132,20 @@ def compute_fft_power(
 
     return freqs, power
 
-def get_peak_freq(ts: Any) -> float:
+def get_peak_freq(ts: Any, num_pks: int = 1) -> List[float]:
     """
-    Get the peak frequency of the time series.
+    Get the top peak frequencies of the time series.
 
     Args:
         ts: Time series object with data and freq attributes
+        num_pks: Number of top peak frequencies to return
 
     Returns:
-        Peak frequency in Hz
+        List of top peak frequencies in Hz
     """
     freq, power = compute_fft_power(ts)
-    return freq[np.argmax(power)]
+    peak_indices = np.argsort(power)[-num_pks:][::-1]  # Get indices of top num_pks peaks
+    return freq[peak_indices].tolist()
 
 def get_peaks(
     ts: Any,

@@ -115,7 +115,8 @@ class baseTs(ArrayCompatMixin):
                  history: list = None,
                  last_process: str = "",
                  use_series: bool = None,
-                 backend: str = None):
+                 backend: str = None,
+                 ):
         
         """
         Initialize the baseTs object with dual backend support.
@@ -229,6 +230,8 @@ class baseTs(ArrayCompatMixin):
         self._series.lowess_fit = lowess_fit
         self._series.last_process = last_process
         self._series.history = history
+        # self.last_process = last_process
+
         
         # Handle timestamp offset
         if ts_offset is not np.nan:
@@ -394,6 +397,23 @@ class baseTs(ArrayCompatMixin):
             self._series.history = value
         else:
             self._history = value
+
+    @property
+    def last_process(self) -> str:
+        """Get last process."""
+        if self._backend == 'series':
+            return self._series.last_process
+        else:
+            return getattr(self, '_last_process', "")
+        
+    @last_process.setter
+    def last_process(self, value: str):
+        """Set last process."""
+        if self._backend == 'series':
+            self._series.last_process = value
+        else:
+            self._last_process = value
+            
 
     def _get_metadata_attr(self, attr_name, default=None):
         """Helper to get metadata attributes from appropriate backend."""
@@ -1291,6 +1311,40 @@ class baseTs(ArrayCompatMixin):
             )
             return new_obj
 
+    def rolling_std(self, window: int, center: bool = True, inplace: bool = False) -> "baseTs":
+        """
+        Apply a rolling standard deviation to the data.
+        """
+        if self._backend == 'series':
+            rolling_result = self._series.rolling(window, center=center).std()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = rolling_result[valid_mask].index.values
+        else:
+            # Fallback for numpy backend
+            import pandas as pd
+            temp_series = pd.Series(self.data)
+            rolling_result = temp_series.rolling(window, center=center).std()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = self.times[valid_mask]
+
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Applied rolling standard deviation with window={window}",
+                f"_rolling_std_{window}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)   
+            new_obj._update_history_and_process(
+                f"Applied rolling standard deviation with window={window}",
+                f"_rolling_std_{window}"
+            )
+            return new_obj
+
     def time_slice(self, start_time: float = None, end_time: float = None, 
                   inplace: bool = False) -> "baseTs":
         """
@@ -1392,12 +1446,12 @@ class baseTs(ArrayCompatMixin):
         """
         return find_closest_time(self, sec)
 
-    def get_peak_freq(self) -> float:
+    def get_peak_freq(self, num_pks: int = 1) -> float:
         """
         Compute the peak frequency of the timeseries.
         Returns the frequency of the peak power.
         """
-        pk_freq = get_peak_freq(self)  
+        pk_freq = get_peak_freq(self, num_pks=num_pks)  
         return pk_freq
 
     def get_peaks(self, min_dist_secs: float = 1.0, min_height: float = None) -> list:
@@ -1415,7 +1469,7 @@ class baseTs(ArrayCompatMixin):
              xlabel: str = None,
              ylabel: str = None,
              lowess: bool = False,
-             show: bool = True) -> plt.Axes:
+             show: bool = False) -> plt.Axes:
         """
         Plot the timeseries as a line plot.
         Quick and dirty visualization.
@@ -1447,7 +1501,7 @@ class baseTs(ArrayCompatMixin):
                     ylabel: str = None, 
                     start_idx: int = 0,
                     end_idx: int = -1,
-                    show: bool = True) -> plt.Axes:
+                    show: bool = False) -> plt.Axes:
         """
         Plot this timeseries against one or more other timeseries.
         e.g. for QC, comparing filtering methods, or multiple participants.
@@ -1469,7 +1523,7 @@ class baseTs(ArrayCompatMixin):
                   ax = None,
                   title: str = None,
                   xlabel: str = None,
-                  show: bool = True,
+                  show: bool = False,
                   bins: int = -1,
                   kde: bool = False) -> plt.Axes:
         """
