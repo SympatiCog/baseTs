@@ -51,10 +51,10 @@ def diff(ts: Any, zeropad: bool = False) -> Any:
 def dediff(ts: Any) -> Any:
     """Dediff a time series."""
     from .core import baseTs
-    x = ts.data.copy()
+    # x = ts.data.copy()
     t = ts.times.copy()
-    res = np.cumsum(x)
-    res = baseTs(data=res, times=t)
+    cs = np.cumsum(ts.data)
+    res = baseTs(data=cs, times=t)
     return(res)
 
 class TimeSeriesError(Exception):   
