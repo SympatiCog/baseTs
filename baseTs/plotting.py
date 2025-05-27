@@ -298,7 +298,7 @@ def lag_plot(ts,
     
     _, ax = setup_plot(ax=ax, title=title, xlabel=xlabel, ylabel=ylabel, show=False)
     
-    ax.scatter(ts[lag_idx:], lagged_data[lag_idx:], s=3)  # Skip the NaN values for plotting
+    ax.scatter(ts.data[lag_idx:], lagged_data[lag_idx:], s=3)  # Skip the NaN values for plotting
     
     if show:
         plt.show()

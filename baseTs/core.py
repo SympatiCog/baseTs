@@ -11,11 +11,11 @@ import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Union
 
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
-from .LowessOutlierFilter import LowessOutlierFilter
+from .LowessOutlierFilter import LowessOutlierFilter, TailType
 from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch, diff, dediff
 from .compat import BackendManager, ArrayCompatMixin, convert_to_series, validate_time_index
 # from .plotting import qc_plot, hist, plot
@@ -1017,7 +1017,9 @@ class baseTs(ArrayCompatMixin):
                         max_iterations: int = 10,
                         interpolation_method: str = 'linear',
                         order: int = 2,
-                        use_median: bool = True) -> "baseTs":
+                        use_median: bool = True,
+                        tails: Union[str, TailType] = TailType.BOTH,
+                        num_fits: int = 25) -> "baseTs":
         """
         Set outlier filter parameters.
         
@@ -1026,7 +1028,7 @@ class baseTs(ArrayCompatMixin):
         params : dict, optional
             Dictionary of parameter values. If provided, overrides individual parameters.
             Valid keys are: 'z_threshold', 'frac', 'max_iterations', 'interpolation_method',
-            'order', 'use_median'
+            'order', 'use_median', 'tails', 'num_fits'
         z_threshold : float, default=7
             Z-score threshold for outlier detection
         frac : float, default=0.075
@@ -1039,6 +1041,11 @@ class baseTs(ArrayCompatMixin):
             Order of the interpolation
         use_median : bool, default=True
             Whether to use median instead of mean for calculations
+        tails : Union[str, TailType], default=TailType.BOTH
+            Which tails to process for outlier detection. Can be 'BOTH', 'UPPER', 'LOWER',
+            or a TailType enum member.
+        num_fits : int, default=25
+            Number of LOWESS fits to perform.
         
         Returns
         -------
@@ -1058,7 +1065,9 @@ class baseTs(ArrayCompatMixin):
                 'max_iterations': int,
                 'interpolation_method': str,
                 'order': int,
-                'use_median': bool
+                'use_median': bool,
+                'tails': (str, TailType),
+                'num_fits': int
             }
             
             # Validate and set parameters from dictionary
@@ -1066,22 +1075,38 @@ class baseTs(ArrayCompatMixin):
                 if param_name in params:
                     value = params[param_name]
                     # Type checking
-                    if not isinstance(value, param_type):
+                    if param_name == 'tails':
+                        if isinstance(value, str):
+                            try:
+                                value = TailType[value.upper()]
+                            except KeyError:
+                                raise ValueError(f"Invalid string value for tails: {value}. Must be 'BOTH', 'UPPER', or 'LOWER'.")
+                        elif not isinstance(value, TailType):
+                             raise ValueError(f"Invalid type for tails. Expected str or TailType, got {type(value)}.")
+                    elif not isinstance(value, param_type):
                         try:
                             value = param_type(value)
                         except ValueError:
                             raise ValueError(f"Invalid type for {param_name}. Expected {param_type.__name__}")
-                    setattr(self.outlier_filter, param_name, value)
+                    setattr(self.outlier_filter.config, param_name, value)
         else:
             # Use individual parameters
-            self.outlier_filter.z_threshold = z_threshold
-            self.outlier_filter.max_iterations = max_iterations
-            self.outlier_filter.frac = frac
-            self.outlier_filter.interpolation_method = interpolation_method
-            self.outlier_filter.order = order
-            self.outlier_filter.use_median = use_median
+            self.outlier_filter.config.z_threshold = z_threshold
+            self.outlier_filter.config.max_iterations = max_iterations
+            self.outlier_filter.config.frac = frac
+            self.outlier_filter.config.interpolation_method = interpolation_method
+            self.outlier_filter.config.order = order
+            self.outlier_filter.config.use_median = use_median
+            if isinstance(tails, str):
+                try:
+                    self.outlier_filter.config.tails = TailType[tails.upper()]
+                except KeyError:
+                    raise ValueError(f"Invalid string value for tails: {tails}. Must be 'BOTH', 'UPPER', or 'LOWER'.")
+            else: # it's already a TailType enum
+                self.outlier_filter.config.tails = tails
+            self.outlier_filter.config.num_fits = num_fits
         
-        hist_msg = f"Set new outlier filter parameters: {self.outlier_filter.__dict__}"
+        hist_msg = f"Set new outlier filter parameters: {self.outlier_filter.config.__dict__}"
         last_process = "_outfilt_params"
         
         self.is_outlier_filtered = True
@@ -1095,7 +1120,7 @@ class baseTs(ArrayCompatMixin):
         Get outlier filter parameters.
             returns a dictionary of the parameters.
         """
-        return self.outlier_filter.__dict__
+        return self.outlier_filter.config.__dict__
         
     def filter_outliers(self,
                         inplace: bool = False,
@@ -1117,7 +1142,7 @@ class baseTs(ArrayCompatMixin):
         from .plotting import qc_plot
         
         filt, idx, lowess_fit = self.outlier_filter.filter(self, return_lowess=True)
-        hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.__dict__}"
+        hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.config.__dict__}"
         last_process = "_outfilt"
                    
         if inplace is True:
@@ -1344,7 +1369,109 @@ class baseTs(ArrayCompatMixin):
                 f"_rolling_std_{window}"
             )
             return new_obj
+        
+    def rolling_median(self, window: int, center: bool = True, inplace: bool = False) -> "baseTs":
+        """
+        Apply a rolling median to the data.
+        """
+        if self._backend == 'series':
+            rolling_result = self._series.rolling(window, center=center).median()
+            valid_mask = ~rolling_result.isna() 
+            new_data = rolling_result[valid_mask].values
+            new_times = rolling_result[valid_mask].index.values
+        else:
+            # Fallback for numpy backend
+            import pandas as pd
+            temp_series = pd.Series(self.data)  
+            rolling_result = temp_series.rolling(window, center=center).median()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = self.times[valid_mask]
 
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Applied rolling median with window={window}",
+                f"_rolling_median_{window}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)   
+            new_obj._update_history_and_process(
+                f"Applied rolling median with window={window}",
+                f"_rolling_median_{window}"
+            )
+            return new_obj
+        
+    def rolling_max(self, window: int, center: bool = True, inplace: bool = False) -> "baseTs":
+        """
+        Apply a rolling maximum to the data.
+        """
+        if self._backend == 'series':
+            rolling_result = self._series.rolling(window, center=center).max()
+            valid_mask = ~rolling_result.isna() 
+            new_data = rolling_result[valid_mask].values
+            new_times = rolling_result[valid_mask].index.values
+        else:
+            # Fallback for numpy backend
+            import pandas as pd
+            temp_series = pd.Series(self.data)      
+            rolling_result = temp_series.rolling(window, center=center).max()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = self.times[valid_mask]
+
+        if inplace: 
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Applied rolling maximum with window={window}",
+                f"_rolling_max_{window}"
+            )   
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)   
+            new_obj._update_history_and_process(
+                f"Applied rolling maximum with window={window}",
+                f"_rolling_max_{window}"
+            )
+            return new_obj
+        
+    def rolling_min(self, window: int, center: bool = True, inplace: bool = False) -> "baseTs":
+        """
+        Apply a rolling minimum to the data.    
+        """
+        if self._backend == 'series':
+            rolling_result = self._series.rolling(window, center=center).min()
+            valid_mask = ~rolling_result.isna() 
+            new_data = rolling_result[valid_mask].values
+            new_times = rolling_result[valid_mask].index.values
+        else:
+            # Fallback for numpy backend
+            import pandas as pd
+            temp_series = pd.Series(self.data)      
+            rolling_result = temp_series.rolling(window, center=center).min()
+            valid_mask = ~rolling_result.isna()
+            new_data = rolling_result[valid_mask].values
+            new_times = self.times[valid_mask]
+
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Applied rolling minimum with window={window}",
+                f"_rolling_min_{window}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)       
+            new_obj._update_history_and_process(
+                f"Applied rolling minimum with window={window}",
+                f"_rolling_min_{window}"
+            )
+            return new_obj
+        
     def time_slice(self, start_time: float = None, end_time: float = None, 
                   inplace: bool = False) -> "baseTs":
         """
@@ -1577,6 +1704,14 @@ class baseTs(ArrayCompatMixin):
                         show=show,
                         demean=demean,
                         scale_power=scale_power)
+    
+    def lag_plot(self, lag: Union[int, float], lag_unit: str = "index", ax: Optional[plt.Axes] = None, show: bool = False) -> plt.Axes:
+        """
+        Plot a lag plot of the timeseries.
+        """
+        # Import plotting here to avoid circular imports
+        from .plotting import lag_plot  
+        return lag_plot(self, lag=lag, lag_unit=lag_unit, ax=ax, show=show)
 
     def copy(self) -> "baseTs":
         """
@@ -1682,7 +1817,8 @@ class baseTs(ArrayCompatMixin):
         def detrend_func(data):
             lowess_fit = self.set_outlier_filter(frac=frac)
             self.filter_outliers(inplace=True)
-            return data - lowess_fit, lowess_fit
+            # STANEDIT
+            return data - self.lowess_fit, self.lowess_fit
             
         def process_result(result):
             data, lowess_fit = result

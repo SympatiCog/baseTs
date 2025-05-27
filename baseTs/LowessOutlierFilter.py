@@ -30,7 +30,7 @@ class TailType(Enum):
 @dataclass
 class FilterConfig:
     """Configuration parameters for the LowessOutlierFilter."""
-    z_threshold: float = 7.0
+    z_threshold: float = 3.0
     max_iterations: int = 5
     frac: float = 0.075
     tails: TailType = TailType.BOTH
