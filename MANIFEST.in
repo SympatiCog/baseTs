@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include requirements.txt
+include MIGRATION_GUIDE.md
+recursive-include docs *.md
+recursive-include baseTs *.py
+include baseTs/version.py
+exclude tests/*
+exclude .git*
+exclude *.pyc
