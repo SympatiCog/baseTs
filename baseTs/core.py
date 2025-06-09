@@ -88,14 +88,12 @@ class baseTs(TimeSeriesData):
     """
     Basic data class to hold a timeseries and data.
     
-    Now supports dual backends: numpy arrays (legacy) and pandas Series (new).
+    Built on pandas Series foundation for optimal time-series analysis.
     
     Args:
         data (np.array): The actual observational data.
         times (np.array): The timestamps corresponding to the data.
         freq (float, optional): The frequency of data collection. Defaults to np.nan.
-        use_series (bool, optional): Use pandas Series backend. Defaults to False.
-        backend (str, optional): Explicit backend choice ('numpy' or 'series').
 
     """
 

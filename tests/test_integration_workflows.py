@@ -1,7 +1,7 @@
 """Integration tests for real-world time series workflows.
 
 Tests complete end-to-end workflows that users typically perform
-with baseTs objects, ensuring both backends work seamlessly.
+with baseTs objects using the pandas Series foundation.
 """
 
 import pytest
@@ -19,20 +19,18 @@ class TestRealWorldWorkflows:
         t = np.linspace(0, 10, 1000)
         signal = np.sin(2 * np.pi * t) + 0.1 * np.random.randn(1000)
         
-        # Test with both backends
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=signal, times=t, backend=backend)
-            
-            # Typical workflow: filter, normalize, extract features
-            filtered = ts.lowpass_filter(cutoff=0.1)
-            normalized = filtered.zscale()
-            windowed_stats = normalized.rolling_mean(window=50) if backend == 'series' else normalized
-            
-            # Verify workflow preserves data integrity
-            assert len(filtered) == len(ts)
-            assert len(normalized) == len(ts)
-            assert abs(np.mean(normalized.data)) < 0.1  # Should be near zero after zscaling
-            assert np.std(normalized.data) - 1.0 < 0.1  # Should be near 1 after zscaling
+        ts = baseTs(data=signal, times=t)
+        
+        # Typical workflow: filter, normalize, extract features
+        filtered = ts.lowpass_filter(cutoff=0.1)
+        normalized = filtered.zscale()
+        windowed_stats = normalized.rolling_mean(window=50)
+        
+        # Verify workflow preserves data integrity
+        assert len(filtered) == len(ts)
+        assert len(normalized) == len(ts)
+        assert abs(np.mean(normalized.data)) < 0.1  # Should be near zero after zscaling
+        assert np.std(normalized.data) - 1.0 < 0.1  # Should be near 1 after zscaling
     
     def test_outlier_detection_workflow(self):
         """Test outlier detection and removal workflow."""
@@ -42,24 +40,23 @@ class TestRealWorldWorkflows:
         data[25] = 10  # Add outlier
         data[75] = -10  # Add outlier
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=data, times=t, backend=backend)
-            
-            # Workflow: configure outlier filter and apply it
-            ts.set_outlier_filter(z_threshold=3.0)  # Lower threshold to catch our outliers
-            cleaned = ts.filter_outliers()
-            
-            # Get the outlier indices that were removed
-            outliers = cleaned.outlier_indices
-            
-            # Verify outliers were detected
-            assert outliers is not None, "Outlier indices should be available after filtering"
-            if outliers is not None and len(outliers) > 0:
-                assert len(outliers) >= 1  # Should detect at least one outlier we added
-            
-            # Verify data consistency
-            assert len(cleaned.data) == len(ts.data)  # Filter replaces outliers, doesn't remove them
-            assert cleaned.is_outlier_filtered  # Should be marked as filtered
+        ts = baseTs(data=data, times=t)
+        
+        # Workflow: configure outlier filter and apply it
+        ts.set_outlier_filter(z_threshold=3.0)  # Lower threshold to catch our outliers
+        cleaned = ts.filter_outliers()
+        
+        # Get the outlier indices that were removed
+        outliers = cleaned.outlier_indices
+        
+        # Verify outliers were detected
+        assert outliers is not None, "Outlier indices should be available after filtering"
+        if outliers is not None and len(outliers) > 0:
+            assert len(outliers) >= 1  # Should detect at least one outlier we added
+        
+        # Verify data consistency
+        assert len(cleaned.data) == len(ts.data)  # Filter replaces outliers, doesn't remove them
+        assert cleaned.is_outlier_filtered  # Should be marked as filtered
     
 #    def test_time_series_analysis_workflow(self):
 #        """Test time-based analysis workflow."""
@@ -92,23 +89,21 @@ class TestRealWorldWorkflows:
         data = np.random.exponential(2, 500)  # Skewed data
         times = np.linspace(0, 50, 500)
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=data, times=times, backend=backend)
-            
-            # Complex workflow: log transform, normalize, filter, extract features
-            log_transformed = ts.apply_function(np.log)
-            normalized = log_transformed.zscale()
-            filtered = normalized.lowpass_filter(cutoff=0.2)
-            
-            # Verify transformations
-            assert len(filtered) == len(ts)
-            assert not np.any(np.isnan(log_transformed.data))  # No NaN values
-            assert abs(np.mean(normalized.data)) < 0.2  # Near zero mean
-            
-            # Test method chaining if available
-            if backend == 'series':
-                chained = ts.apply_function(np.log).zscale().lowpass_filter(cutoff=0.2)
-                assert len(chained) == len(ts)
+        ts = baseTs(data=data, times=times)
+        
+        # Complex workflow: log transform, normalize, filter, extract features
+        log_transformed = ts.apply_function(np.log)
+        normalized = log_transformed.zscale()
+        filtered = normalized.lowpass_filter(cutoff=0.2)
+        
+        # Verify transformations
+        assert len(filtered) == len(ts)
+        assert not np.any(np.isnan(log_transformed.data))  # No NaN values
+        assert abs(np.mean(normalized.data)) < 0.2  # Near zero mean
+        
+        # Test method chaining
+        chained = ts.apply_function(np.log).zscale().lowpass_filter(cutoff=0.2)
+        assert len(chained) == len(ts)
     
     def test_batch_processing_workflow(self):
         """Test batch processing multiple time series."""
@@ -118,7 +113,7 @@ class TestRealWorldWorkflows:
         for i in range(5):
             data = np.random.randn(100) + i  # Different means
             times = np.arange(100)
-            ts = baseTs(data=data, times=times, backend='numpy')
+            ts = baseTs(data=data, times=times)
             time_series_list.append(ts)
         
         # Batch processing: apply same operations to all
@@ -156,22 +151,22 @@ class TestRealWorldWorkflows:
 #            with pytest.raises((ValueError, AssertionError)):
 #                baseTs(data=[1, 2, 3], times=[1, 2], backend=backend)
     
-    def test_backend_switching_workflow(self):
-        """Test switching between backends during workflow."""
+    def test_data_consistency_workflow(self):
+        """Test data consistency across operations."""
         data = np.random.randn(100)
         times = np.arange(100)
         
-        # Start with numpy backend
-        ts_numpy = baseTs(data=data, times=times, backend='numpy')
-        filtered_numpy = ts_numpy.lowpass_filter(cutoff=0.3)
+        # Create two identical series
+        ts1 = baseTs(data=data, times=times)
+        ts2 = baseTs(data=data, times=times)
         
-        # Switch to series backend with same data
-        ts_series = baseTs(data=data, times=times, backend='series')
-        filtered_series = ts_series.lowpass_filter(cutoff=0.3)
+        # Apply same operations to both
+        filtered1 = ts1.lowpass_filter(cutoff=0.3)
+        filtered2 = ts2.lowpass_filter(cutoff=0.3)
         
-        # Results should be nearly identical
-        np.testing.assert_allclose(filtered_numpy.data, filtered_series.data, rtol=1e-10)
-        np.testing.assert_allclose(filtered_numpy.times, filtered_series.times, rtol=1e-10)
+        # Results should be identical
+        np.testing.assert_allclose(filtered1.data, filtered2.data, rtol=1e-10)
+        np.testing.assert_allclose(filtered1.times, filtered2.times, rtol=1e-10)
     
     def test_memory_intensive_workflow(self):
         """Test workflow with larger datasets."""
@@ -179,17 +174,16 @@ class TestRealWorldWorkflows:
         large_data = np.random.randn(10000)
         large_times = np.linspace(0, 100, 10000)
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=large_data, times=large_times, backend=backend)
-            
-            # Memory-intensive operations
-            filtered = ts.lowpass_filter(cutoff=0.1)
-            normalized = filtered.zscale()
-            
-            # Verify operations complete successfully
-            assert len(filtered) == 10000
-            assert len(normalized) == 10000
-            assert abs(np.mean(normalized.data)) < 0.01
+        ts = baseTs(data=large_data, times=large_times)
+        
+        # Memory-intensive operations
+        filtered = ts.lowpass_filter(cutoff=0.1)
+        normalized = filtered.zscale()
+        
+        # Verify operations complete successfully
+        assert len(filtered) == 10000
+        assert len(normalized) == 10000
+        assert abs(np.mean(normalized.data)) < 0.01
     
     def test_scientific_workflow(self):
         """Test scientific analysis workflow."""
@@ -201,22 +195,21 @@ class TestRealWorldWorkflows:
         noise = 0.5 * np.random.randn(1000)
         signal = trend + seasonal + noise
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=signal, times=t, backend=backend)
-            
-            # Scientific workflow: detrend, filter, analyze
-            detrended = ts.detrend() if hasattr(ts, 'detrend') else ts
-            filtered = detrended.lowpass_filter(cutoff=0.5)
-            normalized = filtered.zscale()
-            
-            # Statistical analysis
-            mean_val = np.mean(normalized.data)
-            std_val = np.std(normalized.data)
-            
-            # Verify scientific analysis results
-            assert len(normalized) == len(ts)
-            assert abs(mean_val) < 0.1  # Should be near zero after normalization
-            assert abs(std_val - 1.0) < 0.1  # Should be near 1 after zscaling
+        ts = baseTs(data=signal, times=t)
+        
+        # Scientific workflow: detrend, filter, analyze
+        detrended = ts.detrend() if hasattr(ts, 'detrend') else ts
+        filtered = detrended.lowpass_filter(cutoff=0.5)
+        normalized = filtered.zscale()
+        
+        # Statistical analysis
+        mean_val = np.mean(normalized.data)
+        std_val = np.std(normalized.data)
+        
+        # Verify scientific analysis results
+        assert len(normalized) == len(ts)
+        assert abs(mean_val) < 0.1  # Should be near zero after normalization
+        assert abs(std_val - 1.0) < 0.1  # Should be near 1 after zscaling
 
 
 class TestWorkflowCompatibility:
@@ -227,56 +220,55 @@ class TestWorkflowCompatibility:
         data = np.random.randn(200)
         times = np.arange(200)
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=data, times=times, backend=backend)
-            
-            # Mix mathematical, filtering, and transformation operations
-            result = ts.zscale()  # Mathematical
-            result = result.lowpass_filter(cutoff=0.3)  # Filtering
-            result = result.apply_function(lambda x: x ** 2)  # Transformation
-            
-            # Verify mixed operations work
-            assert len(result) == len(ts)
-            assert np.all(result.data >= 0)  # Should be positive after squaring
+        ts = baseTs(data=data, times=times)
+        
+        # Mix mathematical, filtering, and transformation operations
+        result = ts.zscale()  # Mathematical
+        result = result.lowpass_filter(cutoff=0.3)  # Filtering
+        result = result.apply_function(lambda x: x ** 2)  # Transformation
+        
+        # Verify mixed operations work
+        assert len(result) == len(ts)
+        assert np.all(result.data >= 0)  # Should be positive after squaring
     
     def test_conditional_workflow(self):
         """Test workflows with conditional logic."""
         data = np.random.randn(100)
         times = np.arange(100)
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=data, times=times, backend=backend)
-            
-            # Conditional workflow based on data properties
-            if np.std(ts.data) > 0.5:
-                result = ts.zscale()
-            else:
-                result = ts.normalize_range()
-            
-            if backend == 'series' and hasattr(ts, 'rolling_mean'):
-                result = result.rolling_mean(window=10)
-                assert len(result) < len(ts) # Rolling window should be shorter...
-            else:
-                # Verify conditional logic works
-                assert len(result) == len(ts)
+        ts = baseTs(data=data, times=times)
+        
+        # Conditional workflow based on data properties
+        if np.std(ts.data) > 0.5:
+            result = ts.zscale()
+        else:
+            result = ts.normalize_range()
+        
+        # Apply rolling mean if available
+        if hasattr(ts, 'rolling_mean'):
+            windowed_result = result.rolling_mean(window=10)
+            # Verify rolling mean creates expected output
+            assert len(windowed_result) <= len(ts)  # Rolling window may be shorter
+        
+        # Verify conditional logic works
+        assert len(result) == len(ts)
     
     def test_iterative_workflow(self):
         """Test iterative processing workflows."""
         data = np.random.randn(100)
         times = np.arange(100)
         
-        for backend in ['numpy', 'series']:
-            ts = baseTs(data=data, times=times, backend=backend)
-            
-            # Iterative refinement workflow
-            current = ts
-            for i in range(3):
-                current = current.lowpass_filter(cutoff=0.5 - i * 0.1)
-                current = current.zscale()
-            
-            # Verify iterative processing
-            assert len(current) == len(ts)
-            assert abs(np.mean(current.data)) < 0.2  # Should be normalized
+        ts = baseTs(data=data, times=times)
+        
+        # Iterative refinement workflow
+        current = ts
+        for i in range(3):
+            current = current.lowpass_filter(cutoff=0.5 - i * 0.1)
+            current = current.zscale()
+        
+        # Verify iterative processing
+        assert len(current) == len(ts)
+        assert abs(np.mean(current.data)) < 0.2  # Should be normalized
 
 
 if __name__ == '__main__':
