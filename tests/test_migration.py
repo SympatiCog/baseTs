@@ -38,7 +38,7 @@ class TestTimeSeriesDataBasics:
         """Test TimeSeriesData creation from baseTs object."""
         data, times = sample_data
         base_ts = baseTs(data, times, signal_name="test_signal", freq=10.0)
-        ts_data = TimeSeriesData(base_ts)
+        ts_data = TimeSeriesData(base_ts, signal_name="test_signal")
         
         assert len(ts_data) == len(data)
         assert ts_data.signal_name == "TEST_SIGNAL"  # Should be uppercase

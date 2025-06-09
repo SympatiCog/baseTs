@@ -109,7 +109,7 @@ class baseTs(ArrayCompatMixin):
                  is_uniform_grid: bool = False,
                  is_outlier_filtered: bool = False,
                  has_timestamp_offset: bool = False,
-                 filtered_indices: np.array = None,
+                 outlier_indices: np.array = None,
                  lowess_fit: np.array = None,
                  signal_name: str = "",
                  history: list = None,
@@ -137,18 +137,18 @@ class baseTs(ArrayCompatMixin):
             self._init_series_backend(
                 data, times, freq, ts_offset, is_filtered, is_interpolated,
                 is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
-                filtered_indices, lowess_fit, signal_name, history, last_process
+                outlier_indices, lowess_fit, signal_name, history, last_process
             )
         else:
             self._init_numpy_backend(
                 data, times, freq, ts_offset, is_filtered, is_interpolated,
                 is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
-                filtered_indices, lowess_fit, signal_name, history, last_process
+                outlier_indices, lowess_fit, signal_name, history, last_process
             )
 
     def _init_numpy_backend(self, data, times, freq, ts_offset, is_filtered,
                            is_interpolated, is_uniform_grid, is_outlier_filtered,
-                           has_timestamp_offset, filtered_indices, lowess_fit,
+                           has_timestamp_offset, outlier_indices, lowess_fit,
                            signal_name, history, last_process):
         """Initialize with legacy numpy backend."""
         self._data = data
@@ -158,7 +158,7 @@ class baseTs(ArrayCompatMixin):
         self.is_uniform_grid = is_uniform_grid
         self.is_outlier_filtered = is_outlier_filtered
         self.has_timestamp_offset = has_timestamp_offset
-        self.filtered_indices = filtered_indices
+        self.outlier_indices = outlier_indices
         self.lowess_fit = lowess_fit
         
         if ts_offset is not np.nan:  # if ts_offset is provided, set it and flag as having offset
@@ -187,14 +187,19 @@ class baseTs(ArrayCompatMixin):
             self.freq = freq
         else:
             # Use effective sample rate
-            self.freq = self.len() / self.duration()
+            duration = self.duration()
+            if duration > 0:
+                self.freq = self.len() / duration
+            else:
+                # For single point or zero duration, use default frequency
+                self.freq = 1.0
 
         # instantiate outlier filter w/ default parameters
         self.outlier_filter = LowessOutlierFilter()
 
     def _init_series_backend(self, data, times, freq, ts_offset, is_filtered,
                             is_interpolated, is_uniform_grid, is_outlier_filtered,
-                            has_timestamp_offset, filtered_indices, lowess_fit,
+                            has_timestamp_offset, outlier_indices, lowess_fit,
                             signal_name, history, last_process):
         """Initialize with pandas Series backend."""
         from .series import TimeSeriesData
@@ -226,7 +231,7 @@ class baseTs(ArrayCompatMixin):
         self._series.is_uniform_grid = is_uniform_grid
         self._series.is_outlier_filtered = is_outlier_filtered
         self._series.has_timestamp_offset = has_timestamp_offset
-        self._series.filtered_indices = filtered_indices
+        self._series.outlier_indices = outlier_indices
         self._series.lowess_fit = lowess_fit
         self._series.last_process = last_process
         self._series.history = history
@@ -496,7 +501,7 @@ class baseTs(ArrayCompatMixin):
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
-                            'filtered_indices', 'lowess_fit', 'last_process']
+                            'outlier_indices', 'lowess_fit', 'last_process']
             
             for attr in metadata_attrs:
                 if hasattr(self, attr):
@@ -566,6 +571,15 @@ class baseTs(ArrayCompatMixin):
         """
         return len(self.data)
     
+    def __len__(self) -> int:
+        """
+        Python's built-in len() function support.
+
+        Returns:
+            int: Length of the data
+        """
+        return len(self.data)
+    
     def zscale(self, inplace: bool = False) -> "baseTs":
         """
         Z-scale the data (zero mean, unit variance).
@@ -577,7 +591,12 @@ class baseTs(ArrayCompatMixin):
             Z-scaled baseTs object
         """
         def zscale_func(data):
-            return (data - data.mean()) / data.std()
+            mean = data.mean()
+            std = data.std()
+            if std == 0:
+                # For constant data, return zeros (centered around mean)
+                return np.zeros_like(data)
+            return (data - mean) / std
 
         return self._enhanced_process_with_flags(
             func=zscale_func,
@@ -925,6 +944,23 @@ class baseTs(ArrayCompatMixin):
             is_filtered=True
         )
 
+    def lowpass_filter(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
+        """
+        Apply a lowpass filter to the data.
+        
+        Args:
+            cutoff: Lowpass cutoff frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Lowpass filtered baseTs object
+        """
+        
+        return self.lowpass_at(cutoff, order, inplace)
+        
+
+
     def gauss_filter(self, sigma: float = 1, inplace: bool = False) -> "baseTs":
         """
         Apply a Gaussian filter to the data.
@@ -1153,7 +1189,7 @@ class baseTs(ArrayCompatMixin):
             self.history.append(hist_msg)
             self.last_process = last_process
             self.lowess_fit = lowess_fit
-            self.filtered_indices = idx
+            self.outlier_indices = idx
             result = self 
         else:
             newTs = self.copy()
@@ -1164,7 +1200,7 @@ class baseTs(ArrayCompatMixin):
             newTs.last_process = last_process
             newTs.is_outlier_filtered = True
             newTs.lowess_fit = lowess_fit
-            newTs.filtered_indices = idx
+            newTs.outlier_indices = idx
             result = newTs
         
         if qcplot:
@@ -1722,7 +1758,7 @@ class baseTs(ArrayCompatMixin):
         """
         return copy.deepcopy(self)
 
-    def apply(self, func, *args, inplace=False, **kwargs) -> "baseTs":
+    def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
         """
         Applies a user-provided function to the data vector.
         Note: the times vector is not modified.
