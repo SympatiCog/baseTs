@@ -17,7 +17,7 @@ from typing import Optional, TYPE_CHECKING, Union
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .LowessOutlierFilter import LowessOutlierFilter, TailType
 from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch, diff, dediff
-from .compat import BackendManager, ArrayCompatMixin, convert_to_series, validate_time_index
+from .series import TimeSeriesData
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -84,7 +84,7 @@ def from_df(df: pd.DataFrame,
     return ts
 
 
-class baseTs(ArrayCompatMixin):
+class baseTs(TimeSeriesData):
     """
     Basic data class to hold a timeseries and data.
     
@@ -101,7 +101,7 @@ class baseTs(ArrayCompatMixin):
 
     def __init__(self,
                  data: np.array,
-                 times: np.array=None,
+                 times: np.array = None,
                  freq: float = np.nan,
                  ts_offset: float = np.nan,
                  is_filtered: bool = False,
@@ -113,46 +113,27 @@ class baseTs(ArrayCompatMixin):
                  lowess_fit: np.array = None,
                  signal_name: str = "",
                  history: list = None,
-                 last_process: str = "",
-                 use_series: bool = None,
-                 backend: str = None,
-                 ):
-        
+                 last_process: str = ""):
         """
-        Initialize the baseTs object with dual backend support.
+        Initialize baseTs object as pandas Series with time-series metadata.
         """
         
-        # Determine backend to use
-        if backend is not None:
-            if backend not in ['numpy', 'series']:
-                raise ValueError(f"Invalid backend: {backend}. Must be 'numpy' or 'series'")
-            self._backend = backend
-        elif use_series is not None:
-            self._backend = 'series' if use_series else 'numpy'
-        else:
-            self._backend = 'series' if BackendManager.should_use_series() else 'numpy'
+        # Handle times array - create if not provided
+        if times is None:
+            if freq is not np.nan:
+                times = np.arange(0, len(data)) / freq
+            else:
+                raise ValueError("You must provide either a times array or a frequency")
         
-        # Initialize based on backend
-        if self._backend == 'series':
-            self._init_series_backend(
-                data, times, freq, ts_offset, is_filtered, is_interpolated,
-                is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
-                outlier_indices, lowess_fit, signal_name, history, last_process
-            )
-        else:
-            self._init_numpy_backend(
-                data, times, freq, ts_offset, is_filtered, is_interpolated,
-                is_uniform_grid, is_outlier_filtered, has_timestamp_offset,
-                outlier_indices, lowess_fit, signal_name, history, last_process
-            )
-
-    def _init_numpy_backend(self, data, times, freq, ts_offset, is_filtered,
-                           is_interpolated, is_uniform_grid, is_outlier_filtered,
-                           has_timestamp_offset, outlier_indices, lowess_fit,
-                           signal_name, history, last_process):
-        """Initialize with legacy numpy backend."""
-        self._data = data
-        self._times = times
+        # Initialize as TimeSeriesData (pandas Series subclass)
+        super().__init__(
+            data=data,
+            index=times,
+            freq=freq if freq is not np.nan else None,
+            signal_name=signal_name
+        )
+        
+        # Set metadata attributes
         self.is_filtered = is_filtered
         self.is_interpolated = is_interpolated
         self.is_uniform_grid = is_uniform_grid
@@ -160,320 +141,93 @@ class baseTs(ArrayCompatMixin):
         self.has_timestamp_offset = has_timestamp_offset
         self.outlier_indices = outlier_indices
         self.lowess_fit = lowess_fit
-        
-        if ts_offset is not np.nan:  # if ts_offset is provided, set it and flag as having offset
-            self.ts_offset = ts_offset
-            self.has_timestamp_offset = True
-        else:  # if no ts_offset is provided, set it to 0 to avoid errors and flag as not having offset
-            self.ts_offset = 0
-            self.has_timestamp_offset = False
-            
-        if times is None:
-            if freq is not np.nan:
-                self._times = np.arange(0, len(data)) / freq
-            else:
-                raise ValueError("You must provide either a times array or a frequency")
-        else:
-            self._times = times
-
-        if history is None:
-            self.history = [f"Created baseTs object with {self.len()} samples"]
-        else:   
-            self.history = history
-        self.signal_name = signal_name.upper()
         self.last_process = last_process
-        
-        if freq is not np.nan:
-            self.freq = freq
-        else:
-            # Use effective sample rate
-            duration = self.duration()
-            if duration > 0:
-                self.freq = self.len() / duration
-            else:
-                # For single point or zero duration, use default frequency
-                self.freq = 1.0
-
-        # instantiate outlier filter w/ default parameters
-        self.outlier_filter = LowessOutlierFilter()
-
-    def _init_series_backend(self, data, times, freq, ts_offset, is_filtered,
-                            is_interpolated, is_uniform_grid, is_outlier_filtered,
-                            has_timestamp_offset, outlier_indices, lowess_fit,
-                            signal_name, history, last_process):
-        """Initialize with pandas Series backend."""
-        from .series import TimeSeriesData
-        
-        # Handle times array
-        if times is None:
-            if freq is not np.nan:
-                times = np.arange(0, len(data)) / freq
-            else:
-                raise ValueError("You must provide either a times array or a frequency")
-        
-        # Validate time index
-        validate_time_index(times)
-        
-        # Create TimeSeriesData object
-        if history is None:
-            history = [f"Created baseTs object with {len(data)} samples"]
-        
-        self._series = TimeSeriesData(
-            data=data,
-            index=times,
-            freq=freq if freq is not np.nan else None,
-            signal_name=signal_name
-        )
-        
-        # Set metadata
-        self._series.is_filtered = is_filtered
-        self._series.is_interpolated = is_interpolated
-        self._series.is_uniform_grid = is_uniform_grid
-        self._series.is_outlier_filtered = is_outlier_filtered
-        self._series.has_timestamp_offset = has_timestamp_offset
-        self._series.outlier_indices = outlier_indices
-        self._series.lowess_fit = lowess_fit
-        self._series.last_process = last_process
-        self._series.history = history
-        # self.last_process = last_process
-
         
         # Handle timestamp offset
         if ts_offset is not np.nan:
-            self._series.ts_offset = ts_offset
-            self._series.has_timestamp_offset = True
+            self.ts_offset = ts_offset
+            self.has_timestamp_offset = True
         else:
-            self._series.ts_offset = 0
-            self._series.has_timestamp_offset = False
+            self.ts_offset = 0
+            self.has_timestamp_offset = False
+        
+        # Initialize history
+        if history is None:
+            self.history = [f"Created baseTs object with {len(self)} samples"]
+        else:
+            self.history = history
         
         # Calculate frequency if not provided
         if freq is np.nan:
-            self._series.freq = self._series._calculate_effective_frequency()
+            self.freq = self._calculate_effective_frequency()
         
-        # instantiate outlier filter w/ default parameters
+        # Initialize outlier filter with default parameters
         self.outlier_filter = LowessOutlierFilter()
 
-    # Backend Management Properties
-    @property
-    def backend(self) -> str:
-        """Get the current backend type."""
-        return self._backend
-    
-    @property
-    def is_series_backend(self) -> bool:
-        """Check if using Series backend."""
-        return self._backend == 'series'
-    
-    @property
-    def is_numpy_backend(self) -> bool:
-        """Check if using numpy backend."""
-        return self._backend == 'numpy'
 
-    # Compatibility Properties - Override ArrayCompatMixin for better integration
+    # Backward compatibility properties
     @property
     def data(self) -> np.ndarray:
-        """
-        Get the data values as numpy array (backward compatibility).
-        
-        Returns:
-            Numpy array of data values
-        """
-        if self._backend == 'series':
-            return self._series.values
-        else:
-            return self._data
+        """Get the data values as numpy array (backward compatibility)."""
+        return self.values
     
     @data.setter
     def data(self, value: np.ndarray):
-        """
-        Set the data values (backward compatibility).
-        
-        Args:
-            value: New data array
-        """
-        if self._backend == 'series':
-            # Check if lengths match
-            if len(value) == len(self._series.index):
-                # Same length, can preserve index
-                old_index = self._series.index
-            else:
-                # Different length, create new index with same time range
-                start_time = self._series.index[0] if len(self._series) > 0 else 0
-                end_time = self._series.index[-1] if len(self._series) > 0 else len(value)-1
-                old_index = np.linspace(start_time, end_time, len(value))
-            
-            # Create new Series with new data
-            old_metadata = {}
-            for attr in self._series._metadata:
-                if hasattr(self._series, attr):
-                    old_metadata[attr] = getattr(self._series, attr)
-            
-            self._series = self._series.__class__(
-                value, 
-                index=old_index, 
-                freq=old_metadata.get('freq', self._series.freq),
-                signal_name=old_metadata.get('signal_name', self._series.signal_name)
-            )
-            
-            # Restore metadata
-            for attr, val in old_metadata.items():
-                if attr not in ['freq', 'signal_name']:
-                    setattr(self._series, attr, val)
-        else:
-            self._data = value
+        """Set the data values (backward compatibility)."""
+        # Update the Series values while preserving metadata
+        self._update_series_data(value)
     
     @property
     def times(self) -> np.ndarray:
-        """
-        Get the time values as numpy array (backward compatibility).
-        
-        Returns:
-            Numpy array of time values
-        """
-        if self._backend == 'series':
-            return self._series.index.values
-        else:
-            return self._times
+        """Get the time values as numpy array (backward compatibility)."""
+        return self.index.values
     
     @times.setter
     def times(self, value: np.ndarray):
-        """
-        Set the time values (backward compatibility).
+        """Set the time values (backward compatibility)."""
+        self.index = pd.Index(value)
+        # Recalculate frequency
+        self.freq = self._calculate_effective_frequency()
+    
+    def _update_series_data(self, new_data: np.ndarray):
+        """Update Series data while preserving metadata and handling length changes."""
+        if len(new_data) == len(self.index):
+            # Same length, can preserve index
+            old_index = self.index
+        else:
+            # Different length, create new index with same time range
+            start_time = self.index[0] if len(self) > 0 else 0
+            end_time = self.index[-1] if len(self) > 0 else len(new_data)-1
+            old_index = np.linspace(start_time, end_time, len(new_data))
         
-        Args:
-            value: New time array
-        """
-        if self._backend == 'series':
-            # Update the Series with new index, preserving data
-            self._series.index = pd.Index(value)
-            # Recalculate frequency
-            self._series.freq = self._series._calculate_effective_frequency()
-        else:
-            self._times = value
-            # Recalculate frequency
-            if len(value) > 1:
-                self.freq = len(value) / (value[-1] - value[0])
-
-    # Metadata Properties - Use backend-appropriate storage
-    @property
-    def signal_name(self) -> str:
-        """Get signal name."""
-        if self._backend == 'series':
-            return self._series.signal_name
-        else:
-            return getattr(self, '_signal_name', "")
-    
-    @signal_name.setter
-    def signal_name(self, value: str):
-        """Set signal name."""
-        if self._backend == 'series':
-            self._series.signal_name = value.upper()
-        else:
-            self._signal_name = value.upper()
-
-    @property
-    def freq(self) -> float:
-        """Get sampling frequency."""
-        if self._backend == 'series':
-            return self._series.freq
-        else:
-            return getattr(self, '_freq', np.nan)
-    
-    @freq.setter
-    def freq(self, value: float):
-        """Set sampling frequency."""
-        if self._backend == 'series':
-            self._series.freq = value
-        else:
-            self._freq = value
-
-    @property
-    def history(self) -> list:
-        """Get processing history."""
-        if self._backend == 'series':
-            return self._series.history
-        else:
-            return getattr(self, '_history', [])
-    
-    @history.setter
-    def history(self, value: list):
-        """Set processing history."""
-        if self._backend == 'series':
-            self._series.history = value
-        else:
-            self._history = value
-
-    @property
-    def last_process(self) -> str:
-        """Get last process."""
-        if self._backend == 'series':
-            return self._series.last_process
-        else:
-            return getattr(self, '_last_process', "")
+        # Preserve metadata
+        old_metadata = {}
+        for attr in self._metadata:
+            if hasattr(self, attr):
+                old_metadata[attr] = getattr(self, attr)
         
-    @last_process.setter
-    def last_process(self, value: str):
-        """Set last process."""
-        if self._backend == 'series':
-            self._series.last_process = value
-        else:
-            self._last_process = value
+        # Update the Series
+        super(TimeSeriesData, self).__init__(new_data, index=old_index)
+        
+        # Restore metadata
+        for attr, val in old_metadata.items():
+            setattr(self, attr, val)
             
-
-    def _get_metadata_attr(self, attr_name, default=None):
-        """Helper to get metadata attributes from appropriate backend."""
-        if self._backend == 'series':
-            return getattr(self._series, attr_name, default)
-        else:
-            return getattr(self, attr_name, default)
-    
-    def _set_metadata_attr(self, attr_name, value):
-        """Helper to set metadata attributes on appropriate backend."""
-        if self._backend == 'series':
-            setattr(self._series, attr_name, value)
-        else:
-            setattr(self, attr_name, value)
 
     def _update_history_and_process(self, hist_msg: str, last_process: str):
         """Helper method to update history and last_process."""
         self.history.append(hist_msg)
-        self._set_metadata_attr('last_process', last_process)
+        self.last_process = last_process
 
     def _update_flags(self, **flags):
         """Helper method to update object flags."""
         for flag_name, flag_value in flags.items():
-            self._set_metadata_attr(flag_name, flag_value)
-
-    def _process_inplace(self, func, *args, **kwargs):
-        """Helper method to process data in-place."""
-        result = func(self.data, *args, **kwargs)
-        self.data = result
-        return self
-
-    def _process_new(self, func, *args, **kwargs):
-        """Helper method to process data and return new object."""
-        new_obj = self.copy()
-        result = func(new_obj.data, *args, **kwargs)
-        new_obj.data = result
-        return new_obj
-
-    def _process_with_flags(self, func, hist_msg: str, last_process: str, inplace: bool = False, **flags):
-        """Helper method to process data with history and flag updates."""
-        if inplace:
-            result = self._process_inplace(func)
-            self._update_history_and_process(hist_msg, last_process)
-            self._update_flags(**flags)
-            return self
-        else:
-            result = self._process_new(func)
-            result._update_history_and_process(hist_msg, last_process)
-            result._update_flags(**flags)
-            return result
+            setattr(self, flag_name, flag_value)
 
     def _create_new_with_data(self, new_data: np.ndarray, new_times: np.ndarray = None, 
                              preserve_metadata: bool = True, **kwargs) -> "baseTs":
         """
-        Create a new baseTs object with new data, preserving backend and metadata.
+        Create a new baseTs object with new data, preserving metadata.
         
         Args:
             new_data: New data array
@@ -482,14 +236,13 @@ class baseTs(ArrayCompatMixin):
             **kwargs: Additional parameters for new object
             
         Returns:
-            New baseTs object with same backend as current object
+            New baseTs object
         """
         if new_times is None:
             new_times = self.times
             
-        # Create new object with same backend
+        # Create new object
         new_kwargs = {
-            'backend': self._backend,
             'freq': self.freq,
             'signal_name': self.signal_name
         }
@@ -505,7 +258,7 @@ class baseTs(ArrayCompatMixin):
             
             for attr in metadata_attrs:
                 if hasattr(self, attr):
-                    new_obj._set_metadata_attr(attr, self._get_metadata_attr(attr))
+                    setattr(new_obj, attr, getattr(self, attr))
             
             # Copy history (make a copy to avoid reference issues)
             new_obj.history = self.history.copy()
@@ -1340,21 +1093,12 @@ class baseTs(ArrayCompatMixin):
         Returns:
             Rolling mean baseTs object
         """
-        if self._backend == 'series':
-            # Use pandas rolling capabilities
-            rolling_result = self._series.rolling(window, center=center).mean()
-            # Remove NaN values and corresponding times
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = rolling_result[valid_mask].index.values
-        else:
-            # Fallback for numpy backend
-            import pandas as pd
-            temp_series = pd.Series(self.data)
-            rolling_result = temp_series.rolling(window, center=center).mean()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = self.times[valid_mask]
+        # Use pandas rolling capabilities directly
+        rolling_result = self.rolling(window, center=center).mean()
+        # Remove NaN values and corresponding times
+        valid_mask = ~rolling_result.isna()
+        new_data = rolling_result[valid_mask].values
+        new_times = rolling_result[valid_mask].index.values
         
         if inplace:
             self.data = new_data
@@ -1376,19 +1120,11 @@ class baseTs(ArrayCompatMixin):
         """
         Apply a rolling standard deviation to the data.
         """
-        if self._backend == 'series':
-            rolling_result = self._series.rolling(window, center=center).std()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = rolling_result[valid_mask].index.values
-        else:
-            # Fallback for numpy backend
-            import pandas as pd
-            temp_series = pd.Series(self.data)
-            rolling_result = temp_series.rolling(window, center=center).std()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = self.times[valid_mask]
+        # Use pandas rolling capabilities directly
+        rolling_result = self.rolling(window, center=center).std()
+        valid_mask = ~rolling_result.isna()
+        new_data = rolling_result[valid_mask].values
+        new_times = rolling_result[valid_mask].index.values
 
         if inplace:
             self.data = new_data
@@ -1410,19 +1146,11 @@ class baseTs(ArrayCompatMixin):
         """
         Apply a rolling median to the data.
         """
-        if self._backend == 'series':
-            rolling_result = self._series.rolling(window, center=center).median()
-            valid_mask = ~rolling_result.isna() 
-            new_data = rolling_result[valid_mask].values
-            new_times = rolling_result[valid_mask].index.values
-        else:
-            # Fallback for numpy backend
-            import pandas as pd
-            temp_series = pd.Series(self.data)  
-            rolling_result = temp_series.rolling(window, center=center).median()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = self.times[valid_mask]
+        # Use pandas rolling capabilities directly
+        rolling_result = self.rolling(window, center=center).median()
+        valid_mask = ~rolling_result.isna() 
+        new_data = rolling_result[valid_mask].values
+        new_times = rolling_result[valid_mask].index.values
 
         if inplace:
             self.data = new_data
@@ -1444,19 +1172,11 @@ class baseTs(ArrayCompatMixin):
         """
         Apply a rolling maximum to the data.
         """
-        if self._backend == 'series':
-            rolling_result = self._series.rolling(window, center=center).max()
-            valid_mask = ~rolling_result.isna() 
-            new_data = rolling_result[valid_mask].values
-            new_times = rolling_result[valid_mask].index.values
-        else:
-            # Fallback for numpy backend
-            import pandas as pd
-            temp_series = pd.Series(self.data)      
-            rolling_result = temp_series.rolling(window, center=center).max()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = self.times[valid_mask]
+        # Use pandas rolling capabilities directly
+        rolling_result = self.rolling(window, center=center).max()
+        valid_mask = ~rolling_result.isna() 
+        new_data = rolling_result[valid_mask].values
+        new_times = rolling_result[valid_mask].index.values
 
         if inplace: 
             self.data = new_data
@@ -1478,19 +1198,11 @@ class baseTs(ArrayCompatMixin):
         """
         Apply a rolling minimum to the data.    
         """
-        if self._backend == 'series':
-            rolling_result = self._series.rolling(window, center=center).min()
-            valid_mask = ~rolling_result.isna() 
-            new_data = rolling_result[valid_mask].values
-            new_times = rolling_result[valid_mask].index.values
-        else:
-            # Fallback for numpy backend
-            import pandas as pd
-            temp_series = pd.Series(self.data)      
-            rolling_result = temp_series.rolling(window, center=center).min()
-            valid_mask = ~rolling_result.isna()
-            new_data = rolling_result[valid_mask].values
-            new_times = self.times[valid_mask]
+        # Use pandas rolling capabilities directly
+        rolling_result = self.rolling(window, center=center).min()
+        valid_mask = ~rolling_result.isna() 
+        new_data = rolling_result[valid_mask].values
+        new_times = rolling_result[valid_mask].index.values
 
         if inplace:
             self.data = new_data
@@ -1521,28 +1233,17 @@ class baseTs(ArrayCompatMixin):
         Returns:
             Time-sliced baseTs object
         """
-        if self._backend == 'series':
-            # Use pandas time-based indexing
-            if start_time is None:
-                start_time = self._series.index[0]
-            if end_time is None:
-                end_time = self._series.index[-1]
-            
-            # Use pandas boolean indexing for time range
-            mask = (self._series.index >= start_time) & (self._series.index <= end_time)
-            sliced_series = self._series[mask]
-            new_data = sliced_series.values
-            new_times = sliced_series.index.values
-        else:
-            # Use numpy indexing
-            mask = np.ones(len(self.times), dtype=bool)
-            if start_time is not None:
-                mask &= (self.times >= start_time)
-            if end_time is not None:
-                mask &= (self.times <= end_time)
-            
-            new_data = self.data[mask]
-            new_times = self.times[mask]
+        # Use pandas time-based indexing directly
+        if start_time is None:
+            start_time = self.index[0]
+        if end_time is None:
+            end_time = self.index[-1]
+        
+        # Use pandas boolean indexing for time range
+        mask = (self.index >= start_time) & (self.index <= end_time)
+        sliced_series = self[mask]
+        new_data = sliced_series.values
+        new_times = sliced_series.index.values
         
         if inplace:
             self.data = new_data
@@ -1567,23 +1268,249 @@ class baseTs(ArrayCompatMixin):
         Returns:
             Dictionary containing various statistics
         """
-        data = self.data
+        # Use pandas describe() for efficient statistics calculation
+        stats_series = self.describe()
         
         stats = {
-            'count': len(data),
-            'mean': np.mean(data),
-            'std': np.std(data),
-            'min': np.min(data),
-            'max': np.max(data),
-            'median': np.median(data),
-            'q25': np.percentile(data, 25),
-            'q75': np.percentile(data, 75),
+            'count': int(stats_series['count']),
+            'mean': stats_series['mean'],
+            'std': stats_series['std'],
+            'min': stats_series['min'],
+            'max': stats_series['max'],
+            'median': stats_series['50%'],
+            'q25': stats_series['25%'],
+            'q75': stats_series['75%'],
             'duration': self.duration(),
             'frequency': self.freq,
-            'sample_rate': len(data) / self.duration() if self.duration() > 0 else 0
+            'sample_rate': len(self) / self.duration() if self.duration() > 0 else 0
         }
         
         return stats
+    
+    # Enhanced Pandas Time-Series Methods
+    
+    def resample(self, freq: str, method: str = 'mean', **kwargs) -> "baseTs":
+        """
+        Resample time series to a different frequency using pandas resampling.
+        
+        Args:
+            freq: Target frequency string (e.g., '1S', '100ms', '0.1S')
+            method: Aggregation method ('mean', 'median', 'sum', 'min', 'max', 'std')
+            **kwargs: Additional arguments passed to pandas resample
+            
+        Returns:
+            Resampled baseTs object
+            
+        Examples:
+            # Downsample to 1Hz
+            ts_1hz = ts.resample('1S', method='mean')
+            
+            # Upsample to 100Hz with interpolation
+            ts_100hz = ts.resample('10ms', method='mean')
+        """
+        # Create time-based index from numeric times
+        time_index = pd.to_timedelta(self.index, unit='s')
+        temp_series = pd.Series(self.values, index=time_index)
+        
+        # Resample using pandas
+        resampled = temp_series.resample(freq).agg(method, **kwargs)
+        
+        # Convert back to numeric times
+        new_times = resampled.index.total_seconds().values
+        new_data = resampled.values
+        
+        # Create new baseTs object
+        new_obj = self._create_new_with_data(new_data, new_times)
+        new_obj._update_history_and_process(
+            f"Resampled to {freq} using {method}",
+            f"_resample_{freq}_{method}"
+        )
+        
+        return new_obj
+    
+    def interpolate_gaps(self, method: str = 'linear', limit: int = None, 
+                        inplace: bool = False) -> "baseTs":
+        """
+        Interpolate missing values (NaN) in the time series.
+        
+        Args:
+            method: Interpolation method ('linear', 'time', 'spline', 'polynomial', etc.)
+            limit: Maximum number of consecutive NaN values to interpolate
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Interpolated baseTs object
+        """
+        interpolated = self.interpolate(method=method, limit=limit)
+        
+        if inplace:
+            # Update current object
+            super(TimeSeriesData, self).__init__(interpolated.values, index=interpolated.index)
+            self._update_history_and_process(
+                f"Interpolated gaps using {method}",
+                f"_interpolate_{method}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(interpolated.values, interpolated.index.values)
+            new_obj._update_history_and_process(
+                f"Interpolated gaps using {method}",
+                f"_interpolate_{method}"
+            )
+            return new_obj
+    
+    def align_with(self, other: "baseTs", method: str = 'outer') -> tuple:
+        """
+        Align two time series on a common time index.
+        
+        Args:
+            other: Another baseTs object to align with
+            method: Join method ('outer', 'inner', 'left', 'right')
+            
+        Returns:
+            Tuple of (aligned_self, aligned_other) as baseTs objects
+        """
+        aligned_self, aligned_other = self.align(other, join=method)
+        
+        # Convert back to baseTs objects
+        new_self = self._create_new_with_data(
+            aligned_self.values, 
+            aligned_self.index.values
+        )
+        new_other = other._create_new_with_data(
+            aligned_other.values, 
+            aligned_other.index.values
+        )
+        
+        new_self._update_history_and_process(
+            f"Aligned with {other.signal_name} using {method} join",
+            f"_align_{method}"
+        )
+        new_other._update_history_and_process(
+            f"Aligned with {self.signal_name} using {method} join",
+            f"_align_{method}"
+        )
+        
+        return new_self, new_other
+    
+    def shift_time(self, periods: int, inplace: bool = False) -> "baseTs":
+        """
+        Shift the time series by a number of periods.
+        
+        Args:
+            periods: Number of periods to shift (positive = forward, negative = backward)
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            Time-shifted baseTs object
+        """
+        shifted = self.shift(periods=periods)
+        
+        if inplace:
+            # Update current object, removing NaN values
+            valid_mask = ~shifted.isna()
+            super(TimeSeriesData, self).__init__(
+                shifted[valid_mask].values, 
+                index=shifted[valid_mask].index
+            )
+            self._update_history_and_process(
+                f"Shifted time by {periods} periods",
+                f"_shift_{periods}"
+            )
+            return self
+        else:
+            # Remove NaN values from shifted data
+            valid_mask = ~shifted.isna()
+            new_obj = self._create_new_with_data(
+                shifted[valid_mask].values, 
+                shifted[valid_mask].index.values
+            )
+            new_obj._update_history_and_process(
+                f"Shifted time by {periods} periods",
+                f"_shift_{periods}"
+            )
+            return new_obj
+    
+    def correlation_with(self, other: "baseTs", method: str = 'pearson') -> float:
+        """
+        Calculate correlation with another time series.
+        
+        Args:
+            other: Another baseTs object
+            method: Correlation method ('pearson', 'kendall', 'spearman')
+            
+        Returns:
+            Correlation coefficient
+        """
+        # Align the time series first
+        aligned_self, aligned_other = self.align_with(other, method='inner')
+        
+        # Calculate correlation
+        return aligned_self.corr(aligned_other, method=method)
+    
+    def detect_outliers(self, method: str = 'zscore', threshold: float = 3.0) -> np.ndarray:
+        """
+        Detect outliers using statistical methods.
+        
+        Args:
+            method: Detection method ('zscore', 'iqr', 'modified_zscore')
+            threshold: Threshold for outlier detection
+            
+        Returns:
+            Boolean array indicating outlier positions
+        """
+        if method == 'zscore':
+            z_scores = np.abs((self.values - self.mean()) / self.std())
+            return z_scores > threshold
+        elif method == 'iqr':
+            Q1 = self.quantile(0.25)
+            Q3 = self.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - threshold * IQR
+            upper_bound = Q3 + threshold * IQR
+            return (self.values < lower_bound) | (self.values > upper_bound)
+        elif method == 'modified_zscore':
+            median = self.median()
+            mad = self.mad()  # Median absolute deviation
+            modified_z_scores = 0.6745 * (self.values - median) / mad
+            return np.abs(modified_z_scores) > threshold
+        else:
+            raise ValueError(f"Unknown outlier detection method: {method}")
+    
+    def get_frequency_content(self, window: str = None) -> tuple:
+        """
+        Get frequency domain representation using pandas-optimized FFT.
+        
+        Args:
+            window: Window function to apply ('hann', 'hamming', 'blackman', None)
+            
+        Returns:
+            Tuple of (frequencies, power_spectrum)
+        """
+        from scipy import signal
+        
+        data = self.values.copy()
+        
+        # Apply window function if specified
+        if window:
+            if window == 'hann':
+                window_func = signal.windows.hann(len(data))
+            elif window == 'hamming':
+                window_func = signal.windows.hamming(len(data))
+            elif window == 'blackman':
+                window_func = signal.windows.blackman(len(data))
+            else:
+                raise ValueError(f"Unknown window function: {window}")
+            data = data * window_func
+        
+        # Compute FFT
+        freqs = np.fft.fftfreq(len(data), 1/self.freq)
+        fft_data = np.fft.fft(data)
+        power_spectrum = np.abs(fft_data) ** 2
+        
+        # Return only positive frequencies
+        positive_freq_mask = freqs >= 0
+        return freqs[positive_freq_mask], power_spectrum[positive_freq_mask]
     
     # Utility functions
     
@@ -1749,14 +1676,47 @@ class baseTs(ArrayCompatMixin):
         from .plotting import lag_plot  
         return lag_plot(self, lag=lag, lag_unit=lag_unit, ax=ax, show=show)
 
-    def copy(self) -> "baseTs":
+    def copy(self, deep: bool = True) -> "baseTs":
         """
-        Create a deep copy of the baseTs object.
+        Create a copy of the baseTs object.
+
+        Args:
+            deep: Whether to make a deep copy (pandas compatibility)
 
         Returns:
             baseTs: A new instance of baseTs with the same data.
         """
-        return copy.deepcopy(self)
+        if deep:
+            # Create a new baseTs object to avoid pandas deepcopy recursion
+            new_obj = baseTs(
+                data=self.values.copy(),
+                times=self.index.values.copy(),
+                freq=self.freq,
+                signal_name=self.signal_name
+            )
+            
+            # Deep copy metadata
+            for attr in self._metadata:
+                if hasattr(self, attr):
+                    value = getattr(self, attr)
+                    if isinstance(value, (list, dict, np.ndarray)):
+                        import copy as copy_module
+                        value = copy_module.deepcopy(value)
+                    setattr(new_obj, attr, value)
+            
+            return new_obj
+        else:
+            # Shallow copy using pandas Series copy
+            copied = super().copy(deep=False)
+            # Ensure it's still a baseTs object
+            if not isinstance(copied, baseTs):
+                copied = baseTs(copied.values, copied.index.values, 
+                              freq=self.freq, signal_name=self.signal_name)
+                # Copy metadata
+                for attr in self._metadata:
+                    if hasattr(self, attr):
+                        setattr(copied, attr, getattr(self, attr))
+            return copied
 
     def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
         """
