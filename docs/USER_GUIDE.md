@@ -251,12 +251,19 @@ ts.plot_fft_power(window='blackman', scale_power=True)  # Blackman window, scale
 freqs, power = ts.get_frequency_content(window='hann')
 freqs_bm, power_bm = ts.get_frequency_content(window='blackman')
 
+# Enhanced peak frequency detection
+peak_freq = ts.get_peak_freq()  # Basic peak frequency
+peak_windowed = ts.get_peak_freq(window='hann')  # With Hanning window
+top_3_peaks = ts.get_peak_freq(num_pks=3, window='blackman')  # Top 3 peaks
+peak_in_range = ts.get_peak_freq(window='hann', min_freq=1.0, max_freq=50.0)  # Frequency range
+
 # Traditional FFT methods still available
 freqs_traditional, power_traditional = ts.compute_fft_power()
-peak_freq = ts.get_peak_freq()
 
-print(f"Peak frequency (windowed): {freqs[np.argmax(power)]:.2f} Hz")
-print(f"Peak frequency (traditional): {peak_freq:.2f} Hz")
+print(f"Peak frequency (basic): {peak_freq:.2f} Hz")
+print(f"Peak frequency (windowed): {peak_windowed:.2f} Hz")
+print(f"Top 3 peaks: {[f'{p:.1f}' for p in top_3_peaks]} Hz")
+print(f"Peak in 1-50 Hz range: {peak_in_range:.2f} Hz")
 ```
 
 ### Comprehensive Statistics

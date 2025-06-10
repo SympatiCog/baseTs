@@ -132,20 +132,53 @@ def compute_fft_power(
 
     return freqs, power
 
-def get_peak_freq(ts: Any, num_pks: int = 1) -> List[float]:
+def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
+                  min_freq: float = 0.0, max_freq: float = None) -> List[float]:
     """
-    Get the top peak frequencies of the time series.
+    Get the top peak frequencies of the time series using enhanced frequency analysis.
 
     Args:
-        ts: Time series object with data and freq attributes
+        ts: Time series object with get_frequency_content method
         num_pks: Number of top peak frequencies to return
+        window: Window function to apply ('hann', 'hamming', 'blackman', None)
+        min_freq: Minimum frequency to consider (Hz)
+        max_freq: Maximum frequency to consider (Hz, defaults to Nyquist)
 
     Returns:
         List of top peak frequencies in Hz
+        
+    Examples:
+        # Basic peak frequency
+        peaks = get_peak_freq(ts)
+        
+        # Top 3 peaks with Hanning window
+        peaks = get_peak_freq(ts, num_pks=3, window='hann')
+        
+        # Peak in frequency range with windowing
+        peaks = get_peak_freq(ts, window='blackman', min_freq=1.0, max_freq=50.0)
     """
-    freq, power = compute_fft_power(ts)
-    peak_indices = np.argsort(power)[-num_pks:][::-1]  # Get indices of top num_pks peaks
-    return freq[peak_indices].tolist()
+    # Use enhanced get_frequency_content method instead of compute_fft_power
+    freq, power = ts.get_frequency_content(window=window)
+    
+    # Apply frequency range filtering if specified
+    if max_freq is None:
+        max_freq = np.max(freq)  # Use Nyquist frequency as default
+    
+    # Create frequency mask for the specified range
+    freq_mask = (freq >= min_freq) & (freq <= max_freq)
+    freq_filtered = freq[freq_mask]
+    power_filtered = power[freq_mask]
+    
+    if len(freq_filtered) == 0:
+        raise ValueError(f"No frequencies found in range [{min_freq}, {max_freq}] Hz")
+    
+    # Find peak indices in the filtered data
+    peak_indices = np.argsort(power_filtered)[-num_pks:][::-1]  # Get indices of top num_pks peaks
+    
+    # Return the actual frequencies corresponding to these peaks
+    peak_frequencies = freq_filtered[peak_indices].tolist()
+    
+    return peak_frequencies
 
 def get_peaks(
     ts: Any,

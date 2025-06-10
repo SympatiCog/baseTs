@@ -1571,13 +1571,39 @@ class baseTs(TimeSeriesData):
         """
         return find_closest_time(self, sec)
 
-    def get_peak_freq(self, num_pks: int = 1) -> float:
+    def get_peak_freq(self, num_pks: int = 1, window: str = None, 
+                     min_freq: float = 0.0, max_freq: float = None) -> Union[float, List[float]]:
         """
-        Compute the peak frequency of the timeseries.
-        Returns the frequency of the peak power.
+        Compute the peak frequency(ies) of the timeseries using enhanced frequency analysis.
+        
+        Args:
+            num_pks: Number of peak frequencies to return
+            window: Window function to apply ('hann', 'hamming', 'blackman', None)
+            min_freq: Minimum frequency to consider (Hz)
+            max_freq: Maximum frequency to consider (Hz, defaults to Nyquist)
+            
+        Returns:
+            Single peak frequency (if num_pks=1) or list of peak frequencies
+            
+        Examples:
+            # Basic peak frequency
+            peak = ts.get_peak_freq()
+            
+            # Top 3 peaks with Hanning window
+            peaks = ts.get_peak_freq(num_pks=3, window='hann')
+            
+            # Peak in specific frequency range
+            peak = ts.get_peak_freq(window='blackman', min_freq=1.0, max_freq=50.0)
         """
-        pk_freq = get_peak_freq(self, num_pks=num_pks)  
-        return pk_freq
+        from .utils import get_peak_freq
+        pk_freq = get_peak_freq(self, num_pks=num_pks, window=window, 
+                               min_freq=min_freq, max_freq=max_freq)
+        
+        # Return single value for backward compatibility when num_pks=1
+        if num_pks == 1:
+            return pk_freq[0] if isinstance(pk_freq, list) else pk_freq
+        else:
+            return pk_freq
 
     def get_peaks(self, min_dist_secs: float = 1.0, min_height: float = None) -> list:
         """
