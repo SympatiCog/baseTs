@@ -101,17 +101,40 @@ def compute_fft_power(
         raise ValueError(f"Invalid sampling frequency: {ts.freq} Hz")
     
     data = ts.data.copy()
+    
+    # Validate data doesn't contain NaN or Inf
+    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+        raise ValueError("Time series data contains NaN or Inf values")
+    
     if demean:
-        data -= data.mean()
+        data_mean = data.mean()
+        if not np.isfinite(data_mean):
+            raise ValueError("Cannot compute mean: data contains invalid values")
+        data -= data_mean
     
     n = len(data)
-    fft_result = np.fft.fft(data)
-    fft_freqs = np.fft.fftfreq(n, d=1/ts.freq)
+    
+    # Check for degenerate cases
+    if n < 2:
+        raise ValueError("Time series too short for FFT analysis (minimum 2 points required)")
+    
+    # Check if data is effectively constant (after demeaning)
+    data_std = np.std(data)
+    if data_std < 1e-15:  # Effectively zero variance
+        # For constant data, return zeros except for DC component
+        freqs = np.fft.fftfreq(n, d=1/ts.freq)[:n//2]
+        power = np.zeros_like(freqs)
+        if not demean and len(freqs) > 0:
+            power[0] = np.mean(ts.data)**2  # DC power for constant signal
+    else:
+        # Normal FFT computation
+        fft_result = np.fft.fft(data)
+        fft_freqs = np.fft.fftfreq(n, d=1/ts.freq)
 
-    power = np.abs(fft_result)**2 / n
-    half_n = n // 2
-    freqs = fft_freqs[:half_n]
-    power = power[:half_n]
+        power = np.abs(fft_result)**2 / n
+        half_n = n // 2
+        freqs = fft_freqs[:half_n]
+        power = power[:half_n]
     
     # Handle max_rate parameter
     if max_rate is not None and not np.isnan(max_rate):
@@ -127,8 +150,14 @@ def compute_fft_power(
     if len(freqs) == 0 or len(power) == 0:
         raise ValueError("FFT computation resulted in empty frequency or power arrays")
     
+    # Handle power scaling
     if scale_power:
-        power /= np.sum(power)
+        power_sum = np.sum(power)
+        if power_sum > 0:
+            power = power / power_sum
+        else:
+            # If all power is zero, scaling doesn't change anything
+            pass
 
     return freqs, power
 
