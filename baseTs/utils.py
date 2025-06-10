@@ -133,7 +133,7 @@ def compute_fft_power(
     return freqs, power
 
 def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
-                  min_freq: float = 0.0, max_freq: float = None) -> List[float]:
+                  min_freq: float = None, max_freq: float = None) -> Union[float, List[float]]:
     """
     Get the top peak frequencies of the time series using enhanced frequency analysis.
 
@@ -141,28 +141,38 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
         ts: Time series object with get_frequency_content method
         num_pks: Number of top peak frequencies to return
         window: Window function to apply ('hann', 'hamming', 'blackman', None)
-        min_freq: Minimum frequency to consider (Hz)
+        min_freq: Minimum frequency to consider (Hz, defaults to exclude DC component)
         max_freq: Maximum frequency to consider (Hz, defaults to Nyquist)
 
     Returns:
-        List of top peak frequencies in Hz
+        Single peak frequency (float) if num_pks=1, otherwise list of peak frequencies
         
     Examples:
-        # Basic peak frequency
-        peaks = get_peak_freq(ts)
+        # Basic peak frequency (returns float, excludes DC)
+        peak = get_peak_freq(ts)  # 25.3
         
-        # Top 3 peaks with Hanning window
-        peaks = get_peak_freq(ts, num_pks=3, window='hann')
+        # Top 3 peaks with Hanning window (returns list)
+        peaks = get_peak_freq(ts, num_pks=3, window='hann')  # [25.3, 10.1, 45.7]
         
-        # Peak in frequency range with windowing
-        peaks = get_peak_freq(ts, window='blackman', min_freq=1.0, max_freq=50.0)
+        # Peak in frequency range with windowing (returns float)
+        peak = get_peak_freq(ts, window='blackman', min_freq=1.0, max_freq=50.0)  # 15.2
+        
+        # Include DC component explicitly
+        peak_with_dc = get_peak_freq(ts, min_freq=0.0)  # May return 0.0 if DC is strongest
     """
     # Use enhanced get_frequency_content method instead of compute_fft_power
     freq, power = ts.get_frequency_content(window=window)
     
-    # Apply frequency range filtering if specified
+    # Apply frequency range filtering
     if max_freq is None:
         max_freq = np.max(freq)  # Use Nyquist frequency as default
+    
+    # Default to excluding DC component (0 Hz) for typical peak frequency analysis
+    # This maintains backward compatibility with the expected behavior
+    if min_freq is None:
+        # Find the smallest non-zero frequency to exclude DC
+        non_zero_freqs = freq[freq > 0]
+        min_freq = non_zero_freqs[0] if len(non_zero_freqs) > 0 else 0.0
     
     # Create frequency mask for the specified range
     freq_mask = (freq >= min_freq) & (freq <= max_freq)
@@ -178,7 +188,11 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
     # Return the actual frequencies corresponding to these peaks
     peak_frequencies = freq_filtered[peak_indices].tolist()
     
-    return peak_frequencies
+    # Return single value for backward compatibility when num_pks=1
+    if num_pks == 1:
+        return peak_frequencies[0]
+    else:
+        return peak_frequencies
 
 def get_peaks(
     ts: Any,
