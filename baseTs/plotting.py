@@ -207,25 +207,27 @@ def plot_series(base_ts,
 
 def plot_fft_power(ts,
                    max_rate: float = np.nan,
+                   min_rate: float = 0.0,
+                   window: str = None,
                    ax: Optional[plt.Axes] = None,
                    title: Optional[str] = None,
                    xlabel: Optional[str] = None,
                    ylabel: Optional[str] = None, 
                    show: bool = False,
-                   demean: bool = True,
                    scale_power: bool = False) -> plt.Axes:
     """
-    Plots the power of a timeseries signal using FFT.
+    Plots the power spectrum of a timeseries signal using enhanced FFT with windowing.
 
     Args:
         ts: Time series object
-        max_rate: Maximum frequency to display
+        max_rate: Maximum frequency to display (defaults to Nyquist frequency)
+        min_rate: Minimum frequency to display (defaults to 0.0)
+        window: Window function to apply ('hann', 'hamming', 'blackman', None)
         ax: Matplotlib axes to plot on
         title: Plot title
         xlabel: X-axis label
         ylabel: Y-axis label
         show: Whether to show the plot
-        demean: Whether to remove mean before FFT
         scale_power: Whether to normalize power spectrum
 
     Returns:
@@ -239,8 +241,10 @@ def plot_fft_power(ts,
     if not isinstance(ts, baseTs):
         raise TypeError("ts must be an instance of baseTs")
     
+    # Set up title with window information
+    window_str = f" ({window} window)" if window else ""
     if title is None:
-        title = f"Power Spectrum of {ts.signal_name}{ts.last_process}"
+        title = f"Power Spectrum of {ts.signal_name}{ts.last_process}{window_str}"
     if xlabel is None:
         xlabel = "Frequency (Hz)"
     if ylabel is None:
@@ -251,15 +255,39 @@ def plot_fft_power(ts,
     _, ax = setup_plot(ax=ax, title=title, xlabel=xlabel, ylabel=ylabel, show=False)
     
     try:
-        # Compute FFT power using object method
-        freqs, power = ts.compute_fft_power(max_rate=max_rate, demean=demean, scale_power=scale_power)
+        # Use the enhanced get_frequency_content method
+        freqs, power = ts.get_frequency_content(window=window)
         
         if len(freqs) == 0 or len(power) == 0:
             raise ValueError("FFT computation resulted in empty frequency or power arrays")
+        
+        # Apply frequency range filtering
+        if np.isnan(max_rate):
+            max_rate = np.max(freqs)  # Use Nyquist frequency as default
+        
+        # Create frequency mask for the specified range
+        freq_mask = (freqs >= min_rate) & (freqs <= max_rate)
+        freqs_filtered = freqs[freq_mask]
+        power_filtered = power[freq_mask]
+        
+        if len(freqs_filtered) == 0:
+            raise ValueError(f"No frequencies found in range [{min_rate}, {max_rate}] Hz")
+        
+        # Apply power scaling if requested
+        if scale_power:
+            power_max = np.max(power_filtered)
+            if power_max > 0:
+                power_filtered = power_filtered / power_max
             
         # Plotting
-        ax.plot(freqs, power)
-        ax.set_xlim(0, np.max(freqs))
+        ax.plot(freqs_filtered, power_filtered, linewidth=1.2)
+        ax.set_xlim(min_rate, max_rate)
+        
+        # Add grid for better readability
+        ax.grid(True, alpha=0.3)
+        
+        # Set y-axis to start at 0 for power spectra
+        ax.set_ylim(bottom=0)
         
         if show:
             plt.show()

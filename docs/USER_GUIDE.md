@@ -242,7 +242,12 @@ print(f"After shifting: {len(ts_leading)} (removes NaN values)")
 ### Enhanced Frequency Analysis
 
 ```python
-# FFT with windowing functions for better spectral estimates
+# Enhanced plot_fft_power with windowing and frequency range control
+ts.plot_fft_power()  # Basic power spectrum
+ts.plot_fft_power(window='hann', min_rate=0.1, max_rate=50)  # Hanning window, 0.1-50 Hz
+ts.plot_fft_power(window='blackman', scale_power=True)  # Blackman window, scaled power
+
+# Get frequency content data for analysis
 freqs, power = ts.get_frequency_content(window='hann')
 freqs_bm, power_bm = ts.get_frequency_content(window='blackman')
 

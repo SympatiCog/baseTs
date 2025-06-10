@@ -1667,40 +1667,54 @@ class baseTs(TimeSeriesData):
 
     def plot_fft_power(self,
                             max_rate: float = np.nan,
+                            min_rate: float = 0.0,
+                            window: str = None,
                             ax = None,
                             title: str = None,
                             xlabel: str = None,
                             ylabel: str = None, 
                             show: bool = False,
-                            demean: bool = True,
                             scale_power: bool = False) -> plt.Axes:
         """
-        Plot the power spectrum of the timeseries.
+        Plot the power spectrum of the timeseries using enhanced frequency analysis.
 
         Args:
-            max_rate (float, optional): Maximum frequency rate to display. Defaults to np.nan.
+            max_rate (float, optional): Maximum frequency rate to display. Defaults to np.nan (Nyquist).
+            min_rate (float, optional): Minimum frequency rate to display. Defaults to 0.0.
+            window (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None).
+                                   Defaults to None for no windowing.
             ax (matplotlib.axes.Axes, optional): Matplotlib Axes object to plot on. Defaults to None.
             title (str, optional): Title of the plot. Defaults to None.
             xlabel (str, optional): Label for the x-axis. Defaults to None.
             ylabel (str, optional): Label for the y-axis. Defaults to None.
             show (bool, optional): Whether to display the plot. Defaults to False.
-            demean (bool, optional): Whether to demean the data before computing FFT. Defaults to True.
             scale_power (bool, optional): Whether to scale the power spectrum. Defaults to False.
 
         Returns:
             matplotlib.axes.Axes: The Axes object with the plot.
+            
+        Examples:
+            # Basic power spectrum
+            ts.plot_fft_power()
+            
+            # With Hanning window and frequency range
+            ts.plot_fft_power(window='hann', min_rate=0.1, max_rate=50)
+            
+            # High-quality spectrum with Blackman window
+            ts.plot_fft_power(window='blackman', scale_power=True)
         """
         # Import plotting here to avoid circular imports
         from .plotting import plot_fft_power
         
         return plot_fft_power(self,
                         max_rate=max_rate,
+                        min_rate=min_rate,
+                        window=window,
                         ax=ax,
                         title=title,
                         xlabel=xlabel,
                         ylabel=ylabel,  
                         show=show,
-                        demean=demean,
                         scale_power=scale_power)
     
     def lag_plot(self, lag: Union[int, float], lag_unit: str = "index", ax: Optional[plt.Axes] = None, show: bool = False) -> plt.Axes:
