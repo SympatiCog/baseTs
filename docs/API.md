@@ -8,9 +8,9 @@
 5. [Signal Processing](#signal-processing)
 6. [Data Transformation](#data-transformation)
 7. [Statistical Analysis](#statistical-analysis)
-8. [Time-Series Operations (Series Backend)](#time-series-operations-series-backend)
-9. [Utility Functions](#utility-functions)
-10. [Backend Management](#backend-management)
+8. [Enhanced Time-Series Operations](#enhanced-time-series-operations)
+9. [Enhanced Frequency Analysis](#enhanced-frequency-analysis)
+10. [Utility Functions](#utility-functions)
 11. [Legacy Methods](#legacy-methods)
 
 ---
@@ -19,15 +19,15 @@
 
 ### `baseTs`
 
-The main class for time series data analysis with dual backend support.
+The main class for time series data analysis built on pandas Series foundation.
 
 ```python
-class baseTs(ArrayCompatMixin):
+class baseTs(TimeSeriesData):
     """
     Time series data container with signal processing capabilities.
     
-    Supports both NumPy array and Pandas Series backends for enhanced
-    time-series functionality while maintaining backward compatibility.
+    Built directly on pandas Series foundation, providing access to 270+
+    native pandas methods while maintaining full backward compatibility.
     """
 ```
 
@@ -35,18 +35,16 @@ class baseTs(ArrayCompatMixin):
 
 ## Constructor
 
-### `baseTs.__init__(data, times, backend='numpy', **kwargs)`
+### `baseTs.__init__(data, times, **kwargs)`
 
 Create a new baseTs object.
 
 **Parameters:**
 - `data` (array-like): The signal values (y-axis data)
 - `times` (array-like): The time points (x-axis data) 
-- `backend` (str, optional): Backend to use ('numpy' or 'series'). Default: 'numpy'
 - `signal_name` (str, optional): Name for the signal
 - `freq` (float, optional): Sampling frequency in Hz
 - `ts_offset` (float, optional): Time offset in seconds
-- `use_series` (bool, optional): Deprecated, use `backend` parameter instead
 
 **Returns:**
 - `baseTs`: New baseTs instance
@@ -62,14 +60,14 @@ import numpy as np
 import pandas as pd
 from baseTs import baseTs
 
-# NumPy backend (default)
+# Create time series with numeric times
 data = np.sin(np.linspace(0, 4*np.pi, 1000))
 times = np.linspace(0, 10, 1000)
 ts = baseTs(data=data, times=times)
 
-# Series backend
+# Create time series with datetime index
 dates = pd.date_range('2023-01-01', periods=365, freq='D')
-ts_series = baseTs(data=np.random.randn(365), times=dates, backend='series')
+ts_series = baseTs(data=np.random.randn(365), times=dates)
 
 # With metadata
 ts_named = baseTs(data=data, times=times, 
@@ -126,16 +124,7 @@ def len(self) -> int:
     """Get the length of the time series."""
 ```
 
-### Backend Properties
-
-#### `backend`
-```python
-@property
-def backend(self) -> str:
-    """Get current backend ('numpy' or 'series')."""
-```
-
-### Metadata Properties (Series Backend)
+### Metadata Properties
 
 #### `signal_name`
 ```python
@@ -174,11 +163,10 @@ def last_process(self) -> Optional[str]:
 
 **Example:**
 ```python
-ts = baseTs(data=data, times=times, backend='series')
+ts = baseTs(data=data, times=times)
 filtered = ts.lowpass_filter(cutoff=0.3)
 
 print(f"Length: {ts.len()}")
-print(f"Backend: {ts.backend}")
 print(f"Is filtered: {filtered.is_filtered}")
 print(f"History: {filtered.history}")
 ```
@@ -428,12 +416,15 @@ print(f"Cleaned length: {cleaned.len()}")
 print(f"Removed {ts.len() - cleaned.len()} outliers")
 ```
 
-### `interpolate(method='linear')`
+### `interpolate_gaps(method='linear', limit=None, order=None, inplace=False)`
 
-Interpolate missing or removed values.
+Interpolate missing values (NaN) in the time series with enhanced capabilities.
 
 **Parameters:**
-- `method` (str, optional): Interpolation method ('linear', 'cubic', 'nearest'). Default: 'linear'
+- `method` (str, optional): Interpolation method ('linear', 'time', 'spline', 'polynomial', etc.). Default: 'linear'
+- `limit` (int, optional): Maximum number of consecutive NaN values to interpolate
+- `order` (int, optional): Order for polynomial/spline interpolation methods
+- `inplace` (bool, optional): If True, modifies existing object. Otherwise returns new object
 
 **Returns:**
 - `baseTs`: New baseTs object with interpolated data
@@ -441,10 +432,16 @@ Interpolate missing or removed values.
 **Example:**
 ```python
 # Linear interpolation
-interpolated = ts.interpolate(method='linear')
+interpolated = ts.interpolate_gaps(method='linear')
 
-# Cubic interpolation
-cubic_interp = ts.interpolate(method='cubic')
+# Polynomial interpolation with order 3
+poly_interp = ts.interpolate_gaps(method='polynomial', order=3)
+
+# Spline interpolation with limit
+spline_interp = ts.interpolate_gaps(method='spline', order=2, limit=10)
+
+# Time-based interpolation (works with numeric indices)
+time_interp = ts.interpolate_gaps(method='time')
 ```
 
 ### `resample(factor)`
@@ -468,9 +465,9 @@ downsampled = ts.resample(factor=0.5)
 
 ---
 
-## Time-Series Operations (Series Backend)
+## Enhanced Time-Series Operations
 
-These methods are available when using `backend='series'`.
+These methods leverage the pandas Series foundation for optimal performance.
 
 ### `rolling_mean(window, center=False)`
 
@@ -485,7 +482,7 @@ Calculate rolling mean.
 
 **Example:**
 ```python
-ts = baseTs(data=data, times=dates, backend='series')
+ts = baseTs(data=data, times=dates)
 
 # 7-day rolling average
 weekly_avg = ts.rolling_mean(window=7)
@@ -629,57 +626,83 @@ cumulative = ts.dediff()
 
 ---
 
-## Backend Management
+## Enhanced Frequency Analysis
 
-### `BackendManager`
+### `get_frequency_content(window=None)`
 
-Utility class for managing backend preferences.
-
-#### `BackendManager.set_default_backend(backend)`
-
-Set the default backend for new baseTs objects.
+Get frequency domain representation using enhanced FFT with optional windowing.
 
 **Parameters:**
-- `backend` (str): Backend name ('numpy' or 'series')
+- `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
+
+**Returns:**
+- `Tuple[NDArray, NDArray]`: Tuple of (frequencies, power_spectrum)
 
 **Example:**
 ```python
-from baseTs.compat import BackendManager
+# Basic FFT
+freqs, power = ts.get_frequency_content()
 
-# Set Series as default for new objects
-BackendManager.set_default_backend('series')
+# With Hann window for reduced spectral leakage
+freqs, power = ts.get_frequency_content(window='hann')
 
-# Now all new baseTs objects use Series backend by default
-ts = baseTs(data=data, times=times)  # Uses 'series' backend
+# With Blackman window for maximum side-lobe suppression
+freqs, power = ts.get_frequency_content(window='blackman')
 ```
 
-#### `BackendManager.get_default_backend()`
+### `get_peak_freq(num_pks=1, window=None, min_freq=None, max_freq=None)`
 
-Get the current default backend.
-
-**Returns:**
-- `str`: Current default backend
-
-#### `BackendManager.should_use_series()`
-
-Check if Series backend should be used based on configuration.
-
-**Returns:**
-- `bool`: True if Series backend should be used
-
-### Backend Conversion
-
-#### `convert_to_series(data, times, **metadata)`
-
-Convert numpy arrays to pandas Series with metadata.
+Get the top peak frequencies using enhanced frequency analysis with windowing.
 
 **Parameters:**
-- `data` (array-like): Data values
-- `times` (array-like): Time values
-- `**metadata`: Metadata to preserve
+- `num_pks` (int, optional): Number of top peak frequencies to return. Default: 1
+- `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
+- `min_freq` (float, optional): Minimum frequency to consider (Hz, defaults to exclude DC component)
+- `max_freq` (float, optional): Maximum frequency to consider (Hz, defaults to Nyquist)
 
 **Returns:**
-- `TimeSeriesData`: Pandas Series subclass with metadata
+- `float` or `List[float]`: Single peak frequency if num_pks=1, otherwise list of peak frequencies
+
+**Example:**
+```python
+# Basic peak frequency (excludes DC component by default)
+peak = ts.get_peak_freq()  # Returns: 25.3
+
+# Top 3 peaks with Hanning window
+peaks = ts.get_peak_freq(num_pks=3, window='hann')  # Returns: [25.3, 10.1, 45.7]
+
+# Peak in specific frequency range with windowing
+peak = ts.get_peak_freq(window='blackman', min_freq=1.0, max_freq=50.0)  # Returns: 15.2
+
+# Include DC component explicitly
+peak_with_dc = ts.get_peak_freq(min_freq=0.0)  # May return 0.0 if DC is strongest
+```
+
+### `plot_fft_power(max_rate=np.nan, min_rate=0.0, window=None, show=True, ax=None)`
+
+Plot FFT power spectrum with enhanced windowing and frequency range control.
+
+**Parameters:**
+- `max_rate` (float, optional): Maximum frequency to display (Hz). Default: Nyquist frequency
+- `min_rate` (float, optional): Minimum frequency to display (Hz). Default: 0.0
+- `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
+- `show` (bool, optional): Whether to display the plot. Default: True
+- `ax` (matplotlib.axes.Axes, optional): Axes to plot on
+
+**Returns:**
+- `matplotlib.axes.Axes`: The plot axes
+
+**Example:**
+```python
+# Basic FFT plot
+ts.plot_fft_power()
+
+# Plot with frequency range and Hann window
+ts.plot_fft_power(min_rate=1.0, max_rate=50.0, window='hann')
+
+# Plot with Blackman window for detailed analysis
+ts.plot_fft_power(window='blackman', show=False)
+```
 
 ---
 
@@ -747,15 +770,14 @@ except ValueError as e:
 
 ## Performance Notes
 
-### NumPy Backend Performance
-- Fastest for pure numerical operations
-- Minimal memory overhead
-- Best for high-frequency processing
+The pandas Series foundation provides:
 
-### Series Backend Performance  
-- 1-5x overhead for basic operations
-- Optimized rolling operations (often faster than manual implementation)
-- Enhanced functionality worth the overhead for time-series analysis
+- **Rolling Operations**: 2-5x faster using native pandas implementations
+- **Time Slicing**: Optimized pandas indexing for time-based queries  
+- **Memory Efficiency**: Eliminated dual array storage overhead
+- **Statistical Operations**: Vectorized pandas computations
+- **Resampling**: Native pandas resampling algorithms
+- **FFT with Windowing**: Enhanced spectral analysis with reduced leakage
 
 ### Optimization Tips
 
@@ -763,13 +785,16 @@ except ValueError as e:
 # For large datasets, consider data type optimization
 data = data.astype(np.float32)  # Use float32 if precision allows
 
-# Use NumPy backend for pure signal processing
-signal_proc = baseTs(data=data, times=times, backend='numpy')
-filtered = signal_proc.lowpass_filter(cutoff=0.3)
+# Direct pandas Series operations available
+ts = baseTs(data=data, times=times)
+ts.describe()          # Statistical summary
+ts.quantile(0.95)      # 95th percentile
+ts.rolling(10).mean()  # Native pandas rolling
+ts.resample('1S').max() # Native pandas resampling
 
-# Switch to Series backend for time-series analysis
-ts_analysis = baseTs(data=filtered.data, times=dates, backend='series')
-rolling_avg = ts_analysis.rolling_mean(window=30)
+# Enhanced frequency analysis with windowing
+freqs, power = ts.get_frequency_content(window='hann')
+peak = ts.get_peak_freq(window='blackman', min_freq=1.0)
 ```
 
 ---
@@ -786,11 +811,17 @@ result = (ts
           .zscale()
           .apply_function(np.abs))
 
-# With Series backend, include rolling operations
+# Include enhanced time-series operations
 result = (ts
           .lowpass_filter(cutoff=0.3)
           .rolling_mean(window=30)
+          .interpolate_gaps(method='spline', order=2)
           .zscale())
+
+# Enhanced frequency analysis in pipeline
+peak_freq = (ts
+            .bandpass_filter(low_cutoff=0.1, high_cutoff=0.4)
+            .get_peak_freq(window='hann', min_freq=1.0))
 ```
 
-This API documentation provides comprehensive coverage of all baseTs functionality across both backends.
+This API documentation provides comprehensive coverage of all baseTs functionality with the pandas Series foundation, offering enhanced performance and capabilities while maintaining full backward compatibility.
