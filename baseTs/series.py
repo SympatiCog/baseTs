@@ -257,3 +257,94 @@ class TimeSeriesData(pd.Series):
         if hasattr(self, 'signal_name') and self.signal_name:
             additional_info += f", Signal: {self.signal_name}"
         return base_repr + additional_info
+
+    # Arithmetic operations that should return baseTs objects
+    def __add__(self, other):
+        """Addition operation returning a baseTs object."""
+        result = super().__add__(other)
+        return self._wrap_result_as_basets(result, "Addition")
+
+    def __radd__(self, other):
+        """Right addition operation returning a baseTs object."""
+        result = super().__radd__(other)
+        return self._wrap_result_as_basets(result, "Addition")
+
+    def __sub__(self, other):
+        """Subtraction operation returning a baseTs object."""
+        result = super().__sub__(other)
+        return self._wrap_result_as_basets(result, "Subtraction")
+
+    def __rsub__(self, other):
+        """Right subtraction operation returning a baseTs object."""
+        result = super().__rsub__(other)
+        return self._wrap_result_as_basets(result, "Subtraction")
+
+    def __mul__(self, other):
+        """Multiplication operation returning a baseTs object."""
+        result = super().__mul__(other)
+        return self._wrap_result_as_basets(result, "Multiplication")
+
+    def __rmul__(self, other):
+        """Right multiplication operation returning a baseTs object."""
+        result = super().__rmul__(other)
+        return self._wrap_result_as_basets(result, "Multiplication")
+
+    def __truediv__(self, other):
+        """Division operation returning a baseTs object."""
+        result = super().__truediv__(other)
+        return self._wrap_result_as_basets(result, "Division")
+
+    def __rtruediv__(self, other):
+        """Right division operation returning a baseTs object."""
+        result = super().__rtruediv__(other)
+        return self._wrap_result_as_basets(result, "Division")
+
+    def __pow__(self, other):
+        """Power operation returning a baseTs object."""
+        result = super().__pow__(other)
+        return self._wrap_result_as_basets(result, "Power")
+
+    def __rpow__(self, other):
+        """Right power operation returning a baseTs object."""
+        result = super().__rpow__(other)
+        return self._wrap_result_as_basets(result, "Power")
+
+    def _wrap_result_as_basets(self, result, operation_name: str):
+        """
+        Wrap arithmetic operation results as baseTs objects.
+        
+        Args:
+            result: Result from pandas arithmetic operation
+            operation_name: Name of the operation for history tracking
+            
+        Returns:
+            baseTs object with the operation result
+        """
+        # Import here to avoid circular imports
+        from .core import baseTs
+        
+        # Handle scalar results
+        if np.isscalar(result):
+            # For scalar results, we can't return a baseTs, so return the scalar
+            return result
+        
+        # Create new baseTs object with the result
+        new_basets = baseTs(
+            data=result.values,
+            times=result.index.values,
+            freq=self.freq,
+            signal_name=self.signal_name
+        )
+        
+        # Copy relevant metadata
+        for attr in self._metadata:
+            if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
+                setattr(new_basets, attr, getattr(self, attr))
+        
+        # Update history
+        new_basets._update_history_and_process(
+            f"Applied {operation_name} operation",
+            f"_{operation_name.lower()}"
+        )
+        
+        return new_basets
