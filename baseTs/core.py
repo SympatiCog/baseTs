@@ -1327,32 +1327,69 @@ class baseTs(TimeSeriesData):
         return new_obj
     
     def interpolate_gaps(self, method: str = 'linear', limit: int = None, 
-                        inplace: bool = False) -> "baseTs":
+                        order: int = None, inplace: bool = False, **kwargs) -> "baseTs":
         """
         Interpolate missing values (NaN) in the time series.
         
         Args:
-            method: Interpolation method ('linear', 'time', 'spline', 'polynomial', etc.)
+            method: Interpolation method ('linear', 'time', 'spline', 'polynomial', 'cubic', etc.)
             limit: Maximum number of consecutive NaN values to interpolate
+            order: Order for polynomial/spline interpolation (default: 1 for polynomial, 3 for spline)
             inplace: If True, modifies existing object. Otherwise returns new object.
+            **kwargs: Additional parameters passed to pandas interpolate method
             
         Returns:
             Interpolated baseTs object
+            
+        Examples:
+            # Linear interpolation (default)
+            ts_linear = ts.interpolate_gaps()
+            
+            # Polynomial interpolation with order 2
+            ts_poly = ts.interpolate_gaps(method='polynomial', order=2)
+            
+            # Spline interpolation with order 3
+            ts_spline = ts.interpolate_gaps(method='spline', order=3)
+            
+            # Time-based interpolation (works with numeric time index)
+            ts_time = ts.interpolate_gaps(method='time')
         """
-        interpolated = self.interpolate(method=method, limit=limit)
+        # Handle special case for time method with numeric index
+        if method == 'time':
+            # For numeric time index, convert to timedelta for time interpolation
+            time_index = pd.to_timedelta(self.index, unit='s')
+            temp_series = pd.Series(self.values, index=time_index)
+            interpolated = temp_series.interpolate(method=method, limit=limit, **kwargs)
+            # Convert back to numeric index
+            interpolated.index = interpolated.index.total_seconds()
+        else:
+            # Set default orders for polynomial and spline methods
+            if order is None:
+                if method == 'polynomial':
+                    order = 1  # Linear polynomial by default
+                elif method == 'spline':
+                    order = 3  # Cubic spline by default
+            
+            # Apply interpolation with order parameter if needed
+            if method in ['polynomial', 'spline'] and order is not None:
+                interpolated = self.interpolate(method=method, order=order, limit=limit, **kwargs)
+            else:
+                interpolated = self.interpolate(method=method, limit=limit, **kwargs)
         
         if inplace:
             # Update current object
             super(TimeSeriesData, self).__init__(interpolated.values, index=interpolated.index)
+            order_str = f", order={order}" if order is not None else ""
             self._update_history_and_process(
-                f"Interpolated gaps using {method}",
+                f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
             return self
         else:
             new_obj = self._create_new_with_data(interpolated.values, interpolated.index.values)
+            order_str = f", order={order}" if order is not None else ""
             new_obj._update_history_and_process(
-                f"Interpolated gaps using {method}",
+                f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
             return new_obj

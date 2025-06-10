@@ -100,7 +100,7 @@ outliers_mod = ts.detect_outliers(method='modified_zscore', threshold=3.5)
 
 ```python
 # Sophisticated gap filling
-ts_filled = ts.interpolate_gaps(method='spline')
+ts_filled = ts.interpolate_gaps(method='spline', order=3)
 ts_linear = ts.interpolate_gaps(method='linear', limit=10)
 ```
 

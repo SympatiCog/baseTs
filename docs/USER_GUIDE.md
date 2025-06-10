@@ -216,11 +216,14 @@ ts_with_gaps.data[200:205] = np.nan
 
 # Fill gaps with different methods
 linear_filled = ts_with_gaps.interpolate_gaps(method='linear')
-spline_filled = ts_with_gaps.interpolate_gaps(method='spline')
+spline_filled = ts_with_gaps.interpolate_gaps(method='spline', order=3)
+polynomial_filled = ts_with_gaps.interpolate_gaps(method='polynomial', order=2)
 time_filled = ts_with_gaps.interpolate_gaps(method='time', limit=10)
 
 print(f"Original NaN count: {np.sum(np.isnan(ts_with_gaps.data))}")
 print(f"After linear interpolation: {np.sum(np.isnan(linear_filled.data))}")
+print(f"After cubic spline interpolation: {np.sum(np.isnan(spline_filled.data))}")
+print(f"After polynomial (order 2) interpolation: {np.sum(np.isnan(polynomial_filled.data))}")
 ```
 
 ### Time Shifting
@@ -704,7 +707,7 @@ ts.rolling(10).mean()            # Native pandas rolling
 
 # Enhanced baseTs methods (new)
 ts.resample('1s', method='mean')       # Intelligent resampling
-ts.interpolate_gaps(method='spline')   # Gap filling
+ts.interpolate_gaps(method='spline', order=3)   # Gap filling
 ts.align_with(other_ts)                # Time series alignment
 ts.correlation_with(other_ts)          # Cross-correlation
 ```
