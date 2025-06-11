@@ -342,23 +342,32 @@ def custom_transform(x):
 transformed = ts.apply_function(custom_transform)
 ```
 
-### `detrend(method='linear')`
+### `detrend(method='linear', inplace=False)`
 
-Remove trend from signal.
+Remove trend from the signal using various detrending methods.
 
 **Parameters:**
 - `method` (str, optional): Detrending method ('linear', 'constant'). Default: 'linear'
+  - 'linear': Remove linear trend (best fit line)
+  - 'constant': Remove mean (demean the signal)
+- `inplace` (bool, optional): If True, modifies existing object. Otherwise returns new object. Default: False
 
 **Returns:**
 - `baseTs`: New detrended baseTs object
+
+**Raises:**
+- `ValueError`: If method is not supported
 
 **Example:**
 ```python
 # Remove linear trend
 detrended = ts.detrend(method='linear')
 
-# Remove mean only
+# Remove mean only (constant detrending)
 demeaned = ts.detrend(method='constant')
+
+# In-place detrending
+ts.detrend(method='linear', inplace=True)
 ```
 
 ---

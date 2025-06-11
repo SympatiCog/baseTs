@@ -106,6 +106,39 @@ class TestBaseTsTransformations:
         assert np.isclose(ts_norm.data.min(), 0, atol=1e-10)
         assert np.isclose(ts_norm.data.max(), 1, atol=1e-10)
         
+    def test_detrend(self):
+        """Test detrending functionality."""
+        # Create signal with trend
+        t = np.linspace(0, 10, 1000)
+        trend = 0.5 * t + 2.0  # Linear trend: slope=0.5, offset=2.0
+        signal = np.sin(2 * np.pi * 0.5 * t) + trend
+        ts = baseTs(data=signal, times=t, freq=100.0)
+        
+        # Test linear detrending
+        ts_linear = ts.detrend(method='linear')
+        # After linear detrend, mean should be approximately zero
+        assert np.abs(ts_linear.data.mean()) < 1e-10
+        # Original signal should be unchanged
+        assert not np.allclose(ts.data, ts_linear.data)
+        
+        # Test constant detrending (demean)
+        ts_constant = ts.detrend(method='constant')
+        # After constant detrend, mean should be exactly zero
+        assert np.abs(ts_constant.data.mean()) < 1e-15
+        # Should preserve the linear trend but remove the mean
+        assert ts_constant.data.max() - ts_constant.data.min() > ts_linear.data.max() - ts_linear.data.min()
+        
+        # Test inplace operation
+        ts_copy = ts.copy()
+        original_data = ts_copy.data.copy()
+        ts_inplace = ts_copy.detrend(method='linear', inplace=True)
+        assert ts_inplace is ts_copy  # Should return self
+        assert not np.allclose(original_data, ts_copy.data)  # Data should be modified
+        
+        # Test invalid method
+        with pytest.raises(ValueError, match="Unsupported detrend method"):
+            ts.detrend(method='invalid')
+        
     def test_trimming(self, simple_baseTsObj):
         """Test trimming functionality."""
         start_val = 2.0  # Start at t=2s

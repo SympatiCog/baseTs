@@ -1904,3 +1904,57 @@ class baseTs(TimeSeriesData):
             last_process="_lowess_detrend"
         )
         return processed
+    
+    def detrend(self, method: str = 'linear', inplace: bool = False) -> "baseTs":
+        """
+        Remove trend from the signal using various detrending methods.
+        
+        Args:
+            method: Detrending method ('linear', 'constant')
+                - 'linear': Remove linear trend (best fit line)
+                - 'constant': Remove mean (demean the signal)
+            inplace: If True, modifies existing object. Otherwise returns new object.
+        
+        Returns:
+            baseTs: Detrended baseTs object
+            
+        Raises:
+            ValueError: If method is not supported
+        """
+        if method not in ['linear', 'constant']:
+            raise ValueError(f"Unsupported detrend method: {method}. Use 'linear' or 'constant'")
+        
+        def detrend_func(data):
+            if method == 'linear':
+                # Remove linear trend using least squares fit
+                x = np.arange(len(data))
+                coeffs = np.polyfit(x, data, 1)  # Linear fit (degree 1)
+                trend = np.polyval(coeffs, x)
+                detrended = data - trend
+                return detrended, trend
+            elif method == 'constant':
+                # Remove mean (constant detrending)
+                mean_val = np.mean(data)
+                detrended = data - mean_val
+                trend = np.full_like(data, mean_val)
+                return detrended, trend
+        
+        def process_result(result):
+            detrended_data, trend = result
+            if inplace:
+                self.data = detrended_data
+                self._update_history_and_process(
+                    hist_msg=f"Detrended using {method} method",
+                    last_process=f"_detrend_{method}"
+                )
+                return self
+            else:
+                new_obj = self._create_new_with_data(detrended_data, self.times)
+                new_obj._update_history_and_process(
+                    hist_msg=f"Detrended using {method} method",
+                    last_process=f"_detrend_{method}"
+                )
+                return new_obj
+        
+        result = detrend_func(self.data)
+        return process_result(result)
