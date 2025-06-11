@@ -4,23 +4,53 @@ A powerful Python library for time series analysis built on pandas Series, provi
 
 ## Features
 
-### Core Functionality
-- **Pandas Series Foundation**: Built directly on pandas Series for optimal time-series performance
-- **Signal Processing**: Low-pass, high-pass, bandpass filtering, normalization, outlier detection
-- **Time-Series Analysis**: Rolling statistics, time-based slicing, resampling, correlation analysis
-- **Data Processing**: Function application, interpolation, gap filling, time alignment
-- **100% Backward Compatibility**: All existing baseTs code works unchanged
+### ⭐ **LOWESS Outlier Detection & Despiking**
+- **Advanced LOWESS Filtering**: Robust spike artifact removal (the original motivation for this library!)
+- **Configurable Parameters**: Z-threshold, fraction, iterations, and tail processing options
+- **Quality Control**: Built-in QC plotting to visualize outlier detection results
+- **Iterative Processing**: Multiple passes for thorough artifact removal
 
-### Enhanced Time-Series Features
-- **Native Pandas Integration**: Access to 270+ pandas Series methods
-- **Advanced Rolling Operations**: `rolling_mean()`, `rolling_std()`, `rolling_max()`, `rolling_min()`, `rolling_median()`
-- **Intelligent Resampling**: `resample()` with automatic frequency conversion
-- **Time-Series Alignment**: `align_with()` for synchronizing multiple series
-- **Correlation Analysis**: `correlation_with()` for cross-series analysis
-- **Outlier Detection**: Multiple statistical methods (`zscore`, `iqr`, `modified_zscore`)
-- **Gap Interpolation**: `interpolate_gaps()` with various methods
-- **Frequency Analysis**: Enhanced FFT with windowing functions
+### 🎛️ **Comprehensive Signal Processing**
+- **Digital Filters**: Low-pass, high-pass, bandpass, notch, and Gaussian filtering
+- **Advanced Filtering**: Butterworth, Savitzky-Golay, and custom filter implementations
+- **Detrending**: Linear and constant detrending methods
+- **Normalization**: Z-score, range normalization, and centering functions
+
+### 🔗 **Time-Series Alignment & Synchronization**
+- **Multi-Series Alignment**: `align_with()` for synchronizing different time series
+- **Flexible Join Methods**: Inner, outer, left, and right alignment strategies
+- **Time-Based Operations**: Intelligent handling of different sampling rates and time grids
+- **Cross-Correlation**: Built-in correlation analysis between aligned series
+
+### ⚙️ **Arbitrary Function Application**
+- **Flexible Processing**: Apply any custom function via `.apply_function()`
+- **Mathematical Operations**: Built-in support for complex transformations
+- **Function Chaining**: Seamless integration with method chaining workflows
+- **Custom Analytics**: Easy integration of domain-specific processing functions
+
+### 📊 **Native Plotting Integration**
+- **Direct Plotting**: `ax = ts.plot()` for immediate visualization
+- **Multi-Series Plots**: `ts2.plot(ax=ax)` for overlay plotting
+- **Specialized Plots**: FFT power spectra, histograms, lag plots, and QC visualizations
+- **Matplotlib Integration**: Full compatibility with matplotlib workflows
+
+### 🧮 **First-Class Mathematical Operations**
+- **Natural Arithmetic**: `ts3 = ts1 + ts2`, `ts_scaled = ts * 2.5`
+- **Element-wise Operations**: Addition, subtraction, multiplication, and division
+- **Broadcasting Support**: Operations between series and scalars
+- **Mathematical Functions**: Direct application of numpy/scipy functions
+
+### 🐼 **Full Pandas Ecosystem Integration**
+- **Native pandas Series**: Access to all 270+ pandas Series methods
+- **NumPy Compatibility**: Seamless integration with NumPy functions and operations
+- **SciPy Integration**: Direct compatibility with SciPy signal processing and statistics
+- **Visualization Libraries**: Works with matplotlib, seaborn, plotly, and other plotting tools
+
+### 🏗️ **Enhanced Architecture**
+- **Pandas Series Foundation**: Built directly on pandas Series for optimal performance
+- **100% Backward Compatibility**: All existing baseTs code works unchanged
 - **Metadata Preservation**: Complete processing history and filter state tracking
+- **Memory Efficiency**: Optimized storage without dual array overhead
 
 ## Installation
 
@@ -39,49 +69,83 @@ pip install -e ".[dev]"  # Includes test dependencies
 
 ## Quick Start
 
-### Basic Usage
+### Basic Usage with Key Features
 ```python
 import numpy as np
+import matplotlib.pyplot as plt
 from baseTs import baseTs
 
-# Create sample data
-data = np.sin(np.linspace(0, 4*np.pi, 1000)) + 0.1*np.random.randn(1000)
+# Create sample data with artificial spikes
 times = np.linspace(0, 10, 1000)
+data = np.sin(2*np.pi*0.5*times) + 0.1*np.random.randn(1000)
+# Add some spike artifacts
+data[200] += 5.0  # Spike artifact
+data[600] -= 4.0  # Another spike
 
-# Create baseTs object (now pandas Series-based)
+# Create baseTs object
 ts = baseTs(data=data, times=times, freq=100.0, signal_name="example")
 
-# Basic operations (unchanged API)
-filtered = ts.lowpass_at(cutoff=2.0)
-normalized = filtered.zscale()
-print(f"Length: {len(normalized)}, Mean: {np.mean(normalized.data):.3f}")
+# LOWESS outlier detection and removal (library's signature feature!)
+despiked = ts.set_outlier_filter(z_threshold=3.0).filter_outliers()
+
+# Signal processing chain
+processed = (despiked
+             .lowpass_filter(cutoff=2.0)
+             .detrend(method='linear')
+             .zscale())
+
+# Mathematical operations
+ts_doubled = processed * 2.0
+ts_combined = ts + processed  # First-class arithmetic
+
+# Native plotting
+ax = ts.plot()                    # Original signal
+despiked.plot(ax=ax)             # Overlay despiked
+processed.plot(ax=ax)            # Overlay processed
+plt.legend(['Original', 'Despiked', 'Processed'])
+plt.show()
+
+print(f"Removed {len(ts) - len(despiked)} outlier points")
+print(f"Final stats: mean={np.mean(processed.data):.3f}, std={np.std(processed.data):.3f}")
 ```
 
-### Enhanced Time-Series Features
+### Pandas Integration & Advanced Features
 
 ```python
 import pandas as pd
+import numpy as np
 from baseTs import baseTs
 
-# Create time series with numeric times (or datetime index)
-times = np.linspace(0, 100, 10000)  # 100 seconds at 100Hz
-data = np.sin(2*np.pi*0.5*times) + 0.1*np.random.randn(10000)
+# Create two time series for alignment demo
+times1 = np.linspace(0, 100, 10000)  
+times2 = np.linspace(0.5, 99.5, 9900)  # Slightly different time grid
+data1 = np.sin(2*np.pi*0.5*times1) + 0.1*np.random.randn(10000)
+data2 = np.cos(2*np.pi*0.5*times2) + 0.1*np.random.randn(9900)
 
-ts = baseTs(data=data, times=times, freq=100.0, signal_name="signal")
+ts1 = baseTs(data=data1, times=times1, freq=100.0, signal_name="signal1")
+ts2 = baseTs(data=data2, times=times2, freq=100.0, signal_name="signal2")
 
-# Enhanced operations
-monthly_avg = ts.rolling_mean(window=50, center=True)
-segment = ts.time_slice(start_time=10.0, end_time=90.0)
-stats = ts.get_statistics()
+# Time-series alignment
+aligned1, aligned2 = ts1.align_with(ts2, method='inner')
+correlation = aligned1.correlation_with(aligned2)
 
-# New pandas-powered features
-ts_downsampled = ts.resample('1s', method='mean')  # Downsample to 1Hz
-outliers = ts.detect_outliers(method='zscore', threshold=2.5)
-ts_shifted = ts.shift_time(periods=10)
+# Apply arbitrary functions
+squared_signal = ts1.apply_function(lambda x: x**2)
+custom_transform = ts1.apply_function(np.tanh)  # Apply any numpy function
 
-print(f"Segment mean: {np.mean(segment.data):.3f}")
-print(f"Found {np.sum(outliers)} outliers")
-print(f"Statistics: {stats}")
+# Full pandas ecosystem access
+ts1_stats = ts1.describe()          # Native pandas method
+ts1_median = ts1.median()           # Direct pandas access
+ts1_quantiles = ts1.quantile([0.25, 0.75])  # Pandas quantiles
+
+# Mathematical operations
+combined = ts1 + ts2 * 0.5          # First-class arithmetic
+scaled = ts1 * 2 - 1                # Chained operations
+power_signal = ts1 ** 2             # Power operations
+
+print(f"Alignment correlation: {correlation:.3f}")
+print(f"Original vs squared mean: {ts1.mean():.3f} vs {squared_signal.mean():.3f}")
+print(f"Combined signal range: {combined.min():.3f} to {combined.max():.3f}")
 ```
 
 ### Advanced Analysis

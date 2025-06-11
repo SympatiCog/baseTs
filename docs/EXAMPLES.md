@@ -155,19 +155,54 @@ def process_eeg_signal(raw_eeg, sampling_rate=250):
     # Enhanced frequency analysis with windowing
     freqs, power = normalized.get_frequency_content(window='hann')
     
-    # Extract EEG frequency bands with windowing
-    alpha_power = normalized.get_peak_freq(window='hann', min_freq=8, max_freq=12)
-    beta_power = normalized.get_peak_freq(window='hann', min_freq=13, max_freq=30)
-    gamma_power = normalized.get_peak_freq(window='hann', min_freq=30, max_freq=50)
+    # Calculate power in standard EEG frequency bands
+    def calculate_band_power(frequencies, power_spectrum, freq_min, freq_max):
+        """Calculate total power within a frequency band."""
+        band_mask = (frequencies >= freq_min) & (frequencies <= freq_max)
+        if np.any(band_mask):
+            return np.sum(power_spectrum[band_mask])
+        return 0.0
+    
+    # Define standard EEG frequency bands
+    eeg_bands = {
+        'delta': (0.5, 4),      # Delta waves (deep sleep)
+        'theta': (4, 8),        # Theta waves (drowsiness, meditation)
+        'alpha': (8, 13),       # Alpha waves (relaxed awareness)
+        'beta': (13, 30),       # Beta waves (active concentration)
+        'gamma': (30, 50)       # Gamma waves (cognitive processing)
+    }
+    
+    # Calculate absolute power in each band
+    band_powers = {}
+    total_power = np.sum(power)
+    
+    for band_name, (low_freq, high_freq) in eeg_bands.items():
+        absolute_power = calculate_band_power(freqs, power, low_freq, high_freq)
+        relative_power = (absolute_power / total_power) * 100 if total_power > 0 else 0
+        
+        band_powers[band_name] = {
+            'absolute_power': absolute_power,
+            'relative_power': relative_power,
+            'frequency_range': (low_freq, high_freq),
+            'peak_frequency': normalized.get_peak_freq(window='hann', min_freq=low_freq, max_freq=high_freq)
+        }
+    
+    # Calculate band ratios (clinically relevant)
+    alpha_beta_ratio = (band_powers['alpha']['absolute_power'] / 
+                       band_powers['beta']['absolute_power']) if band_powers['beta']['absolute_power'] > 0 else 0
+    
+    theta_beta_ratio = (band_powers['theta']['absolute_power'] / 
+                       band_powers['beta']['absolute_power']) if band_powers['beta']['absolute_power'] > 0 else 0
     
     return {
         'processed': normalized,
         'frequency_content': (freqs, power),
-        'peak_frequencies': {
-            'alpha': alpha_power,
-            'beta': beta_power,
-            'gamma': gamma_power
-        }
+        'band_powers': band_powers,
+        'band_ratios': {
+            'alpha_beta_ratio': alpha_beta_ratio,
+            'theta_beta_ratio': theta_beta_ratio
+        },
+        'total_power': total_power
     }
 
 # Generate realistic EEG signal
@@ -192,10 +227,38 @@ for artifact_time in artifact_times:
     eeg_signal[start_idx:end_idx] += 30 * (np.random.randn(end_idx - start_idx) > 1.5)
 
 eeg_results = process_eeg_signal(eeg_signal, sampling_rate)
+
 print(f"Processed EEG: {eeg_results['processed'].len()} samples")
-print(f"Alpha peak: {eeg_results['peak_frequencies']['alpha']:.2f} Hz")
-print(f"Beta peak: {eeg_results['peak_frequencies']['beta']:.2f} Hz")
-print(f"Gamma peak: {eeg_results['peak_frequencies']['gamma']:.2f} Hz")
+print(f"Total power: {eeg_results['total_power']:.4f}")
+
+print("\nEEG Band Powers:")
+for band_name, band_data in eeg_results['band_powers'].items():
+    print(f"  {band_name.capitalize()} ({band_data['frequency_range'][0]}-{band_data['frequency_range'][1]} Hz):")
+    print(f"    Absolute power: {band_data['absolute_power']:.4f}")
+    print(f"    Relative power: {band_data['relative_power']:.1f}%")
+    print(f"    Peak frequency: {band_data['peak_frequency']:.2f} Hz")
+
+print(f"\nClinically Relevant Ratios:")
+print(f"  Alpha/Beta ratio: {eeg_results['band_ratios']['alpha_beta_ratio']:.3f}")
+print(f"  Theta/Beta ratio: {eeg_results['band_ratios']['theta_beta_ratio']:.3f}")
+
+# Interpret the results
+print(f"\nInterpretation:")
+alpha_rel = eeg_results['band_powers']['alpha']['relative_power']
+beta_rel = eeg_results['band_powers']['beta']['relative_power']
+theta_rel = eeg_results['band_powers']['theta']['relative_power']
+
+if alpha_rel > 30:
+    print(f"  High alpha power ({alpha_rel:.1f}%) suggests relaxed, eyes-closed state")
+elif beta_rel > 35:
+    print(f"  High beta power ({beta_rel:.1f}%) suggests active concentration/alertness")
+elif theta_rel > 25:
+    print(f"  High theta power ({theta_rel:.1f}%) suggests drowsiness or meditative state")
+
+if eeg_results['band_ratios']['alpha_beta_ratio'] > 1.5:
+    print(f"  High alpha/beta ratio suggests relaxed state")
+elif eeg_results['band_ratios']['theta_beta_ratio'] > 1.0:
+    print(f"  High theta/beta ratio may indicate fatigue or inattention")
 ```
 
 ### Acoustic Signal Analysis
