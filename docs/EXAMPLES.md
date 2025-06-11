@@ -52,9 +52,10 @@ print(f"Data range: {np.min(ts.data):.2f} to {np.max(ts.data):.2f}")
 print(f"Sampling frequency: {ts.freq} Hz")
 
 # Enhanced processing pipeline using pandas Series capabilities
-filtered = ts.lowpass_filter(cutoff=0.3)
-cleaned = filtered.remove_outliers(method='iqr', factor=2.0)
-smoothed = cleaned.rolling_mean(window=20)  # Enhanced rolling operations
+# First remove spike artifacts using LOWESS outlier filtering
+despiked = ts.set_outlier_filter(z_threshold=3).filter_outliers()
+filtered = despiked.lowpass_filter(cutoff=0.3)
+smoothed = filtered.rolling_mean(window=20)  # Enhanced rolling operations
 normalized = smoothed.zscale()
 
 # Enhanced frequency analysis with windowing
@@ -134,19 +135,19 @@ def process_eeg_signal(raw_eeg, sampling_rate=250):
     eeg = baseTs(data=raw_eeg, times=times, signal_name="EEG", freq=sampling_rate)
     
     # Enhanced EEG processing pipeline
-    # 1. Remove DC offset and detrend
-    detrended = eeg.detrend(method='linear')
+    # 1. Remove spike artifacts using LOWESS outlier filtering
+    despiked = eeg.set_outlier_filter(z_threshold=3.5).filter_outliers()
     
-    # 2. Bandpass filter (1-50 Hz for typical EEG analysis)
+    # 2. Remove DC offset and detrend
+    detrended = despiked.detrend(method='linear')
+    
+    # 3. Bandpass filter (1-50 Hz for typical EEG analysis)
     nyquist = sampling_rate / 2
     high_cutoff = min(50.0 / nyquist, 0.95)  # Ensure valid cutoff
     bandpassed = detrended.lowpass_filter(cutoff=high_cutoff)
     
-    # 3. Remove artifacts using enhanced outlier detection
-    cleaned = bandpassed.remove_outliers(method='modified_zscore', threshold=3.5)
-    
     # 4. Enhanced interpolation for any gaps
-    interpolated = cleaned.interpolate_gaps(method='spline', order=3)
+    interpolated = bandpassed.interpolate_gaps(method='spline', order=3)
     
     # 5. Z-score normalization
     normalized = interpolated.zscale()
@@ -339,33 +340,35 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
     data_completeness = 1 - np.sum(np.isnan(measurements)) / len(measurements)
     
     # Signal processing with enhanced methods
-    # 1. Remove trend and outliers
-    detrended = ts.detrend(method='linear')
-    cleaned = detrended.remove_outliers(method='modified_zscore', threshold=3.5)
+    # 1. Remove spike artifacts first using LOWESS outlier filtering
+    despiked = ts.set_outlier_filter(z_threshold=3.5).filter_outliers()
     
-    # 2. Enhanced smoothing with rolling operations
+    # 2. Remove trend
+    detrended = despiked.detrend(method='linear')
+    
+    # 3. Enhanced smoothing with rolling operations
     window_size = max(10, len(measurements) // 100)
-    smoothed = cleaned.rolling_mean(window=window_size, center=True)
+    smoothed = detrended.rolling_mean(window=window_size, center=True)
     
-    # 3. Enhanced frequency analysis with windowing
+    # 4. Enhanced frequency analysis with windowing
     freq_content = {}
     for window in ['hann', 'hamming', 'blackman']:
-        freqs, power = cleaned.get_frequency_content(window=window)
-        dominant_freq = cleaned.get_peak_freq(window=window, min_freq=0.001)
+        freqs, power = detrended.get_frequency_content(window=window)
+        dominant_freq = detrended.get_peak_freq(window=window, min_freq=0.001)
         freq_content[window] = {
             'frequencies': freqs,
             'power': power,
             'dominant_frequency': dominant_freq
         }
     
-    # 4. Statistical analysis
-    stats = cleaned.get_statistics()
+    # 5. Statistical analysis
+    stats = detrended.get_statistics()
     
-    # 5. Temporal analysis
-    if len(cleaned.data) > 50:
+    # 6. Temporal analysis
+    if len(detrended.data) > 50:
         # Change point detection using rolling statistics
-        rolling_mean = cleaned.rolling_mean(window=20)
-        rolling_std = cleaned.rolling_std(window=20)
+        rolling_mean = detrended.rolling_mean(window=20)
+        rolling_std = detrended.rolling_std(window=20)
         
         # Detect periods of high variability
         stability_metric = rolling_std.data / (np.abs(rolling_mean.data) + 1e-10)
@@ -373,24 +376,25 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
     else:
         high_variability_periods = []
     
-    # 6. Correlation analysis (if multiple measurements)
-    autocorr_1 = np.corrcoef(cleaned.data[:-1], cleaned.data[1:])[0, 1] if len(cleaned.data) > 1 else 0
+    # 7. Correlation analysis (if multiple measurements)
+    autocorr_1 = np.corrcoef(detrended.data[:-1], detrended.data[1:])[0, 1] if len(detrended.data) > 1 else 0
     
     return {
         'original': ts,
-        'processed': cleaned,
+        'despiked': despiked,
+        'processed': detrended,
         'smoothed': smoothed,
         'quality_metrics': {
             'data_completeness': data_completeness,
             'outlier_rate': n_outliers / len(measurements),
-            'signal_to_noise_ratio': np.std(smoothed.data) / np.std(cleaned.data - smoothed.data) if np.std(cleaned.data - smoothed.data) > 0 else np.inf
+            'signal_to_noise_ratio': np.std(smoothed.data) / np.std(detrended.data - smoothed.data) if np.std(detrended.data - smoothed.data) > 0 else np.inf
         },
         'frequency_analysis': freq_content,
         'statistics': stats,
         'temporal_features': {
             'autocorrelation_lag1': autocorr_1,
             'high_variability_periods': high_variability_periods,
-            'trend_strength': 1 - np.var(cleaned.data - detrended.data) / np.var(cleaned.data) if np.var(cleaned.data) > 0 else 0
+            'trend_strength': 1 - np.var(detrended.data - ts.detrend(method='linear').data) / np.var(detrended.data) if np.var(detrended.data) > 0 else 0
         },
         'metadata': metadata
     }
@@ -615,9 +619,9 @@ def analyze_physiological_signals(signal_data, channel_info, sampling_rate=1000)
     for channel, ts in signal_objects.items():
         channel_type = channel_info[channel]['type']
         
-        # Common preprocessing
-        detrended = ts.detrend(method='linear')
-        cleaned = detrended.remove_outliers(method='modified_zscore', threshold=3.5)
+        # Common preprocessing - first remove spike artifacts
+        despiked = ts.set_outlier_filter(z_threshold=3.5).filter_outliers()
+        cleaned = despiked.detrend(method='linear')
         
         if channel_type == 'ECG':
             # ECG-specific analysis
@@ -1372,9 +1376,9 @@ def scientific_data_generator(chunk_size):
 
 # Enhanced operations for scientific data
 scientific_operations = [
+    lambda ts: ts.set_outlier_filter(z_threshold=3.5).filter_outliers(),  # Remove spike artifacts first
     lambda ts: ts.detrend(method='linear'),                    # Remove linear drift
     lambda ts: ts.lowpass_filter(cutoff=0.4),                # Anti-aliasing filter
-    lambda ts: ts.remove_outliers(method='modified_zscore', threshold=3.5),  # Artifact removal
     lambda ts: ts.rolling_mean(window=50),                    # Smoothing
     lambda ts: ts.zscale()                                    # Normalization
 ]
