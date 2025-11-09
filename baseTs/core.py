@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import Optional, TYPE_CHECKING, Union
+from typing import Optional, TYPE_CHECKING, Union, List
 
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
@@ -1958,3 +1958,68 @@ class baseTs(TimeSeriesData):
         
         result = detrend_func(self.data)
         return process_result(result)
+
+    def set_indices_to_nan_and_interpolate(self, 
+                                          indices: Union[List[int], np.ndarray], 
+                                          interpolation_method: str = 'linear',
+                                          order: int = 2,
+                                          inplace: bool = False) -> "baseTs":
+        """
+        Set specific indices to NaN and interpolate the missing values.
+        
+        Args:
+            indices: List or array of indices to set to NaN
+            interpolation_method: Method for interpolation ('linear', 'polynomial', 'spline', etc.)
+            order: Order for polynomial/spline interpolation (default: 2)
+            inplace: If True, modifies existing object. Otherwise returns new object.
+            
+        Returns:
+            baseTs: Object with interpolated values at the specified indices
+            
+        Examples:
+            # Set indices 10, 20, 30 to NaN and interpolate
+            ts_interpolated = ts.set_indices_to_nan_and_interpolate([10, 20, 30])
+            
+            # Use polynomial interpolation with order 3
+            ts_interpolated = ts.set_indices_to_nan_and_interpolate([10, 20, 30], 
+                                                                   interpolation_method='polynomial', 
+                                                                   order=3)
+        """
+        # Convert indices to numpy array if needed
+        if isinstance(indices, list):
+            indices = np.array(indices)
+        
+        # Validate indices
+        if not np.issubdtype(indices.dtype, np.integer):
+            raise ValueError("Indices must be integers")
+        
+        if np.any(indices < 0) or np.any(indices >= len(self)):
+            raise ValueError("All indices must be within the valid range [0, len(data))")
+        
+        def process_func(data):
+            # Create a copy of the data and ensure it's float dtype for NaN assignment
+            new_data = data.astype(float).copy()
+            
+            # Set specified indices to NaN
+            new_data[indices] = np.nan
+            
+            # Interpolate missing values using pandas
+            cleaned_series = pd.Series(new_data, index=self.times)
+            interpolated_series = cleaned_series.interpolate(
+                method=interpolation_method,
+                order=order
+            )
+            
+            # Handle any remaining NaN values with forward/backward fill
+            if interpolated_series.isnull().any():
+                interpolated_series = interpolated_series.ffill().bfill()
+            
+            return interpolated_series.values
+        
+        return self._enhanced_process_with_flags(
+            func=process_func,
+            hist_msg=f"Set indices {indices.tolist()} to NaN and interpolated using {interpolation_method}",
+            last_process=f"_set_nan_interp_{interpolation_method}",
+            inplace=inplace,
+            is_interpolated=True
+        )
