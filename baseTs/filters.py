@@ -249,7 +249,7 @@ def interpolate_missing_values(ts: baseTs,
     
     # Handle any remaining NaN values
     if interpolated_series.isnull().any():
-        interpolated_series = interpolated_series.fillna(method='ffill').fillna(method='bfill')
+        interpolated_series = interpolated_series.ffill().bfill()
         
     if inplace:
         ts.data = interpolated_series.values
