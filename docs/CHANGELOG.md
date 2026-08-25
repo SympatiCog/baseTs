@@ -63,10 +63,12 @@ three-call surface, all inside `LowessOutlierFilter._apply_lowess`. That call no
 routes through `statsmodels.nonparametric.smoothers_lowess.lowess`.
 
 **Behavior change — outlier counts shift.** The two smoothers are not
-interchangeable and no `frac` reconciles them. statsmodels is the smoother of the
-two at equal `frac`, so it flags fewer points overall — but its flagged set is
-*not* a subset of moepy's. Measured across the 121 real cpCST series where the
-filter is actually operative (see below), at `frac=0.075, z_threshold=3`:
+interchangeable and no `frac` reconciles them, and neither the size nor the
+direction of the change is constant: it depends on the signal. On slowly-varying
+`lambda_val` series statsmodels flags fewer points and its flagged set is *not* a
+subset of moepy's; on noisier `irt` series it flags **more**. Measured across the
+121 real cpCST `lambda_val` series where the filter is operative (see below), at
+`frac=0.075, z_threshold=3`:
 
 ```
 series                                    n    moepy       sm   flagged by sm only
@@ -76,10 +78,31 @@ sub-M10920486_ses-MOBI1A_task-CPTC     6641     5893     3819                  1
 sub-M10920975_ses-MOBI2B_task-CPTC     4751     3619     2605                  459
 ```
 
-statsmodels flagged fewer in 131/131 series, but in roughly half of them it
-flagged points moepy did not. Do not assume the new backend only removes
-detections. Default `frac`, `z_threshold` and `max_iterations` values are
-unchanged; retuning detection is a separate decision from swapping the backend.
+statsmodels flagged fewer in 131/131 of *those* series, but in roughly half of
+them it flagged points moepy did not. Do not assume the new backend only removes
+detections — and do not generalise the direction. On the 131 `irt` series at
+`frac=0.1, z_threshold=6` the comparison inverts: statsmodels flags **more**
+(38,417 vs 35,461; 2.48% vs 2.35% median rate).
+
+**Downstream effects are not negligible.** Running an unchanged analysis
+(detrend, filter, `relative_band_power`) over 131 `irt` series, per-file outputs
+move by a median of 0.67% but by up to 39% in the tail, with 52/131 files
+differing by more than 1%. Test-retest ICC2 over the 32 subjects with two
+sessions moves by more than that suggests:
+
+```
+              moepy              statsmodels        delta
+power       0.4393 [0.11,0.68]   0.5078 [0.19,0.73]  +0.069
+amplitude   0.4908 [0.18,0.71]   0.5908 [0.31,0.78]  +0.100
+```
+
+The confidence intervals overlap heavily, so this is well inside sampling noise
+at that n and is *not* evidence that either backend is more correct. It does mean
+results computed under the two backends should not be pooled, and any derived
+table built with moepy should be regenerated rather than reused.
+
+Default `frac`, `z_threshold` and `max_iterations` values are unchanged;
+retuning detection is a separate decision from swapping the backend.
 
 Runtime on the largest real series (n=17,972) is 0.46s vs moepy's 0.15s, since
 statsmodels fits every point where moepy fitted 25 anchors. Set `delta_frac` if
