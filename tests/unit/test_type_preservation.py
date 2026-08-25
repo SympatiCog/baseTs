@@ -10,6 +10,7 @@ import pytest
 
 from baseTs import baseTs
 from baseTs.series import TimeSeriesData
+from baseTs.LowessOutlierFilter import LowessOutlierFilter
 
 
 PANDAS_OPS = [
@@ -19,6 +20,10 @@ PANDAS_OPS = [
     "interpolate()", "ffill()", "bfill()", "expanding().mean()",
     "pct_change()", "rank()", "nlargest(3)", "copy()",
 ]
+
+#: Operations that hand back a filter reset to defaults rather than the
+#: parent's config. Not a sharing problem - see #14.
+DROPS_FILTER_CONFIG = {"abs()", "rolling(3).mean()", "expanding().mean()", "nlargest(3)"}
 
 
 @pytest.fixture
@@ -91,6 +96,62 @@ class TestMetadataPropagation:
 
         child.history.append("child-only")
         assert "child-only" not in ts.history
+
+    @pytest.mark.parametrize("op", PANDAS_OPS)
+    def test_outlier_filter_is_copied_not_shared(self, ts, op):
+        """
+        The same defect as history, one attribute over.
+
+        A shared LowessOutlierFilter means set_outlier_filter on any derived
+        object reaches back and retunes its parent's filter.
+        """
+        ts.set_outlier_filter(z_threshold=4.2)
+        derived = eval(f"ts.{op}")
+
+        assert derived.outlier_filter is not ts.outlier_filter
+
+        derived.set_outlier_filter(z_threshold=1.5)
+        assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
+
+    @pytest.mark.parametrize("op", [
+        pytest.param(op, marks=pytest.mark.xfail(
+            reason="#14: op resets the filter config to defaults", strict=True))
+        if op in DROPS_FILTER_CONFIG else op
+        for op in PANDAS_OPS
+    ])
+    def test_filter_config_survives_the_copy(self, ts, op):
+        """
+        Independence must not cost the config: the values still carry over.
+
+        Four operations fail this today for reasons unrelated to sharing - see
+        #14. They are xfailed rather than dropped from the matrix so the gap
+        stays visible and flips to XPASS when it is closed.
+        """
+        ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
+        derived = eval(f"ts.{op}")
+
+        assert derived.get_outlier_filter_params()["z_threshold"] == 4.2
+        assert derived.get_outlier_filter_params()["frac"] == 0.11
+
+    def test_filter_state_is_only_config(self):
+        """
+        LowessOutlierFilter.__deepcopy__ copies `config` and nothing else,
+        because that is all the class holds. New mutable state must be added
+        there too, or copies will silently share it.
+        """
+        assert set(vars(LowessOutlierFilter())) == {"config"}
+
+    def test_copy_has_its_own_filter(self, ts):
+        """Issue #11: the reported path, copy() rather than a pandas op."""
+        ts.set_outlier_filter(z_threshold=4.2)
+        c = ts.copy()
+
+        assert c.outlier_filter is not ts.outlier_filter
+
+        c.set_outlier_filter(z_threshold=1.5)
+        assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
+        assert c.get_outlier_filter_params()["z_threshold"] == 1.5
+
 
 
 class TestEffectiveFrequency:

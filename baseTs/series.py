@@ -7,9 +7,31 @@ Created for baseTs pandas migration.
 
 from __future__ import annotations
 from typing import Optional, Union, Any, Dict, List
+import copy as copy_module
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+
+def _detach_shared_metadata(obj):
+    """
+    Give `obj` its own copy of the small mutable metadata containers.
+
+    `history` and `outlier_filter` are mutable, so sharing them means a write
+    through a derived object reaches back into the object it came from -
+    appending to one history appends to both, and set_outlier_filter on a
+    slice retunes its parent.
+
+    `lowess_fit` and `outlier_indices` are arrays and stay shared on purpose:
+    this runs on every pandas operation, and deep-copying them here would make
+    an O(1) slice O(n) in the parent's metadata.
+    """
+    if isinstance(getattr(obj, 'history', None), list):
+        object.__setattr__(obj, 'history', list(obj.history))
+    filt = getattr(obj, 'outlier_filter', None)
+    if filt is not None:
+        object.__setattr__(obj, 'outlier_filter', copy_module.deepcopy(filt))
+    return obj
 
 
 class TimeSeriesData(pd.Series):
@@ -134,12 +156,16 @@ class TimeSeriesData(pd.Series):
 
         pandas' default __finalize__ assigns metadata by reference, so a derived
         object would share the parent's `history` list - appending to one would
-        silently append to the other.
+        silently append to the other. The same is true of `outlier_filter`:
+        set_outlier_filter on a slice would retune the series it came from.
+
+        Only the small mutable containers are copied here. `lowess_fit` and
+        `outlier_indices` stay shared on purpose - this runs on every pandas
+        operation, and deep-copying arrays here would make slicing O(n) in the
+        parent's metadata.
         """
         super().__finalize__(other, method=method, **kwargs)
-        if isinstance(getattr(self, 'history', None), list):
-            object.__setattr__(self, 'history', list(self.history))
-        return self
+        return _detach_shared_metadata(self)
 
     @property
     def _constructor(self):
@@ -166,16 +192,22 @@ class TimeSeriesData(pd.Series):
         if not isinstance(copied, TimeSeriesData):
             copied = TimeSeriesData(copied.values, index=copied.index)
         
-        # Copy metadata
+        # Copy metadata. Deep-copy every value rather than an allow-list of
+        # container types: outlier_filter is a mutable object that is none of
+        # them, and was therefore shared with the original. deepcopy is a no-op
+        # on the immutable scalars.
         for attr in self._metadata:
             if hasattr(self, attr):
                 value = getattr(self, attr)
-                if deep and isinstance(value, (list, dict, np.ndarray)):
-                    import copy as copy_module
+                if deep:
                     value = copy_module.deepcopy(value)
                 setattr(copied, attr, value)
-        
-        return copied
+
+        # The loop above re-assigns by reference on the shallow path, undoing
+        # what __finalize__ already detached. pandas reaches here internally
+        # (sort_values calls copy(deep=False)), so a "shallow" copy must still
+        # not hand back a shared filter.
+        return _detach_shared_metadata(copied)
 
     def duration(self) -> float:
         """

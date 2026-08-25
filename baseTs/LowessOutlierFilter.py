@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 
 if TYPE_CHECKING:
@@ -86,6 +86,19 @@ class LowessOutlierFilter:
             Configuration object containing filter parameters. If None, uses default values.
         """
         self.config = config or FilterConfig()
+
+    def __deepcopy__(self, memo):
+        """
+        Fast path for the copy the metadata machinery makes on every op.
+
+        `config` is the only state, and it is a dataclass of immutable scalars,
+        so replace() of it is a complete and independent copy. Generic deepcopy
+        costs roughly 5x more, which is visible once __finalize__ runs it on
+        every slice. test_filter_state_is_only_config pins the assumption.
+        """
+        new = LowessOutlierFilter(replace(self.config))
+        memo[id(self)] = new
+        return new
         
     def filter(self,
                data: Union[np.ndarray, List[float], baseTs],

@@ -23,7 +23,7 @@ from .LowessOutlierFilter import LowessOutlierFilter, TailType
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult)
-from .series import TimeSeriesData
+from .series import TimeSeriesData, _detach_shared_metadata
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -2088,14 +2088,13 @@ class baseTs(TimeSeriesData):
                 signal_name=self.signal_name
             )
             
-            # Deep copy metadata
+            # Deep copy metadata. Every value, not an allow-list of container
+            # types: outlier_filter is a mutable object that is none of them,
+            # so the copy used to share the original's filter config and
+            # set_outlier_filter on the copy retuned the original.
             for attr in self._metadata:
                 if hasattr(self, attr):
-                    value = getattr(self, attr)
-                    if isinstance(value, (list, dict, np.ndarray)):
-                        import copy as copy_module
-                        value = copy_module.deepcopy(value)
-                    setattr(new_obj, attr, value)
+                    setattr(new_obj, attr, copy.deepcopy(getattr(self, attr)))
             
             return new_obj
         else:
@@ -2109,7 +2108,7 @@ class baseTs(TimeSeriesData):
                 for attr in self._metadata:
                     if hasattr(self, attr):
                         setattr(copied, attr, getattr(self, attr))
-            return copied
+            return _detach_shared_metadata(copied)
 
     def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
         """
