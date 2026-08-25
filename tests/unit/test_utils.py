@@ -81,6 +81,9 @@ def test_get_peak_freq(simple_baseTsObj, noisy_baseTsObj):
 
 def test_get_peaks():
     """Test get_peaks function."""
+    # Seeded: this test adds unseeded noise and asserts an exact peak count, so
+    # its result depended on whatever global random state ran before it.
+    np.random.seed(42)
     # Create a simple signal with known peaks
     n_points = 1000
     t = np.linspace(0, 10, n_points)
@@ -100,8 +103,11 @@ def test_get_peaks():
     # Find peaks with default parameters
     peaks = get_peaks(ts)
     
-    # Check that we found our peaks
-    assert len(peaks) == len(peak_locations)
+    # With no min_height the 0.1-amplitude noise can also register, so assert
+    # the real peaks are all found rather than pinning an exact count. The
+    # exact-count assertions below use min_height, which excludes the noise.
+    for loc in peak_locations:
+        assert any(abs(p - loc) <= 2 for p in peaks), f"missed peak at {loc}"
     
     # Test with min_height
     peaks = get_peaks(ts, min_height=4.0)

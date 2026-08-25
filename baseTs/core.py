@@ -5,6 +5,9 @@ Created on Oct 19 2024
 """
 
 from __future__ import annotations
+import math
+import warnings
+
 import numpy as np
 from scipy import interpolate
 import matplotlib.pyplot as plt
@@ -84,6 +87,21 @@ def from_df(df: pd.DataFrame,
     return ts
 
 
+def _is_unset(value) -> bool:
+    """
+    True if a numeric argument was not supplied.
+
+    The constructor uses np.nan as its "not provided" sentinel, but `value is
+    np.nan` only matches that one object - a user passing float('nan') or
+    np.float64('nan') fell through and silently produced an all-NaN time index.
+    """
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
 class baseTs(TimeSeriesData):
     """
     Basic data class to hold a timeseries and data.
@@ -118,7 +136,7 @@ class baseTs(TimeSeriesData):
         
         # Handle times array - create if not provided
         if times is None:
-            if freq is not np.nan:
+            if not _is_unset(freq):
                 times = np.arange(0, len(data)) / freq
             else:
                 raise ValueError("You must provide either a times array or a frequency")
@@ -127,7 +145,7 @@ class baseTs(TimeSeriesData):
         super().__init__(
             data=data,
             index=times,
-            freq=freq if freq is not np.nan else None,
+            freq=None if _is_unset(freq) else freq,
             signal_name=signal_name
         )
         
@@ -142,7 +160,7 @@ class baseTs(TimeSeriesData):
         self.last_process = last_process
         
         # Handle timestamp offset
-        if ts_offset is not np.nan:
+        if not _is_unset(ts_offset):
             self.ts_offset = ts_offset
             self.has_timestamp_offset = True
         else:
@@ -156,7 +174,7 @@ class baseTs(TimeSeriesData):
             self.history = history
         
         # Calculate frequency if not provided
-        if freq is np.nan:
+        if _is_unset(freq):
             self.freq = self._calculate_effective_frequency()
         
         # Initialize outlier filter with default parameters
@@ -304,15 +322,6 @@ class baseTs(TimeSeriesData):
             new_obj._update_flags(**flags)
             return new_obj
 
-    def duration(self) -> float:
-        """
-        Calculates the duration of the times.
-
-        Returns:
-            float: Duration of the times
-        """
-        return float(self.times[-1] - self.times[0])
-    
     def len(self) -> int:
         """
         Calculates the length of the data.
@@ -1292,7 +1301,7 @@ class baseTs(TimeSeriesData):
         Resample time series to a different frequency using pandas resampling.
         
         Args:
-            freq: Target frequency string (e.g., '1S', '100ms', '0.1S')
+            freq: Target frequency string (e.g., '1s', '100ms', '0.1s')
             method: Aggregation method ('mean', 'median', 'sum', 'min', 'max', 'std')
             **kwargs: Additional arguments passed to pandas resample
             
@@ -1301,7 +1310,7 @@ class baseTs(TimeSeriesData):
             
         Examples:
             # Downsample to 1Hz
-            ts_1hz = ts.resample('1S', method='mean')
+            ts_1hz = ts.resample('1s', method='mean')
             
             # Upsample to 100Hz with interpolation
             ts_100hz = ts.resample('10ms', method='mean')
@@ -1505,9 +1514,31 @@ class baseTs(TimeSeriesData):
             upper_bound = Q3 + threshold * IQR
             return (self.values < lower_bound) | (self.values > upper_bound)
         elif method == 'modified_zscore':
+            # Iglewicz-Hoaglin modified z-score. Note pandas' removed Series.mad()
+            # returned the MEAN absolute deviation about the mean, not the median
+            # absolute deviation, so this is deliberately not a like-for-like
+            # restoration - see CHANGELOG under "Behavior change".
             median = self.median()
-            mad = self.mad()  # Median absolute deviation
-            modified_z_scores = 0.6745 * (self.values - median) / mad
+            # nanmedian, not median: self.median() skips NaN, so a NaN-propagating
+            # denominator would silently return an all-False mask.
+            mad = np.nanmedian(np.abs(self.values - median))
+            if mad > 0:
+                modified_z_scores = 0.6745 * (self.values - median) / mad
+            else:
+                # MAD collapses when over half the values are identical. Iglewicz
+                # and Hoaglin define a mean-absolute-deviation fallback for exactly
+                # this case rather than leaving the score undefined.
+                mean_val = np.nanmean(self.values)
+                meanad = np.nanmean(np.abs(self.values - mean_val))
+                if not meanad > 0:
+                    warnings.warn(
+                        "Series is constant; no outliers are detectable with "
+                        "method='modified_zscore'.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    return np.zeros(len(self), dtype=bool)
+                modified_z_scores = (self.values - median) / (1.253314 * meanad)
             return np.abs(modified_z_scores) > threshold
         else:
             raise ValueError(f"Unknown outlier detection method: {method}")
