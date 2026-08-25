@@ -73,6 +73,39 @@ class ClosestMatch:
     target: Optional[float] = 0
     abs_err: Optional[float] = 0
 
+@dataclass
+class BandPowerResult:
+    """
+    Detailed breakdown of a relative band power computation.
+
+    Attributes:
+        ratio: The relative band power itself (band_sum / total_sum)
+        ratio_type: Which convention produced it ('power' or 'amplitude')
+        band_sum: Summed power (or amplitude) inside the band
+        total_sum: Summed power (or amplitude) over all non-DC bins
+        low_freq: Lower band edge in Hz (inclusive)
+        high_freq: Upper band edge in Hz (inclusive)
+        n_band_bins: Number of FFT bins inside the band
+        n_total_bins: Number of non-DC FFT bins in the spectrum
+        bin_fraction: n_band_bins / n_total_bins. This is the value both
+            conventions converge on for white noise, so it is the reference
+            point for "no band-specific structure" - the null is not zero.
+        freq_resolution: Spacing between FFT bins in Hz (freq / n_samples)
+        nyquist: Nyquist frequency in Hz
+    """
+    ratio: float
+    ratio_type: str
+    band_sum: float
+    total_sum: float
+    low_freq: float
+    high_freq: float
+    n_band_bins: int
+    n_total_bins: int
+    bin_fraction: float
+    freq_resolution: float
+    nyquist: float
+
+
 def compute_fft_power(
     ts: Any,  # TODO: Replace with proper baseTs type
     demean: bool = True,
@@ -222,6 +255,216 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
         return peak_frequencies[0]
     else:
         return peak_frequencies
+
+def relative_band_power(
+    ts: Any,  # TODO: Replace with proper baseTs type
+    low_freq: float,
+    high_freq: float,
+    ratio: str = 'power',
+    window: Optional[str] = None,
+    details: bool = False
+) -> Union[float, BandPowerResult]:
+    """
+    Compute the relative power (or amplitude) in a frequency band.
+
+    This is the quantity behind fractional amplitude of low-frequency
+    fluctuations (fALFF, 0.01-0.1 Hz) and its EEG/HRV cousin, relative band
+    power. See falff() for the classic parameterization.
+
+    The two conventions answer different questions and are not
+    interchangeable:
+
+    - ratio='power' sums |X(f)|^2 and yields the *fraction of the signal's
+      variance* in the band. Parseval makes this exact and comparable across
+      recordings with different sampling rates.
+    - ratio='amplitude' sums |X(f)| and reproduces classic fALFF (Zou et al.,
+      2008). Because the square root compresses peaks, its denominator scales
+      with the number of noise bins, so values are not comparable across
+      acquisitions with different bandwidth.
+
+    The DC (0 Hz) bin is always excluded from both the numerator and the
+    denominator. get_frequency_content() does not demean, so on a signal with
+    a non-zero mean the DC bin holds the overwhelming majority of raw power
+    and would otherwise drive the ratio toward zero. Excluding it makes the
+    result robust to whether the caller detrended upstream.
+
+    Preconditions:
+        - Detrend first for meaningful results on trending data:
+          ts.detrend('linear'). This function deliberately does not detrend on
+          your behalf - that belongs in your processing pipeline.
+        - Resample to a uniform grid first if the series is irregular, since
+          ts.freq is an effective sampling frequency.
+        - The series must be long enough to resolve the band. Frequency
+          resolution is freq / n_samples, i.e. 1 / duration, so a 0.01 Hz
+          lower edge needs at least 100 s of data for a single bin.
+
+    Args:
+        ts: Time series object with a get_frequency_content method
+        low_freq: Lower band edge in Hz (inclusive)
+        high_freq: Upper band edge in Hz (inclusive)
+        ratio: 'power' (variance fraction, default) or 'amplitude' (fALFF)
+        window: Window function passed through to get_frequency_content
+            ('hann', 'hamming', 'blackman', or None)
+        details: If True, return a BandPowerResult with the full breakdown
+            instead of a bare float
+
+    Returns:
+        The relative band power as a float, or a BandPowerResult if
+        details=True
+
+    Raises:
+        ValueError: If the band is invalid, exceeds Nyquist, is narrower than
+            the frequency resolution, if the data contains NaN/Inf, or if the
+            signal has no spectral power outside DC
+
+    Examples:
+        # Fraction of variance between 0.01 and 0.1 Hz
+        ts.detrend('linear').relative_band_power(0.01, 0.1)
+
+        # Classic fALFF convention
+        ts.relative_band_power(0.01, 0.1, ratio='amplitude')
+
+        # Full breakdown, including the white-noise null to compare against
+        res = ts.relative_band_power(0.01, 0.1, details=True)
+        print(res.ratio, res.bin_fraction)
+    """
+    if ratio not in ('power', 'amplitude'):
+        raise ValueError(
+            f"Unknown ratio convention: {ratio!r}. Use 'power' for the "
+            f"variance fraction or 'amplitude' for classic fALFF."
+        )
+
+    if low_freq < 0:
+        raise ValueError(f"low_freq cannot be negative: {low_freq} Hz")
+
+    if low_freq >= high_freq:
+        raise ValueError(
+            f"low_freq ({low_freq} Hz) must be less than high_freq "
+            f"({high_freq} Hz)"
+        )
+
+    nyquist = ts.freq / 2
+    if high_freq > nyquist:
+        raise ValueError(
+            f"high_freq ({high_freq} Hz) exceeds Nyquist frequency "
+            f"({nyquist} Hz)"
+        )
+
+    data = np.asarray(ts.values, dtype=float)
+    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+        raise ValueError(
+            "Time series data contains NaN or Inf values. Fill gaps first, "
+            "e.g. with interpolate_gaps()."
+        )
+
+    # Effectively constant data has no oscillatory content, so any ratio would
+    # be pure floating-point roundoff. Same threshold used by compute_fft_power.
+    if np.std(data) < 1e-15:
+        raise ValueError(
+            "Signal has no spectral power outside the DC component "
+            "(the data is effectively constant)."
+        )
+
+    freqs, power = ts.get_frequency_content(window=window)
+
+    # Always drop DC - see the note in the docstring
+    non_dc = freqs > 0
+    freqs, power = freqs[non_dc], power[non_dc]
+
+    n_total_bins = len(freqs)
+    if n_total_bins == 0:
+        raise ValueError(
+            "Spectrum contains no non-DC frequency bins; the series is too "
+            "short for band power analysis."
+        )
+
+    freq_resolution = ts.freq / len(data)
+
+    band_mask = (freqs >= low_freq) & (freqs <= high_freq)
+    n_band_bins = int(np.count_nonzero(band_mask))
+    if n_band_bins == 0:
+        needed = 1.0 / max(high_freq - low_freq, np.finfo(float).tiny)
+        raise ValueError(
+            f"No frequency bins fall in [{low_freq}, {high_freq}] Hz. The "
+            f"frequency resolution is {freq_resolution:.6g} Hz "
+            f"({len(data)} samples at {ts.freq} Hz); resolving a band this "
+            f"narrow needs at least {needed:.6g} s of data."
+        )
+
+    spectrum = power if ratio == 'power' else np.sqrt(power)
+
+    total_sum = float(np.sum(spectrum))
+    if total_sum <= 0:
+        raise ValueError(
+            "Signal has no spectral power outside the DC component "
+            "(the data is effectively constant)."
+        )
+
+    band_sum = float(np.sum(spectrum[band_mask]))
+    band_ratio = float(band_sum / total_sum)
+
+    if not details:
+        return band_ratio
+
+    return BandPowerResult(
+        ratio=band_ratio,
+        ratio_type=ratio,
+        band_sum=band_sum,
+        total_sum=total_sum,
+        low_freq=low_freq,
+        high_freq=high_freq,
+        n_band_bins=n_band_bins,
+        n_total_bins=n_total_bins,
+        bin_fraction=float(n_band_bins / n_total_bins),
+        freq_resolution=float(freq_resolution),
+        nyquist=float(nyquist),
+    )
+
+
+def falff(
+    ts: Any,  # TODO: Replace with proper baseTs type
+    low_freq: float = 0.01,
+    high_freq: float = 0.1,
+    ratio: str = 'amplitude',
+    **kwargs: Any
+) -> Union[float, BandPowerResult]:
+    """
+    Fractional amplitude of low-frequency fluctuations (fALFF).
+
+    Convenience wrapper around relative_band_power() with the band and
+    convention from Zou et al. (2008), "An improved approach to detection of
+    amplitude of low-frequency fluctuation (ALFF) for resting-state fMRI",
+    J Neurosci Methods 172(1):137-141.
+
+    Note the deliberate default split: relative_band_power() defaults to
+    ratio='power' because the variance fraction is the better-behaved
+    general-purpose measure, while this function defaults to
+    ratio='amplitude' so it reproduces published fALFF values.
+
+    Caveat: because the amplitude convention's denominator grows with the
+    number of noise bins, fALFF values are not comparable across acquisitions
+    with different sampling rates or bandwidth. Use ratio='power' if you need
+    that comparability.
+
+    Args:
+        ts: Time series object with a get_frequency_content method
+        low_freq: Lower band edge in Hz. Defaults to 0.01.
+        high_freq: Upper band edge in Hz. Defaults to 0.1.
+        ratio: 'amplitude' (default, classic fALFF) or 'power'
+        **kwargs: Passed through to relative_band_power (window, details)
+
+    Returns:
+        The fALFF value as a float, or a BandPowerResult if details=True
+
+    Examples:
+        # Classic fALFF on a detrended signal
+        ts.detrend('linear').falff()
+
+        # Custom band
+        ts.falff(0.01, 0.08)
+    """
+    return relative_band_power(ts, low_freq, high_freq, ratio=ratio, **kwargs)
+
 
 def get_peaks(
     ts: Any,

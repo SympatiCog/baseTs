@@ -284,3 +284,88 @@ class TestOutlierDetection:
         original_std = outlier_baseTsObj.data.std()
         outlier_baseTsObj.filter_outliers(inplace=True)
         assert outlier_baseTsObj.data.std() < original_std
+
+class TestRelativeBandPower:
+    """Tests for the relative_band_power / falff methods."""
+
+    @staticmethod
+    def _lf_ts(fs=2.0, duration=600.0, seed=42, offset=0.0):
+        """Slow 0.05 Hz signal long enough to resolve the 0.01-0.1 Hz band."""
+        np.random.seed(seed)
+        n = int(duration * fs)
+        t = np.arange(n) / fs
+        sig = np.sin(2 * np.pi * 0.05 * t) + 0.5 * np.random.randn(n)
+        return baseTs(sig + offset, t, freq=fs)
+
+    def test_relative_band_power_method(self):
+        """Method delegates correctly and returns a builtin float."""
+        ts = self._lf_ts()
+        ratio = ts.relative_band_power(0.01, 0.1)
+
+        assert isinstance(ratio, float)
+        assert not isinstance(ratio, np.floating)
+        assert 0.6 < ratio < 0.8
+
+    def test_dc_offset_does_not_change_result(self):
+        """
+        The headline robustness property: an undetrended mean offset must not
+        move the number, because DC is excluded from both sums.
+        """
+        baseline = self._lf_ts().relative_band_power(0.01, 0.1)
+        offset = self._lf_ts(offset=100.0).relative_band_power(0.01, 0.1)
+        assert np.isclose(baseline, offset)
+
+    def test_detrend_pipeline(self):
+        """The documented pipeline produces the same answer."""
+        ts = self._lf_ts(offset=5.0)
+        assert np.isclose(
+            ts.detrend('linear').relative_band_power(0.01, 0.1),
+            ts.relative_band_power(0.01, 0.1),
+            rtol=1e-3,
+        )
+
+    def test_falff_method(self):
+        """falff() defaults to the amplitude convention."""
+        ts = self._lf_ts()
+        assert np.isclose(
+            ts.falff(),
+            ts.relative_band_power(0.01, 0.1, ratio='amplitude'),
+        )
+        # Amplitude reads lower than power for a peaked in-band spectrum
+        assert ts.falff() < ts.relative_band_power(0.01, 0.1)
+
+    def test_details_breakdown(self):
+        """details=True carries the white-noise null alongside the ratio."""
+        res = self._lf_ts().relative_band_power(0.01, 0.1, details=True)
+
+        assert res.ratio_type == 'power'
+        assert np.isclose(res.band_sum / res.total_sum, res.ratio)
+        assert 0 < res.bin_fraction < res.ratio  # real structure beats the null
+
+    def test_window_passthrough(self):
+        """The window argument reaches get_frequency_content."""
+        ts = self._lf_ts()
+        windowed = ts.relative_band_power(0.01, 0.1, window='hann')
+        assert 0.0 < windowed < 1.0
+
+    def test_method_validation(self):
+        """Invalid bands raise from the method as well as the function."""
+        ts = self._lf_ts()
+        with pytest.raises(ValueError):
+            ts.relative_band_power(0.5, 0.1)
+        with pytest.raises(ValueError):
+            ts.relative_band_power(0.01, 99.0)
+
+    def test_no_side_effects(self):
+        """It is a pure measurement: no history entry, no data mutation."""
+        ts = self._lf_ts()
+        data_before = ts.data.copy()
+        history_before = len(ts.history)
+        last_process_before = ts.last_process
+
+        ts.relative_band_power(0.01, 0.1)
+        ts.falff()
+
+        assert np.array_equal(ts.data, data_before)
+        assert len(ts.history) == history_before
+        assert ts.last_process == last_process_before

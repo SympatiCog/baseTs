@@ -214,7 +214,8 @@ def plot_fft_power(ts,
                    xlabel: Optional[str] = None,
                    ylabel: Optional[str] = None, 
                    show: bool = False,
-                   scale_power: bool = False) -> plt.Axes:
+                   scale_power: bool = False,
+                   highlight_band: Optional[Tuple[float, float]] = None) -> plt.Axes:
     """
     Plots the power spectrum of a timeseries signal using enhanced FFT with windowing.
 
@@ -229,6 +230,9 @@ def plot_fft_power(ts,
         ylabel: Y-axis label
         show: Whether to show the plot
         scale_power: Whether to normalize power spectrum
+        highlight_band: Optional (low_freq, high_freq) tuple in Hz to shade,
+            e.g. (0.01, 0.1) to mark the fALFF band alongside
+            ts.relative_band_power(0.01, 0.1)
 
     Returns:
         Matplotlib axes object
@@ -282,6 +286,18 @@ def plot_fft_power(ts,
         # Plotting
         ax.plot(freqs_filtered, power_filtered, linewidth=1.2)
         ax.set_xlim(min_rate, max_rate)
+
+        # Shade the band of interest, if requested
+        if highlight_band is not None:
+            band_low, band_high = highlight_band
+            if band_low >= band_high:
+                raise ValueError(
+                    f"highlight_band low ({band_low} Hz) must be less than "
+                    f"high ({band_high} Hz)"
+                )
+            ax.axvspan(band_low, band_high, alpha=0.15, color='tab:orange',
+                       label=f"{band_low}-{band_high} Hz")
+            ax.legend()
         
         # Add grid for better readability
         ax.grid(True, alpha=0.3)
