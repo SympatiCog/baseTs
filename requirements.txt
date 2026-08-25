@@ -1,6 +1,6 @@
 numpy
 scipy
-pandas
+pandas>=2.0.0
 matplotlib
 moepy
 pytest

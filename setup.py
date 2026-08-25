@@ -5,12 +5,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="baseTs",
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(exclude=["tests*"]),
     install_requires=[
         "numpy>=1.19.0",
         "scipy>=1.5.0",
-        "pandas>=1.1.0",
+        "pandas>=2.0.0",
         "matplotlib>=3.0.0",
         "moepy>=1.1.0",  # For LOWESS fitting
     ],

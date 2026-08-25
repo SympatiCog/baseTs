@@ -54,6 +54,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [0.2.0] - 2026-08-25
+
+### Fixed — `ts.plot` no longer shadows the pandas plotting accessor
+
+`plot` was a plain alias for `plot_line`. Because `pandas.Series.plot` is an
+accessor *object* rather than a method, that alias made all eleven pandas plot
+kinds unreachable — `ts.plot.line()`, `.bar()`, `.hist()`, `.kde()` and the rest
+raised `AttributeError: 'function' object has no attribute 'line'`.
+
+`ts.plot` is now a hybrid accessor: calling it is unchanged (`ts.plot()` still
+draws the baseTs line plot and accepts every `plot_line` keyword), while
+attribute access delegates to the pandas accessor. Both spellings work.
+
+### Fixed — documentation corrections
+
+- **`resample`**: `docs/API.md` documented a `resample(factor)` signature that
+  does not exist. The real signature is `resample(freq: str, method='mean')`.
+  Several examples also showed `ts.resample('1s').max()`, which reads as
+  pandas-style chaining but resamples with the default `mean` and then takes a
+  scalar max over those means; the aggregation belongs in `method=`. Uppercase
+  offset aliases (`'1S'`, `'H'`) were updated, and the non-fixed offsets `'W'`
+  and `'M'` — which raise on a timedelta index — were replaced.
+
+  Note this override is necessary, not accidental: a baseTs carries a numeric
+  float index, and `pandas.Series.resample` requires a `DatetimeIndex`,
+  `TimedeltaIndex` or `PeriodIndex`, so pandas' own version raises `TypeError`.
+
+- **`ts.data[...] = ...`**: documented in four places, but `.data` returns a
+  read-only view under pandas Copy-on-Write, so item assignment raises
+  `ValueError`. This is the correct behaviour — a writable copy would make the
+  assignment silently do nothing — so the docs now use `ts.iloc[...] = ...`, the
+  `ts.data = array` setter, or `set_indices_to_nan_and_interpolate()`, which had
+  been documented nowhere despite being the natural fit.
+
+### Fixed — pandas operations no longer downgrade the object
+
+`TimeSeriesData._constructor` returned `TimeSeriesData`, and `baseTs` inherited
+it, so every native pandas operation silently dropped all 62 baseTs methods:
+
+```
+ts.rolling(10).mean()  ->  TimeSeriesData    lowpass_at: False
+ts.iloc[0:10]          ->  TimeSeriesData    lowpass_at: False
+```
+
+This contradicted "All methods return new baseTs objects, enabling method
+chaining" and the "270+ pandas methods" claim. All 26 operations tested now
+return `baseTs`.
+
+pandas builds subclasses as `_constructor(values, index=...)`, which
+`baseTs.__init__` rejected — it took `times`. The constructor now accepts
+`index` as an alias (prefer `times` in your own code).
+
+Metadata repairs, without which the preserved type still lost state:
+
+- `_metadata` omitted `outlier_indices`, `is_outlier_filtered` and
+  `outlier_filter`, so `ts.iloc[:50].outlier_indices` raised `AttributeError`
+  even after `filter_outliers()` had populated it.
+- `_metadata` listed `filtered_indices`, which was only ever initialised to
+  `None` and never written — a half-finished rename. Retired.
+- `_constructor_sliced` was a plain method where pandas expects a property.
+- `__finalize__` assigned metadata by reference, so a derived object shared the
+  parent's `history` list. Mutable metadata is now copied.
+
+### Behavior change — effective sampling frequency
+
+`_calculate_effective_frequency` computed `len(self) / duration`, but *n*
+samples span *n−1* intervals. It over-reported by `n/(n-1)`:
+
+| n | true | reported | error |
+|---|---|---|---|
+| 5 | 2.0 Hz | 2.500000 | +25.00% |
+| 10 | 10.0 Hz | 11.111111 | +11.11% |
+| 1000 | 100.0 Hz | 100.100100 | +0.10% |
+
+`freq` feeds `np.fft.fftfreq`, every filter cutoff normalisation, and the
+Nyquist check, so the error propagated into reported frequencies and filter
+behaviour. **Any code relying on a derived `freq` now gets a slightly lower,
+correct value**, and a cutoff that previously sat just under the inflated
+Nyquist may now be rejected as at-or-above the real one.
+
+### Fixed — pandas 2.x/3.x compatibility
+
+The package did not run correctly on pandas 2.0 or later. `setup.py` declared
+`pandas>=1.1.0`, which was not true; the floor is now `>=2.0.0`.
+
+- **`interpolate_missing()` crashed on leading or trailing NaN.** `filters.py`
+  used `fillna(method='ffill')`, removed in pandas 3.0, raising
+  `TypeError: NDFrame.fillna() got an unexpected keyword argument 'method'`.
+  `Series.interpolate()` does not fill leading/trailing NaN, so this path was
+  reached by ordinary input. Now uses `.ffill().bfill()`.
+- **`detect_outliers(method='modified_zscore')` crashed.** It called
+  `Series.mad()`, removed in pandas 2.0. See the behavior change below.
+- **`duration()` and `get_statistics()` raised `IndexError` on an empty
+  series.** `baseTs.duration()` shadowed the guarded `TimeSeriesData.duration()`
+  and dropped its zero-length check. The redundant override was removed.
+- **`freq=float('nan')` silently produced an all-NaN time index.** The
+  constructor tested `freq is np.nan`, which only matches that one object.
+  `float('nan')`, `np.float64('nan')`, and `None` are now all recognised as
+  "not provided" and raise the intended error.
+- **Uppercase offset aliases** (`'1S'`) in `resample` docstrings updated to
+  lowercase; pandas 3.0 removed the uppercase forms.
+- `setup.py` version (0.1.0) and `baseTs/version.py` (0.1.1) disagreed; both
+  are now 0.2.0.
+
+### Behavior change — `detect_outliers(method='modified_zscore')`
+
+This is not a like-for-like restoration and it changes results.
+
+`pandas.Series.mad()` returned the **mean** absolute deviation about the
+**mean**, not the median absolute deviation about the median, despite the call
+site's comment. The 0.6745 constant is calibrated for MAD, so on pandas <= 1.5
+this method was mis-scaled by roughly 1.18x: a requested `threshold=3.0`
+behaved as approximately 3.55 sigma, under-reporting outliers.
+
+It now computes a true MAD (`np.nanmedian(|x - median|)`), so **the same call
+with the same threshold flags more outliers than it did on pandas 1.x**. Code
+tuned against the old behaviour may need its threshold revisited.
+
+Two further corrections while restoring it:
+
+- `np.nanmedian`, not `np.median`. `Series.median()` skips NaN, so pairing it
+  with a NaN-propagating denominator returned an all-False mask - reporting no
+  outliers - whenever the input contained a single NaN.
+- When MAD is zero (over half the values identical), the Iglewicz-Hoaglin
+  mean-absolute-deviation fallback is used rather than raising or returning
+  all-False, both of which would miss a genuine outlier in e.g.
+  `[1, 1, 1, 1, 1, 100]`. A truly constant series warns and returns all-False.
+
+### Testing
+
+- New `tests/unit/test_pandas_compat.py`: 17 regression tests covering every
+  item above, including NaN-present, zero-MAD, and constant-series inputs.
+- `test_get_peaks` seeded and its exact-count assertion relaxed to a
+  contains-check under default parameters. It added unseeded noise and asserted
+  an exact peak count, so it passed or failed based on preceding global random
+  state.
+
 ## [Unreleased]
 
 ### Added

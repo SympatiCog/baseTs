@@ -5,9 +5,13 @@ Created on Oct 19 2024
 """
 
 from __future__ import annotations
+import math
+import warnings
+
 import numpy as np
 from scipy import interpolate
 import matplotlib.pyplot as plt
+from pandas.plotting import PlotAccessor
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
@@ -86,6 +90,59 @@ def from_df(df: pd.DataFrame,
     return ts
 
 
+def _is_unset(value) -> bool:
+    """
+    True if a numeric argument was not supplied.
+
+    The constructor uses np.nan as its "not provided" sentinel, but `value is
+    np.nan` only matches that one object - a user passing float('nan') or
+    np.float64('nan') fell through and silently produced an all-NaN time index.
+    """
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+class _PlotAccessor:
+    """
+    Callable proxy backing ``baseTs.plot``.
+
+    ``plot`` used to be a plain alias for :meth:`baseTs.plot_line`. That shadowed
+    the pandas ``.plot`` accessor - which is an object, not a method - so
+    ``ts.plot.line()``, ``.bar()``, ``.hist()`` and the other eleven sub-methods
+    were unreachable.
+
+    This keeps ``ts.plot()`` drawing the baseTs line plot, and delegates every
+    attribute lookup to the pandas accessor, so both spellings work:
+
+        ts.plot()                 # baseTs line plot, as before
+        ts.plot(lowess=True)      # baseTs plot_line keyword arguments
+        ts.plot.bar()             # pandas PlotAccessor
+    """
+
+    __slots__ = ("_ts",)
+
+    def __init__(self, ts: "baseTs"):
+        object.__setattr__(self, "_ts", ts)
+
+    def __call__(self, *args, **kwargs):
+        return self._ts.plot_line(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(PlotAccessor(self._ts), name)
+
+    def __dir__(self):
+        return sorted(set(dir(PlotAccessor(self._ts))))
+
+    def __repr__(self) -> str:
+        name = getattr(self._ts, "signal_name", "") or "unnamed"
+        return f"<baseTs plot accessor for {name!r}>"
+
+
 class baseTs(TimeSeriesData):
     """
     Basic data class to hold a timeseries and data.
@@ -113,14 +170,31 @@ class baseTs(TimeSeriesData):
                  lowess_fit: np.array = None,
                  signal_name: str = "",
                  history: list = None,
-                 last_process: str = ""):
+                 last_process: str = "",
+                 index: np.array = None,
+                 **pandas_kwargs):
         """
         Initialize baseTs object as pandas Series with time-series metadata.
+
+        Args:
+            index: Alias for `times`. pandas constructs subclass instances as
+                _constructor(values, index=...), so accepting `index` is what
+                lets baseTs survive native pandas operations - see
+                baseTs._constructor. Prefer `times` in user code.
+            **pandas_kwargs: Passed through to the pandas Series layer (name,
+                copy, dtype). Present for the same reason.
         """
-        
+
+        # pandas calls the constructor with index=; user code passes times=.
+        if times is None:
+            if index is not None:
+                times = index
+            elif isinstance(data, pd.Series):
+                times = data.index
+
         # Handle times array - create if not provided
         if times is None:
-            if freq is not np.nan:
+            if not _is_unset(freq):
                 times = np.arange(0, len(data)) / freq
             else:
                 raise ValueError("You must provide either a times array or a frequency")
@@ -129,8 +203,9 @@ class baseTs(TimeSeriesData):
         super().__init__(
             data=data,
             index=times,
-            freq=freq if freq is not np.nan else None,
-            signal_name=signal_name
+            freq=None if _is_unset(freq) else freq,
+            signal_name=signal_name,
+            **pandas_kwargs
         )
         
         # Set metadata attributes
@@ -144,7 +219,7 @@ class baseTs(TimeSeriesData):
         self.last_process = last_process
         
         # Handle timestamp offset
-        if ts_offset is not np.nan:
+        if not _is_unset(ts_offset):
             self.ts_offset = ts_offset
             self.has_timestamp_offset = True
         else:
@@ -158,12 +233,27 @@ class baseTs(TimeSeriesData):
             self.history = history
         
         # Calculate frequency if not provided
-        if freq is np.nan:
+        if _is_unset(freq):
             self.freq = self._calculate_effective_frequency()
         
         # Initialize outlier filter with default parameters
         self.outlier_filter = LowessOutlierFilter()
 
+
+    @property
+    def _constructor(self):
+        """
+        Keep pandas operations returning baseTs rather than downgrading.
+
+        Without this, TimeSeriesData._constructor is inherited and every native
+        pandas operation (slicing, rolling, dropna, ...) returned a
+        TimeSeriesData, silently dropping all baseTs methods - so the documented
+        method chaining did not actually work.
+
+        pandas calls this as _constructor(values, index=...), which __init__
+        accepts via its `index` alias.
+        """
+        return baseTs
 
     # Backward compatibility properties
     @property
@@ -306,15 +396,6 @@ class baseTs(TimeSeriesData):
             new_obj._update_flags(**flags)
             return new_obj
 
-    def duration(self) -> float:
-        """
-        Calculates the duration of the times.
-
-        Returns:
-            float: Duration of the times
-        """
-        return float(self.times[-1] - self.times[0])
-    
     def len(self) -> int:
         """
         Calculates the length of the data.
@@ -1294,7 +1375,7 @@ class baseTs(TimeSeriesData):
         Resample time series to a different frequency using pandas resampling.
         
         Args:
-            freq: Target frequency string (e.g., '1S', '100ms', '0.1S')
+            freq: Target frequency string (e.g., '1s', '100ms', '0.1s')
             method: Aggregation method ('mean', 'median', 'sum', 'min', 'max', 'std')
             **kwargs: Additional arguments passed to pandas resample
             
@@ -1303,7 +1384,7 @@ class baseTs(TimeSeriesData):
             
         Examples:
             # Downsample to 1Hz
-            ts_1hz = ts.resample('1S', method='mean')
+            ts_1hz = ts.resample('1s', method='mean')
             
             # Upsample to 100Hz with interpolation
             ts_100hz = ts.resample('10ms', method='mean')
@@ -1507,9 +1588,31 @@ class baseTs(TimeSeriesData):
             upper_bound = Q3 + threshold * IQR
             return (self.values < lower_bound) | (self.values > upper_bound)
         elif method == 'modified_zscore':
+            # Iglewicz-Hoaglin modified z-score. Note pandas' removed Series.mad()
+            # returned the MEAN absolute deviation about the mean, not the median
+            # absolute deviation, so this is deliberately not a like-for-like
+            # restoration - see CHANGELOG under "Behavior change".
             median = self.median()
-            mad = self.mad()  # Median absolute deviation
-            modified_z_scores = 0.6745 * (self.values - median) / mad
+            # nanmedian, not median: self.median() skips NaN, so a NaN-propagating
+            # denominator would silently return an all-False mask.
+            mad = np.nanmedian(np.abs(self.values - median))
+            if mad > 0:
+                modified_z_scores = 0.6745 * (self.values - median) / mad
+            else:
+                # MAD collapses when over half the values are identical. Iglewicz
+                # and Hoaglin define a mean-absolute-deviation fallback for exactly
+                # this case rather than leaving the score undefined.
+                mean_val = np.nanmean(self.values)
+                meanad = np.nanmean(np.abs(self.values - mean_val))
+                if not meanad > 0:
+                    warnings.warn(
+                        "Series is constant; no outliers are detectable with "
+                        "method='modified_zscore'.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    return np.zeros(len(self), dtype=bool)
+                modified_z_scores = (self.values - median) / (1.253314 * meanad)
             return np.abs(modified_z_scores) > threshold
         else:
             raise ValueError(f"Unknown outlier detection method: {method}")
@@ -1727,13 +1830,23 @@ class baseTs(TimeSeriesData):
                 lowess=lowess,
                 show=show)
 
-    # Alias for plot_line to maintain backward compatibility
-    # Will be altered in future versions.
-    # TODO: Deprecate in future versions.
-    # TODO: Replace with generic plot() function that maps
-    #       to all available plotting functions.
-    #       e.g. plot_hist would be plot("hist", bins=10, kde=True, etc...)
-    plot = plot_line
+    @property
+    def plot(self) -> _PlotAccessor:
+        """
+        Line plot, or the pandas plotting accessor.
+
+        Calling it is the historical baseTs behaviour - an alias for
+        :meth:`plot_line`. Attribute access falls through to the pandas
+        ``.plot`` accessor, which a plain method alias made unreachable.
+
+        Examples:
+            ts.plot()                     # baseTs line plot
+            ts.plot(lowess=True, ax=ax)   # plot_line keyword arguments
+            ts.plot.bar()                 # pandas PlotAccessor
+            ts.plot.hist(bins=30)
+        """
+        return _PlotAccessor(self)
+
     
     def plot_series(self,
                     series_list: list,
