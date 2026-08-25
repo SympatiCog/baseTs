@@ -129,11 +129,28 @@ class baseTs(TimeSeriesData):
                  lowess_fit: np.array = None,
                  signal_name: str = "",
                  history: list = None,
-                 last_process: str = ""):
+                 last_process: str = "",
+                 index: np.array = None,
+                 **pandas_kwargs):
         """
         Initialize baseTs object as pandas Series with time-series metadata.
+
+        Args:
+            index: Alias for `times`. pandas constructs subclass instances as
+                _constructor(values, index=...), so accepting `index` is what
+                lets baseTs survive native pandas operations - see
+                baseTs._constructor. Prefer `times` in user code.
+            **pandas_kwargs: Passed through to the pandas Series layer (name,
+                copy, dtype). Present for the same reason.
         """
-        
+
+        # pandas calls the constructor with index=; user code passes times=.
+        if times is None:
+            if index is not None:
+                times = index
+            elif isinstance(data, pd.Series):
+                times = data.index
+
         # Handle times array - create if not provided
         if times is None:
             if not _is_unset(freq):
@@ -146,7 +163,8 @@ class baseTs(TimeSeriesData):
             data=data,
             index=times,
             freq=None if _is_unset(freq) else freq,
-            signal_name=signal_name
+            signal_name=signal_name,
+            **pandas_kwargs
         )
         
         # Set metadata attributes
@@ -180,6 +198,21 @@ class baseTs(TimeSeriesData):
         # Initialize outlier filter with default parameters
         self.outlier_filter = LowessOutlierFilter()
 
+
+    @property
+    def _constructor(self):
+        """
+        Keep pandas operations returning baseTs rather than downgrading.
+
+        Without this, TimeSeriesData._constructor is inherited and every native
+        pandas operation (slicing, rolling, dropna, ...) returned a
+        TimeSeriesData, silently dropping all baseTs methods - so the documented
+        method chaining did not actually work.
+
+        pandas calls this as _constructor(values, index=...), which __init__
+        accepts via its `index` alias.
+        """
+        return baseTs
 
     # Backward compatibility properties
     @property

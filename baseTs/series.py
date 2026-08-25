@@ -28,16 +28,23 @@ class TimeSeriesData(pd.Series):
         is_uniform_grid: Whether the data is on a uniform time grid
         ts_offset: Timestamp offset in seconds
         has_timestamp_offset: Whether a timestamp offset has been applied
-        filtered_indices: Indices of filtered outliers
+        outlier_indices: Indices of detected outliers
         lowess_fit: LOWESS fit data for outlier filtering
         last_process: Last processing operation performed
     """
     
+    # Every attribute pandas should carry across an operation. Anything missing
+    # here is silently dropped by slicing, rolling, dropna, etc.
+    #
+    # 'filtered_indices' used to be listed here but was only ever initialised to
+    # None and never written by anything - a half-finished rename. The attribute
+    # that actually holds outlier positions is 'outlier_indices', which was
+    # absent, so `ts.iloc[:50].outlier_indices` raised AttributeError.
     _metadata = [
-        'freq', 'signal_name', 'history', 'is_filtered', 
+        'freq', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
-        'has_timestamp_offset', 'filtered_indices', 'lowess_fit', 
-        'last_process'
+        'has_timestamp_offset', 'outlier_indices', 'lowess_fit',
+        'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
     
     def __init__(self, data=None, index=None, freq: Optional[float] = None, 
@@ -86,7 +93,7 @@ class TimeSeriesData(pd.Series):
         self.is_uniform_grid = False
         self.ts_offset = 0
         self.has_timestamp_offset = False
-        self.filtered_indices = None
+        self.outlier_indices = None
         self.lowess_fit = None
         self.last_process = ""
         self.history = []
@@ -118,11 +125,25 @@ class TimeSeriesData(pd.Series):
             return np.nan
         return len(self) / duration
 
+    def __finalize__(self, other, method=None, **kwargs):
+        """
+        Propagate metadata, copying mutable values rather than sharing them.
+
+        pandas' default __finalize__ assigns metadata by reference, so a derived
+        object would share the parent's `history` list - appending to one would
+        silently append to the other.
+        """
+        super().__finalize__(other, method=method, **kwargs)
+        if isinstance(getattr(self, 'history', None), list):
+            object.__setattr__(self, 'history', list(self.history))
+        return self
+
     @property
     def _constructor(self):
         """Return constructor for pandas operations."""
         return TimeSeriesData
 
+    @property
     def _constructor_sliced(self):
         """Return constructor for sliced operations."""
         return TimeSeriesData
