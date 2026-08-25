@@ -80,7 +80,10 @@ def qc_plot(ts,
 
     ax.plot(ts.times, ts.data, label='Original')
     ax.plot(filt_times, filt_data, label='Filtered')
-    if np.logical_and(ts.is_outlier_filtered, show_lowess):
+    # Gate on the fit itself, not on is_outlier_filtered: that flag means "a
+    # filter has been configured", so it is True before any fit exists and
+    # False after lowess_detrend, which produces a fit without filtering.
+    if show_lowess and ts.lowess_fit is not None:
         ax.plot(ts.times, ts.lowess_fit, label='Lowess Fit')
     ax.legend()
     
