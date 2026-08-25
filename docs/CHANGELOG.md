@@ -56,6 +56,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-08-25
 
+### Fixed — `ts.plot` no longer shadows the pandas plotting accessor
+
+`plot` was a plain alias for `plot_line`. Because `pandas.Series.plot` is an
+accessor *object* rather than a method, that alias made all eleven pandas plot
+kinds unreachable — `ts.plot.line()`, `.bar()`, `.hist()`, `.kde()` and the rest
+raised `AttributeError: 'function' object has no attribute 'line'`.
+
+`ts.plot` is now a hybrid accessor: calling it is unchanged (`ts.plot()` still
+draws the baseTs line plot and accepts every `plot_line` keyword), while
+attribute access delegates to the pandas accessor. Both spellings work.
+
+### Fixed — documentation corrections
+
+- **`resample`**: `docs/API.md` documented a `resample(factor)` signature that
+  does not exist. The real signature is `resample(freq: str, method='mean')`.
+  Several examples also showed `ts.resample('1s').max()`, which reads as
+  pandas-style chaining but resamples with the default `mean` and then takes a
+  scalar max over those means; the aggregation belongs in `method=`. Uppercase
+  offset aliases (`'1S'`, `'H'`) were updated, and the non-fixed offsets `'W'`
+  and `'M'` — which raise on a timedelta index — were replaced.
+
+  Note this override is necessary, not accidental: a baseTs carries a numeric
+  float index, and `pandas.Series.resample` requires a `DatetimeIndex`,
+  `TimedeltaIndex` or `PeriodIndex`, so pandas' own version raises `TypeError`.
+
+- **`ts.data[...] = ...`**: documented in four places, but `.data` returns a
+  read-only view under pandas Copy-on-Write, so item assignment raises
+  `ValueError`. This is the correct behaviour — a writable copy would make the
+  assignment silently do nothing — so the docs now use `ts.iloc[...] = ...`, the
+  `ts.data = array` setter, or `set_indices_to_nan_and_interpolate()`, which had
+  been documented nowhere despite being the natural fit.
+
 ### Fixed — pandas operations no longer downgrade the object
 
 `TimeSeriesData._constructor` returned `TimeSeriesData`, and `baseTs` inherited

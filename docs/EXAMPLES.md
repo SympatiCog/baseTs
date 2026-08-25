@@ -1497,9 +1497,11 @@ def scientific_pandas_integration(ts_data):
     results = {}
     
     # 1. Resampling for different time scales
-    results['hourly_mean'] = ts_data.resample('H').mean()
-    results['daily_max'] = ts_data.resample('D').max()
-    results['weekly_std'] = ts_data.resample('W').std()
+    # Aggregate with method=; the aggregation happens inside resample().
+    # Offsets must be fixed - 'W' and 'M' are not valid on a timedelta index.
+    results['hourly_mean'] = ts_data.resample('h', method='mean')
+    results['daily_max'] = ts_data.resample('D', method='max')
+    results['daily_std'] = ts_data.resample('D', method='std')
     
     # 2. Time-based grouping and analysis
     results['monthly_stats'] = ts_data.groupby(ts_data.index.month).agg([

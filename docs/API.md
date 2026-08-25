@@ -187,7 +187,11 @@ def copy(self) -> 'baseTs':
 **Example:**
 ```python
 ts_copy = ts.copy()
-ts_copy.data[0] = 999  # Doesn't affect original ts
+ts_copy.iloc[0] = 999  # Doesn't affect original ts
+
+# NB: ts.data returns a read-only view under pandas Copy-on-Write, so
+# `ts_copy.data[0] = 999` raises ValueError. Assign through .iloc, or
+# replace the whole array with the setter: `ts_copy.data = new_array`.
 ```
 
 ---
@@ -453,23 +457,45 @@ spline_interp = ts.interpolate_gaps(method='spline', order=2, limit=10)
 time_interp = ts.interpolate_gaps(method='time')
 ```
 
-### `resample(factor)`
+### `resample(freq, method='mean', **kwargs)`
 
-Resample the time series.
+Resample the time series to a different sampling rate.
+
+This overrides `pandas.Series.resample`, and has to: a baseTs carries a plain
+numeric (float seconds) index, and pandas' `resample` requires a `DatetimeIndex`,
+`TimedeltaIndex` or `PeriodIndex`. Calling pandas' version directly would raise
+`TypeError`. This method converts the numeric index to a timedelta, resamples,
+aggregates, and converts back.
 
 **Parameters:**
-- `factor` (float): Resampling factor (>1 for upsampling, <1 for downsampling)
+- `freq` (str): Target interval as a pandas offset string — `'1s'`, `'100ms'`,
+  `'0.5s'`, `'1min'`, `'h'`, `'D'`. Must be a **fixed** frequency; non-fixed
+  offsets such as `'W'` or `'M'` raise `ValueError`, because the underlying index
+  is a timedelta rather than a calendar.
+- `method` (str, optional): Aggregation applied to each bin — `'mean'`,
+  `'median'`, `'sum'`, `'min'`, `'max'`, `'std'`. Default: `'mean'`
+- `**kwargs`: Passed through to the pandas aggregation
 
 **Returns:**
 - `baseTs`: New resampled baseTs object
 
-**Example:**
-```python
-# Upsample by factor of 2
-upsampled = ts.resample(factor=2)
+**Aggregate with `method=`, not by chaining.** The aggregation happens *inside*
+this call, so `ts.resample('1s').max()` does not mean "max per one-second bin" —
+it resamples using the default `mean`, then takes a single scalar max over those
+means. Pass the aggregation you want:
 
-# Downsample by factor of 2
-downsampled = ts.resample(factor=0.5)
+```python
+# Downsample to 1 Hz, averaging each bin
+ts_1hz = ts.resample('1s')                    # method='mean' by default
+
+# Maximum within each one-second bin
+ts_peaks = ts.resample('1s', method='max')    # returns a baseTs
+
+# NOT this - returns a single float, not a series
+wrong = ts.resample('1s').max()
+
+# Upsample to 100 Hz
+ts_100hz = ts.resample('10ms')
 ```
 
 ---
@@ -687,6 +713,30 @@ peak = ts.get_peak_freq(window='blackman', min_freq=1.0, max_freq=50.0)  # Retur
 peak_with_dc = ts.get_peak_freq(min_freq=0.0)  # May return 0.0 if DC is strongest
 ```
 
+### `plot` — line plot, or the pandas plotting accessor
+
+`ts.plot` is a hybrid: **calling** it draws the baseTs line plot (it is an alias
+for `plot_line`), and **attribute access** falls through to the pandas `.plot`
+accessor.
+
+It works this way because `pandas.Series.plot` is an *object*, not a method.
+Aliasing `plot` to a plain method used to shadow it, making `ts.plot.line()`,
+`.bar()`, `.hist()` and the other pandas plot kinds unreachable.
+
+```python
+# Calling it: unchanged baseTs behaviour
+ts.plot()
+ts.plot(lowess=True, title="Signal", ax=ax)
+
+# Attribute access: the pandas plot kinds
+ts.plot.bar()
+ts.plot.hist(bins=30)
+ts.plot.kde()
+```
+
+Available pandas kinds: `line`, `bar`, `barh`, `hist`, `box`, `kde`, `density`,
+`area`, `pie`, `scatter`, `hexbin`.
+
 ### `plot_fft_power(max_rate=np.nan, min_rate=0.0, window=None, show=True, ax=None)`
 
 Plot FFT power spectrum with enhanced windowing and frequency range control.
@@ -799,7 +849,7 @@ ts = baseTs(data=data, times=times)
 ts.describe()          # Statistical summary
 ts.quantile(0.95)      # 95th percentile
 ts.rolling(10).mean()  # Native pandas rolling
-ts.resample('1S').max() # Native pandas resampling
+ts.resample('1s', method='max')  # baseTs resampling; see resample() above
 
 # Enhanced frequency analysis with windowing
 freqs, power = ts.get_frequency_content(window='hann')

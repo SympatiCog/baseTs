@@ -257,7 +257,7 @@ Since baseTs now inherits from pandas Series, you have direct access to all pand
 ts.describe()          # Statistical summary
 ts.quantile(0.95)      # 95th percentile
 ts.rolling(10).mean()  # Pandas rolling mean
-ts.resample('1S').max() # Pandas resampling
+ts.resample('1s', method='max')  # baseTs override, not pandas resample
 ts.interpolate()       # Pandas interpolation
 ts.dropna()            # Remove NaN values
 ts.fillna(0)           # Fill NaN with 0
@@ -334,8 +334,15 @@ peak_freq = ts.get_peak_freq()
 
 # Gap filling and interpolation
 ts_with_gaps = ts.copy()
-ts_with_gaps.data[100:110] = np.nan  # Introduce gaps
+# Introduce gaps. Note: ts.data returns a read-only view under pandas
+# Copy-on-Write, so `ts.data[100:110] = np.nan` raises ValueError. Assign
+# through .iloc, or use set_indices_to_nan_and_interpolate() to do both
+# steps at once.
+ts_with_gaps.iloc[100:110] = np.nan
 ts_filled = ts_with_gaps.interpolate_gaps(method='spline')
+
+# Or, in a single step:
+ts_filled = ts.set_indices_to_nan_and_interpolate(list(range(100, 110)))
 
 print(f"Correlation: {correlation:.3f}")
 print(f"Peak frequency: {peak_freq} Hz")
@@ -349,7 +356,7 @@ ts = baseTs(data, times, freq=100.0, signal_name="sensor_data")
 
 # Use pandas methods directly
 monthly_stats = ts.groupby(ts.index.month).agg(['mean', 'std', 'min', 'max'])
-daily_resample = ts.resample('D').mean()
+daily_resample = ts.resample('D', method='mean')
 quantiles = ts.quantile([0.1, 0.25, 0.5, 0.75, 0.9])
 
 # Convert to DataFrame for complex analysis
