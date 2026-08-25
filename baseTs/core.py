@@ -2136,20 +2136,24 @@ class baseTs(TimeSeriesData):
             Detrended baseTs object
 
         Notes:
-            Sets only `data` and `lowess_fit` on the target. The outlier filter
-            configuration, `is_outlier_filtered` and `outlier_indices` are left
-            alone: detrending is not filtering, and the returned data still
-            contains its outliers.
+            The trend is fitted with the filter's *default* parameters and the
+            given frac. Any filter you configured on this object is ignored
+            here - and left untouched, rather than being overwritten as it was
+            before. `is_outlier_filtered` and `outlier_indices` are likewise
+            left alone: detrending is not filtering, and the returned data
+            still contains its outliers. Beyond `data` and `lowess_fit`, the
+            target gains a `history` entry and a new `last_process`.
         """
         if not 0 < frac <= 1:
             raise ValueError(f"frac must be in (0, 1], got {frac}")
 
         # Configure a throwaway holder rather than self, so the caller's filter
-        # config survives. copy() shares outlier_filter by reference, so the
-        # holder needs one of its own. Routing through set_outlier_filter keeps
-        # the parameter defaults in a single place.
-        scratch = self.copy()
-        scratch.outlier_filter = LowessOutlierFilter()
+        # config survives. It is deliberately a minimal two-point series and
+        # not self.copy(): copy() would clone the whole series just to carry a
+        # config, and it shares outlier_filter by reference anyway. Routing
+        # through set_outlier_filter keeps the parameter defaults in a single
+        # place rather than restating them here.
+        scratch = baseTs(np.zeros(2), np.arange(2.0))
         scratch.set_outlier_filter(frac=frac)
 
         # filter() does not mutate the series it is handed, so self is safe here.

@@ -460,6 +460,29 @@ class TestLowessDetrend:
         assert detrended.argmax() == 150
         assert detrended.argmin() == 350
 
+    def test_qc_plot_still_draws_the_fit(self, spiked):
+        """
+        Regression guard for the is_outlier_filtered decoupling.
+
+        lowess_detrend produces a lowess_fit without setting
+        is_outlier_filtered. qc_plot used to gate the fit trace on that flag,
+        so dropping it silently removed the trace from the plot.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from baseTs.plotting import qc_plot
+
+        ts = self._ts(spiked)
+        ts.lowess_detrend(frac=0.25, inplace=True)
+        assert ts.is_outlier_filtered is False   # the flag is deliberately not set
+        assert ts.lowess_fit is not None
+
+        plt.close("all")
+        ax = qc_plot(ts, np.asarray(ts.data, dtype=float), ts.times)
+        assert "Lowess Fit" in [line.get_label() for line in ax.get_lines()]
+        plt.close("all")
+
     @pytest.mark.parametrize("bad_frac", [0.0, -0.1, 1.5])
     def test_frac_validation(self, spiked, bad_frac):
         """
