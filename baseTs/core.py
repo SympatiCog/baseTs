@@ -889,21 +889,26 @@ class baseTs(TimeSeriesData):
                         order: int = 2,
                         use_median: bool = True,
                         tails: Union[str, TailType] = TailType.BOTH,
-                        num_fits: int = 25) -> "baseTs":
+                        num_fits: Optional[int] = None,
+                        *,
+                        it: int = 0,
+                        delta_frac: float = 0.0) -> "baseTs":
         """
         Set outlier filter parameters.
-        
+
         Parameters
         ----------
         params : dict, optional
             Dictionary of parameter values. If provided, overrides individual parameters.
             Valid keys are: 'z_threshold', 'frac', 'max_iterations', 'interpolation_method',
-            'order', 'use_median', 'tails', 'num_fits'
+            'order', 'use_median', 'tails', 'it', 'delta_frac'
         z_threshold : float, default=7
             Z-score threshold for outlier detection
         frac : float, default=0.075
-            Fraction of points to consider as outliers
-        max_iterations : int, default=100
+            LOWESS bandwidth: the fraction of points included in each local
+            regression window. This is *not* the fraction of points expected to
+            be outliers.
+        max_iterations : int, default=10
             Maximum number of iterations for outlier detection
         interpolation_method : str, default='linear'
             Interpolation method for replacing outliers
@@ -914,9 +919,17 @@ class baseTs(TimeSeriesData):
         tails : Union[str, TailType], default=TailType.BOTH
             Which tails to process for outlier detection. Can be 'BOTH', 'UPPER', 'LOWER',
             or a TailType enum member.
-        num_fits : int, default=25
-            Number of LOWESS fits to perform.
-        
+        it : int, default=0, keyword-only
+            Robustifying iterations performed inside the LOWESS fit. Leave at 0
+            unless you know why you want otherwise; see FilterConfig.
+            Keyword-only so that it cannot occupy num_fits' old positional slot.
+        delta_frac : float, default=0.0, keyword-only
+            Speed/accuracy tradeoff for long series. See FilterConfig.
+        num_fits : int, optional
+            Deprecated and ignored. Was the number of LOWESS anchor fits under the
+            moepy backend, which has been replaced by statsmodels. Use
+            ``delta_frac`` for the equivalent speed/accuracy tradeoff.
+
         Returns
         -------
         self
@@ -927,6 +940,15 @@ class baseTs(TimeSeriesData):
         This overwrites the default parameters.
         You must re-run filter_outliers to use the new parameters.
         """
+        if num_fits is not None or (params is not None and 'num_fits' in params):
+            warnings.warn(
+                "num_fits is deprecated and ignored: the LOWESS backend moved from "
+                "moepy to statsmodels, which has no equivalent parameter. Use "
+                "delta_frac for the same speed/accuracy tradeoff.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # If params dictionary is provided, use it to update parameters
         if params is not None:
             valid_params = {
@@ -937,7 +959,8 @@ class baseTs(TimeSeriesData):
                 'order': int,
                 'use_median': bool,
                 'tails': (str, TailType),
-                'num_fits': int
+                'it': int,
+                'delta_frac': float
             }
             
             # Validate and set parameters from dictionary
@@ -974,7 +997,8 @@ class baseTs(TimeSeriesData):
                     raise ValueError(f"Invalid string value for tails: {tails}. Must be 'BOTH', 'UPPER', or 'LOWER'.")
             else: # it's already a TailType enum
                 self.outlier_filter.config.tails = tails
-            self.outlier_filter.config.num_fits = num_fits
+            self.outlier_filter.config.it = it
+            self.outlier_filter.config.delta_frac = delta_frac
         
         hist_msg = f"Set new outlier filter parameters: {self.outlier_filter.config.__dict__}"
         last_process = "_outfilt_params"

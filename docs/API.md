@@ -869,8 +869,12 @@ def bandpass_at(self, hp_hz, lp_hz, sampling_rate=None):
     """Legacy bandpass filter method."""
     
 # Legacy outlier filtering
-def set_outlier_filter(self, frac=0.1, z_threshold=2.5):
-    """Set up LOWESS outlier filter."""
+def set_outlier_filter(self, frac=0.075, z_threshold=7, it=0, delta_frac=0.0):
+    """Set up LOWESS outlier filter.
+
+    frac is the LOWESS bandwidth (fraction of points per local window),
+    not the fraction of points expected to be outliers.
+    """
 
 def filter_outliers(self):
     """Apply LOWESS outlier filtering."""

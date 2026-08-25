@@ -225,6 +225,7 @@ outliers = ts.detect_outliers(method='iqr')
 - NumPy >= 1.19
 - SciPy >= 1.6
 - Pandas >= 1.3
+- statsmodels >= 0.14 (LOWESS outlier filtering)
 
 ### Optional Dependencies
 - Matplotlib >= 3.3 (for plotting)
