@@ -223,10 +223,10 @@ heavily_filtered = ts.lowpass_filter(cutoff=0.1, order=6)
 
 ### `highpass_filter(cutoff, order=4)`
 
-Apply high-pass Butterworth filter.
+Apply high-pass Butterworth filter. Alias for `highpass_at()`.
 
 **Parameters:**
-- `cutoff` (float): Normalized cutoff frequency (0 < cutoff < 1)
+- `cutoff` (float): Cutoff frequency in Hz
 - `order` (int, optional): Filter order. Default: 4
 
 **Returns:**
@@ -240,12 +240,13 @@ detrended = ts.highpass_filter(cutoff=0.05)
 
 ### `bandpass_filter(low_cutoff, high_cutoff, order=4)`
 
-Apply band-pass Butterworth filter.
+Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 
 **Parameters:**
-- `low_cutoff` (float): Low cutoff frequency (0 < low_cutoff < 1)
-- `high_cutoff` (float): High cutoff frequency (low_cutoff < high_cutoff < 1)
-- `order` (int, optional): Filter order. Default: 4
+- `low_cutoff` (float): High-pass cutoff frequency in Hz (passed to `bandpass_at` as `hp_hz`)
+- `high_cutoff` (float): Low-pass cutoff frequency in Hz (passed to `bandpass_at` as `lp_hz`)
+- `order` (int, optional): Accepted for signature compatibility only - the underlying
+  bandpass implementation has no order parameter, so this is currently unused.
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -256,13 +257,13 @@ Apply band-pass Butterworth filter.
 bandpassed = ts.bandpass_filter(low_cutoff=0.1, high_cutoff=0.4)
 ```
 
-### `notch_filter(freq, quality=30)`
+### `notch_filter(freq, order=4)`
 
-Apply notch filter to remove specific frequency.
+Apply notch filter to remove specific frequency. Alias for `notch_at()`.
 
 **Parameters:**
-- `freq` (float): Frequency to remove (Hz)
-- `quality` (float, optional): Quality factor. Default: 30
+- `freq` (float): Frequency to remove, in Hz
+- `order` (int, optional): Filter order. Default: 4
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -378,51 +379,55 @@ ts.detrend(method='linear', inplace=True)
 
 ## Statistical Analysis
 
-### `outlier_indices(method='iqr', **kwargs)`
+### `detect_outliers(method='zscore', threshold=3.0)`
 
-Detect outlier indices using various methods.
+Detect outliers using statistical methods.
+
+Note: this is a separate, stateless statistical outlier detector distinct from the
+LOWESS-based workflow (`set_outlier_filter()` + `filter_outliers()`, see above).
+Neither calls the other - pick whichever suits your data. There is no
+`outlier_indices()` method despite the name similarity; this method returns a
+boolean mask, not an index array.
 
 **Parameters:**
-- `method` (str): Detection method ('iqr', 'zscore', 'modified_zscore')
-- `**kwargs`: Method-specific parameters
-
-**Method-specific parameters:**
-- `iqr`: `factor` (float, default=1.5) - IQR multiplier
-- `zscore`: `threshold` (float, default=3) - Z-score threshold  
-- `modified_zscore`: `threshold` (float, default=3.5) - Modified Z-score threshold
+- `method` (str): Detection method ('zscore', 'iqr', 'modified_zscore'). Default: 'zscore'
+- `threshold` (float): Threshold for outlier detection (IQR multiplier for `'iqr'`,
+  z-score/modified z-score threshold otherwise). Default: 3.0
 
 **Returns:**
-- `np.ndarray`: Array of outlier indices
+- `np.ndarray`: Boolean array the same length as the series - `True` where a point
+  is an outlier
 
 **Example:**
 ```python
-# IQR method (default)
-outliers_iqr = ts.outlier_indices(method='iqr', factor=1.5)
+# Z-score method (default)
+outlier_mask = ts.detect_outliers(method='zscore', threshold=3)
 
-# Z-score method
-outliers_z = ts.outlier_indices(method='zscore', threshold=3)
+# IQR method
+outlier_mask = ts.detect_outliers(method='iqr', threshold=1.5)
 
 # Modified Z-score method
-outliers_mod = ts.outlier_indices(method='modified_zscore', threshold=3.5)
+outlier_mask = ts.detect_outliers(method='modified_zscore', threshold=3.5)
 
-print(f"Found {len(outliers_iqr)} outliers using IQR method")
+print(f"Found {outlier_mask.sum()} outliers")
 ```
 
-### `remove_outliers(method='iqr', **kwargs)`
+### `remove_outliers(method='zscore', threshold=3.0, inplace=False)`
 
-Remove outliers from the time series.
+Remove points flagged by `detect_outliers()` from the time series.
 
 **Parameters:**
-- `method` (str): Detection method ('iqr', 'zscore', 'modified_zscore')
-- `**kwargs`: Method-specific parameters (see `outlier_indices`)
+- `method` (str): Detection method passed to `detect_outliers` ('zscore', 'iqr', 'modified_zscore')
+- `threshold` (float): Threshold passed to `detect_outliers`
+- `inplace` (bool, optional): If True, modifies existing object. Otherwise returns new object.
 
 **Returns:**
 - `baseTs`: New baseTs object with outliers removed
 
 **Example:**
 ```python
-# Remove outliers using IQR method
-cleaned = ts.remove_outliers(method='iqr', factor=2.0)
+# Remove outliers using the z-score method
+cleaned = ts.remove_outliers(method='zscore', threshold=3)
 
 print(f"Original length: {ts.len()}")
 print(f"Cleaned length: {cleaned.len()}")
@@ -962,7 +967,7 @@ All methods return new baseTs objects, enabling method chaining:
 # Chain multiple operations
 result = (ts
           .lowpass_filter(cutoff=0.3)
-          .remove_outliers(method='iqr', factor=2.0)
+          .remove_outliers(method='zscore', threshold=3)
           .zscale()
           .apply_function(np.abs))
 
