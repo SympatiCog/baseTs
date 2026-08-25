@@ -123,7 +123,10 @@ class TimeSeriesData(pd.Series):
         duration = float(self.index[-1] - self.index[0])
         if duration <= 0:
             return np.nan
-        return len(self) / duration
+        # n samples span n-1 intervals. Using len(self) here over-reported the
+        # rate by n/(n-1) - 11% at n=10, 25% at n=5 - for every series built
+        # from a times array without an explicit freq.
+        return (len(self) - 1) / duration
 
     def __finalize__(self, other, method=None, **kwargs):
         """

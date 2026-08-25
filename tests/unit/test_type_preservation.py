@@ -91,3 +91,31 @@ class TestMetadataPropagation:
 
         child.history.append("child-only")
         assert "child-only" not in ts.history
+
+
+class TestEffectiveFrequency:
+    """n samples span n-1 intervals."""
+
+    @pytest.mark.parametrize("n,fs", [(5, 2.0), (10, 10.0), (100, 10.0), (1000, 100.0)])
+    def test_derived_frequency_is_exact(self, n, fs):
+        ts = baseTs(np.zeros(n), np.arange(n) / fs)
+        assert np.isclose(ts.freq, fs), f"n={n}: got {ts.freq}, want {fs}"
+
+    def test_frequency_stable_across_operations(self, ts):
+        """
+        rolling() does not call __finalize__, so freq is recomputed from the
+        index - it must agree with the parent.
+        """
+        for op in ("iloc[0:20]", "rolling(3).mean()", "dropna()", "abs()"):
+            assert np.isclose(eval(f"ts.{op}").freq, ts.freq), f"ts.{op} changed freq"
+
+    def test_short_series_has_no_frequency(self):
+        assert np.isnan(baseTs(np.zeros(1), np.zeros(1), freq=1.0)._calculate_effective_frequency())
+
+    def test_nyquist_boundary_is_exact(self):
+        """A 1 Hz series must reject a cutoff at exactly 0.5 Hz."""
+        ts = baseTs(np.random.randn(100), np.arange(100, dtype=float))
+        assert np.isclose(ts.freq, 1.0)
+        with pytest.raises(Exception):
+            ts.lowpass_filter(cutoff=0.5)
+        assert isinstance(ts.lowpass_filter(cutoff=0.4), baseTs)
