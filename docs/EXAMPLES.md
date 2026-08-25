@@ -398,8 +398,8 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
                 freq=metadata.get('sampling_rate', 1.0))
     
     # Quality assessment
-    outlier_indices = ts.outlier_indices(method='modified_zscore', threshold=3.5)
-    n_outliers = len(outlier_indices)
+    outlier_mask = ts.detect_outliers(method='modified_zscore', threshold=3.5)
+    n_outliers = int(outlier_mask.sum())
     data_completeness = 1 - np.sum(np.isnan(measurements)) / len(measurements)
     
     # Signal processing with enhanced methods

@@ -731,7 +731,21 @@ class baseTs(TimeSeriesData):
             inplace=inplace,
             is_filtered=True
         )
-        
+
+    def notch_filter(self, freq: float, order: int = 4, inplace: bool = False) -> "baseTs":
+        """
+        Apply a notch filter at the specified frequency (alias for notch_at).
+
+        Args:
+            freq: Notch frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Returns:
+            Notch filtered baseTs object
+        """
+        return self.notch_at(freq, order, inplace)
+
     def highpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a highpass filter at the specified cutoff frequency.
@@ -754,7 +768,21 @@ class baseTs(TimeSeriesData):
             inplace=inplace,
             is_filtered=True
         )
-        
+
+    def highpass_filter(self, cutoff: float, order: int = 4, inplace: bool = False) -> "baseTs":
+        """
+        Apply a highpass filter at the specified cutoff frequency (alias for highpass_at).
+
+        Args:
+            cutoff: Highpass cutoff frequency in Hz
+            order: Filter order
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Returns:
+            Highpass filtered baseTs object
+        """
+        return self.highpass_at(cutoff, order, inplace)
+
     def lowpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a lowpass filter at the specified cutoff frequency.
@@ -850,6 +878,23 @@ class baseTs(TimeSeriesData):
             inplace=inplace,
             is_filtered=True
         )
+
+    def bandpass_filter(self, low_cutoff: float, high_cutoff: float, order: int = 4,
+                         inplace: bool = False) -> "baseTs":
+        """
+        Apply a bandpass filter between two cutoff frequencies (alias for bandpass_at).
+
+        Args:
+            low_cutoff: High-pass cutoff frequency in Hz (maps to bandpass_at's hp_hz)
+            high_cutoff: Low-pass cutoff frequency in Hz (maps to bandpass_at's lp_hz)
+            order: Accepted for signature compatibility; the underlying filter has no
+                order parameter, so this is currently unused.
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Returns:
+            Bandpass filtered baseTs object
+        """
+        return self.bandpass_at(hp_hz=low_cutoff, lp_hz=high_cutoff, inplace=inplace)
 
     def butterpass_at(self, hp_freq: float, lp_freq: float, inplace: bool = False) -> "baseTs":
         """
@@ -1640,7 +1685,45 @@ class baseTs(TimeSeriesData):
             return np.abs(modified_z_scores) > threshold
         else:
             raise ValueError(f"Unknown outlier detection method: {method}")
-    
+
+    def remove_outliers(self, method: str = 'zscore', threshold: float = 3.0,
+                         inplace: bool = False) -> "baseTs":
+        """
+        Remove points flagged by detect_outliers() from the series.
+
+        This is the simple statistical counterpart to filter_outliers(): it drops
+        outlier points rather than interpolating over them with the LOWESS-based
+        outlier_filter workflow (see set_outlier_filter/filter_outliers).
+
+        Args:
+            method: Detection method passed to detect_outliers ('zscore', 'iqr',
+                'modified_zscore')
+            threshold: Threshold passed to detect_outliers
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Returns:
+            baseTs object with outlier points removed
+        """
+        mask = self.detect_outliers(method=method, threshold=threshold)
+        new_data = self.values[~mask]
+        new_times = self.index.values[~mask]
+
+        if inplace:
+            self.data = new_data
+            self.times = new_times
+            self._update_history_and_process(
+                f"Removed outliers using {method} method (threshold={threshold})",
+                f"_rmoutliers_{method}"
+            )
+            return self
+        else:
+            new_obj = self._create_new_with_data(new_data, new_times)
+            new_obj._update_history_and_process(
+                f"Removed outliers using {method} method (threshold={threshold})",
+                f"_rmoutliers_{method}"
+            )
+            return new_obj
+
     def get_frequency_content(self, window: str = None) -> tuple:
         """
         Get frequency domain representation using pandas-optimized FFT.
