@@ -260,10 +260,13 @@ class TestWorkflowCompatibility:
         
         ts = baseTs(data=data, times=times)
         
-        # Iterative refinement workflow
+        # Iterative refinement workflow.
+        # times = arange(100) is exactly 1 Hz, so Nyquist is exactly 0.5 Hz and
+        # a cutoff AT Nyquist is invalid. This previously used 0.5 and passed
+        # only because the effective frequency was over-reported by n/(n-1).
         current = ts
         for i in range(3):
-            current = current.lowpass_filter(cutoff=0.5 - i * 0.1)
+            current = current.lowpass_filter(cutoff=0.4 - i * 0.1)
             current = current.zscale()
         
         # Verify iterative processing

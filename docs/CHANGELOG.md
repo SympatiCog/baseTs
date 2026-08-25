@@ -56,6 +56,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-08-25
 
+### Fixed — pandas operations no longer downgrade the object
+
+`TimeSeriesData._constructor` returned `TimeSeriesData`, and `baseTs` inherited
+it, so every native pandas operation silently dropped all 62 baseTs methods:
+
+```
+ts.rolling(10).mean()  ->  TimeSeriesData    lowpass_at: False
+ts.iloc[0:10]          ->  TimeSeriesData    lowpass_at: False
+```
+
+This contradicted "All methods return new baseTs objects, enabling method
+chaining" and the "270+ pandas methods" claim. All 26 operations tested now
+return `baseTs`.
+
+pandas builds subclasses as `_constructor(values, index=...)`, which
+`baseTs.__init__` rejected — it took `times`. The constructor now accepts
+`index` as an alias (prefer `times` in your own code).
+
+Metadata repairs, without which the preserved type still lost state:
+
+- `_metadata` omitted `outlier_indices`, `is_outlier_filtered` and
+  `outlier_filter`, so `ts.iloc[:50].outlier_indices` raised `AttributeError`
+  even after `filter_outliers()` had populated it.
+- `_metadata` listed `filtered_indices`, which was only ever initialised to
+  `None` and never written — a half-finished rename. Retired.
+- `_constructor_sliced` was a plain method where pandas expects a property.
+- `__finalize__` assigned metadata by reference, so a derived object shared the
+  parent's `history` list. Mutable metadata is now copied.
+
+### Behavior change — effective sampling frequency
+
+`_calculate_effective_frequency` computed `len(self) / duration`, but *n*
+samples span *n−1* intervals. It over-reported by `n/(n-1)`:
+
+| n | true | reported | error |
+|---|---|---|---|
+| 5 | 2.0 Hz | 2.500000 | +25.00% |
+| 10 | 10.0 Hz | 11.111111 | +11.11% |
+| 1000 | 100.0 Hz | 100.100100 | +0.10% |
+
+`freq` feeds `np.fft.fftfreq`, every filter cutoff normalisation, and the
+Nyquist check, so the error propagated into reported frequencies and filter
+behaviour. **Any code relying on a derived `freq` now gets a slightly lower,
+correct value**, and a cutoff that previously sat just under the inflated
+Nyquist may now be rejected as at-or-above the real one.
+
 ### Fixed — pandas 2.x/3.x compatibility
 
 The package did not run correctly on pandas 2.0 or later. `setup.py` declared
