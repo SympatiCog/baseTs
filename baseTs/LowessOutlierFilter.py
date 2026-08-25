@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+#: Lower bound on the residual scale, guarding against division by zero.
+SCALE_FLOOR = 1e-6
+
+
 class TailType(Enum):
     """Enum for specifying which tails to process in outlier detection."""
     BOTH = auto()
@@ -29,7 +33,31 @@ class TailType(Enum):
 
 @dataclass
 class FilterConfig:
-    """Configuration parameters for the LowessOutlierFilter."""
+    """Configuration parameters for the LowessOutlierFilter.
+
+    Attributes
+    ----------
+    z_threshold : float
+        Robust z-score above which a residual is treated as an outlier.
+    max_iterations : int
+        Maximum passes of the detect-and-mask loop.
+    frac : float
+        LOWESS bandwidth: the fraction of points included in each local
+        regression window. This is *not* the fraction of points expected to be
+        outliers.
+    it : int
+        Robustifying iterations performed *inside* the LOWESS fit. Defaults to 0
+        so that robustness lives in one place: this class already runs its own
+        MAD-based loop. Raising it makes the fit track the data more closely,
+        which shrinks residuals and can collapse the MAD scale to SCALE_FLOOR —
+        see _compute_robust_statistics. (A signal smooth enough to be fitted
+        near-exactly can collapse the scale at it=0 too; `it` is not the only
+        route to it.)
+    delta_frac : float
+        If > 0, LOWESS fits only at points separated by ``delta_frac * ptp(x)``
+        and interpolates between them, trading a little accuracy for speed on
+        long series. 0.0 fits every point. Successor to the removed ``num_fits``.
+    """
     z_threshold: float = 3.0
     max_iterations: int = 5
     frac: float = 0.075
@@ -37,7 +65,8 @@ class FilterConfig:
     interpolation_method: str = 'linear'
     order: int = 2
     use_median: bool = True
-    num_fits: int = 25
+    it: int = 0
+    delta_frac: float = 0.0
 
 class LowessOutlierFilter:
     """
@@ -138,11 +167,26 @@ class LowessOutlierFilter:
         return (cleaned_data, outlier_indices, lowess_line) if return_lowess else (cleaned_data, outlier_indices)
 
     def _apply_lowess(self, y: np.ndarray, x: np.ndarray) -> np.ndarray:
-        """Apply LOWESS smoothing to the data."""
-        from moepy import lowess
-        lowess_model = lowess.Lowess()
-        lowess_model.fit(x, y, frac=self.config.frac, num_fits=self.config.num_fits)
-        return lowess_model.predict(x)
+        """Apply LOWESS smoothing to the data.
+
+        Uses statsmodels' Cleveland LOWESS. Note the argument order:
+        ``lowess(endog, exog)`` is ``(y, x)``.
+
+        ``return_sorted=False`` is load-bearing. statsmodels defaults to
+        ``missing='drop'``; with ``return_sorted=False`` it re-inserts NaN at the
+        dropped positions so the output length always matches the input, which
+        the caller relies on when assigning into ``lowess_line[valid_mask]``.
+        """
+        from statsmodels.nonparametric.smoothers_lowess import lowess
+
+        delta = self.config.delta_frac * float(np.ptp(x)) if self.config.delta_frac else 0.0
+        return lowess(
+            y, x,
+            frac=self.config.frac,
+            it=self.config.it,
+            delta=delta,
+            return_sorted=False,
+        )
 
     def _process_iteration(self,
                           data: np.ndarray,
@@ -194,7 +238,20 @@ class LowessOutlierFilter:
             center = np.nanmean(residuals)
             scale = np.nanstd(residuals, ddof=1)
 
-        return center, max(scale, 1e-6)  # Prevent division by zero
+        if scale < SCALE_FLOOR:
+            # The spread of residuals has collapsed, so every z-score is divided by
+            # the floor and z_threshold stops discriminating. Usually means the fit
+            # is interpolating the data (e.g. a staircase signal fitted with
+            # internal robustifying iterations, config.it >= 2).
+            logger.warning(
+                "Residual scale %.3g is below the %.0e floor; z-scores are being "
+                "divided by the floor and z_threshold is effectively inoperative. "
+                "Check that the LOWESS fit is not interpolating the data "
+                "(config.it=%d, config.frac=%g).",
+                scale, SCALE_FLOOR, self.config.it, self.config.frac,
+            )
+
+        return center, max(scale, SCALE_FLOOR)  # Prevent division by zero
 
     def _identify_outliers(self,
                           residuals: np.ndarray,

@@ -54,6 +54,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [0.3.0] - 2026-08-25
+
+### Changed — LOWESS backend moved from moepy to statsmodels
+
+`moepy` has not been released since 2021 and was a hard runtime dependency for a
+three-call surface, all inside `LowessOutlierFilter._apply_lowess`. That call now
+routes through `statsmodels.nonparametric.smoothers_lowess.lowess`.
+
+**Behavior change — outlier counts shift.** The two smoothers are not
+interchangeable and no `frac` reconciles them. statsmodels is the smoother of the
+two at equal `frac`, so it flags fewer points overall — but its flagged set is
+*not* a subset of moepy's. Measured across the 121 real cpCST series where the
+filter is actually operative (see below), at `frac=0.075, z_threshold=3`:
+
+```
+series                                    n    moepy       sm   flagged by sm only
+sub-M10902507_ses-MOBI1A_task-CPTC     6214     5617     3197                  180
+sub-M10907283_ses-MOBI1A_task-CPTC     7371     6820     4997                  277
+sub-M10920486_ses-MOBI1A_task-CPTC     6641     5893     3819                  161
+sub-M10920975_ses-MOBI2B_task-CPTC     4751     3619     2605                  459
+```
+
+statsmodels flagged fewer in 131/131 series, but in roughly half of them it
+flagged points moepy did not. Do not assume the new backend only removes
+detections. Default `frac`, `z_threshold` and `max_iterations` values are
+unchanged; retuning detection is a separate decision from swapping the backend.
+
+Runtime on the largest real series (n=17,972) is 0.46s vs moepy's 0.15s, since
+statsmodels fits every point where moepy fitted 25 anchors. Set `delta_frac` if
+that matters — at `delta_frac=0.001` the same series takes 0.03s.
+
+### Added
+- `FilterConfig.it` — robustifying iterations performed *inside* the LOWESS fit,
+  default `0`. moepy's `fit()` defaulted to `robust_iters=3` and the old code
+  never overrode it, so this is a deliberate departure. `0` keeps the robustness
+  in one place: this class already runs its own MAD-based loop.
+- `FilterConfig.delta_frac` — fits at points separated by `delta_frac * ptp(x)`
+  and interpolates between them, trading accuracy for speed on long series.
+  Default `0.0` (fit every point). Successor to `num_fits`.
+- Warning when the residual scale collapses to the floor (see Fixed).
+
+### Deprecated
+- `set_outlier_filter(num_fits=...)` is ignored and raises `DeprecationWarning`,
+  from both the keyword and the `params` dict. It was moepy's anchor-fit count;
+  statsmodels has no equivalent. Use `delta_frac`. `num_fits` keeps its ninth
+  positional slot, and `it`/`delta_frac` are keyword-only, so positional callers
+  cannot silently land a `num_fits` value on `it`.
+
+### Fixed
+- `_compute_robust_statistics` silently clamped the residual scale to `1e-6`,
+  which made `z_threshold` inoperative rather than merely guarding against
+  division by zero. It now warns when the clamp engages.
+
+  **This is not hypothetical: 141 of 262 real cpCST series hit the floor at the
+  default settings**, under *both* backends. `lambda_val` is a staircase signal
+  that LOWESS fits almost exactly, so residual MAD lands around 2e-16 and every
+  z-score is divided by the floor. In that regime the flagged set is numerical
+  noise — for the floored series it is a contiguous run from index 0, a
+  leading-edge fitting artifact rather than detected outliers. Pre-existing and
+  unchanged in behavior here; the warning only makes it visible.
+- `set_outlier_filter` docstring described `frac` as "Fraction of points to
+  consider as outliers". It is the LOWESS bandwidth — the fraction of points in
+  each local regression window. Also documented `max_iterations` as `100` when
+  the signature says `10`.
+- `docs/USER_GUIDE.md` showed `ts.set_outlier_filter(z_threshold=3.0,
+  lowess_frac=0.1)`; there is no `lowess_frac` parameter and that line raised
+  `TypeError`.
+- `docs/API.md` listed `set_outlier_filter(frac=0.1, z_threshold=2.5)`; the real
+  defaults are `frac=0.075, z_threshold=7`.
+
 ## [0.2.0] - 2026-08-25
 
 ### Fixed — pandas operations no longer downgrade the object

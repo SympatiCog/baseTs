@@ -127,7 +127,7 @@ rectified = ts.apply_function(lambda x: np.maximum(x, 0))  # ReLU
 
 ```python
 # Traditional LOWESS-based outlier filtering
-ts.set_outlier_filter(z_threshold=3.0, lowess_frac=0.1)
+ts.set_outlier_filter(z_threshold=3.0, frac=0.1)  # frac = LOWESS bandwidth
 cleaned = ts.filter_outliers()
 
 # New statistical outlier detection methods
