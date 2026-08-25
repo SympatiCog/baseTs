@@ -11,6 +11,7 @@ import warnings
 import numpy as np
 from scipy import interpolate
 import matplotlib.pyplot as plt
+from pandas.plotting import PlotAccessor
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
@@ -101,6 +102,44 @@ def _is_unset(value) -> bool:
         return math.isnan(float(value))
     except (TypeError, ValueError):
         return False
+
+class _PlotAccessor:
+    """
+    Callable proxy backing ``baseTs.plot``.
+
+    ``plot`` used to be a plain alias for :meth:`baseTs.plot_line`. That shadowed
+    the pandas ``.plot`` accessor - which is an object, not a method - so
+    ``ts.plot.line()``, ``.bar()``, ``.hist()`` and the other eleven sub-methods
+    were unreachable.
+
+    This keeps ``ts.plot()`` drawing the baseTs line plot, and delegates every
+    attribute lookup to the pandas accessor, so both spellings work:
+
+        ts.plot()                 # baseTs line plot, as before
+        ts.plot(lowess=True)      # baseTs plot_line keyword arguments
+        ts.plot.bar()             # pandas PlotAccessor
+    """
+
+    __slots__ = ("_ts",)
+
+    def __init__(self, ts: "baseTs"):
+        object.__setattr__(self, "_ts", ts)
+
+    def __call__(self, *args, **kwargs):
+        return self._ts.plot_line(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(PlotAccessor(self._ts), name)
+
+    def __dir__(self):
+        return sorted(set(dir(PlotAccessor(self._ts))))
+
+    def __repr__(self) -> str:
+        name = getattr(self._ts, "signal_name", "") or "unnamed"
+        return f"<baseTs plot accessor for {name!r}>"
+
 
 class baseTs(TimeSeriesData):
     """
@@ -1694,13 +1733,23 @@ class baseTs(TimeSeriesData):
                 lowess=lowess,
                 show=show)
 
-    # Alias for plot_line to maintain backward compatibility
-    # Will be altered in future versions.
-    # TODO: Deprecate in future versions.
-    # TODO: Replace with generic plot() function that maps
-    #       to all available plotting functions.
-    #       e.g. plot_hist would be plot("hist", bins=10, kde=True, etc...)
-    plot = plot_line
+    @property
+    def plot(self) -> _PlotAccessor:
+        """
+        Line plot, or the pandas plotting accessor.
+
+        Calling it is the historical baseTs behaviour - an alias for
+        :meth:`plot_line`. Attribute access falls through to the pandas
+        ``.plot`` accessor, which a plain method alias made unreachable.
+
+        Examples:
+            ts.plot()                     # baseTs line plot
+            ts.plot(lowess=True, ax=ax)   # plot_line keyword arguments
+            ts.plot.bar()                 # pandas PlotAccessor
+            ts.plot.hist(bins=30)
+        """
+        return _PlotAccessor(self)
+
     
     def plot_series(self,
                     series_list: list,

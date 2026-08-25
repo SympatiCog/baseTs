@@ -211,8 +211,12 @@ print(f"Spearman correlation: {spearman_corr:.3f}")
 ```python
 # Introduce some gaps for demonstration
 ts_with_gaps = ts.copy()
-ts_with_gaps.data[100:110] = np.nan
-ts_with_gaps.data[200:205] = np.nan
+# Introduce gaps. Note: ts.data returns a read-only view under pandas
+# Copy-on-Write, so `ts.data[100:110] = np.nan` raises ValueError. Assign
+# through .iloc, or use set_indices_to_nan_and_interpolate() to do both
+# steps at once.
+ts_with_gaps.iloc[100:110] = np.nan
+ts_with_gaps.iloc[200:205] = np.nan
 
 # Fill gaps with different methods
 linear_filled = ts_with_gaps.interpolate_gaps(method='linear')
