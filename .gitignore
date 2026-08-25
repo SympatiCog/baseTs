@@ -56,3 +56,6 @@ venv.bak/
 
 # OS specific files
 .DS_Store
+
+# graphify knowledge graph output
+graphify-out/
