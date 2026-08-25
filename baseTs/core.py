@@ -2118,33 +2118,53 @@ class baseTs(TimeSeriesData):
 
     def lowess_detrend(self, frac: float = 0.25, inplace: bool = False) -> "baseTs":
         """
-        Detrend the data using a lowess fit.
+        Detrend the data by subtracting a robust LOWESS fit.
+
+        The trend is the LOWESS line produced by the outlier filter, so spikes
+        do not drag the trend down towards themselves. The result is the
+        *original* data minus that trend: outliers are preserved, not
+        interpolated away. Pipe through filter_outliers first if you want them
+        gone.
+
+        Args:
+            frac: LOWESS bandwidth, in (0, 1]. The fraction of points included
+                in each local regression window - not the fraction of points
+                expected to be outliers.
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Returns:
+            Detrended baseTs object
+
+        Notes:
+            Sets only `data` and `lowess_fit` on the target. The outlier filter
+            configuration, `is_outlier_filtered` and `outlier_indices` are left
+            alone: detrending is not filtering, and the returned data still
+            contains its outliers.
         """
-        def detrend_func(data):
-            lowess_fit = self.set_outlier_filter(frac=frac)
-            self.filter_outliers(inplace=True)
-            # STANEDIT
-            return data - self.lowess_fit, self.lowess_fit
-            
-        def process_result(result):
-            data, lowess_fit = result
-            if inplace:
-                self.data = data
-                self.lowess_fit = lowess_fit
-                return self
-            else:
-                new_obj = self.copy()
-                new_obj.data = data
-                new_obj.lowess_fit = lowess_fit
-                return new_obj
-                
-        result = detrend_func(self.data)
-        processed = process_result(result)
-        processed._update_history_and_process(
+        if not 0 < frac <= 1:
+            raise ValueError(f"frac must be in (0, 1], got {frac}")
+
+        # Configure a throwaway holder rather than self, so the caller's filter
+        # config survives. copy() shares outlier_filter by reference, so the
+        # holder needs one of its own. Routing through set_outlier_filter keeps
+        # the parameter defaults in a single place.
+        scratch = self.copy()
+        scratch.outlier_filter = LowessOutlierFilter()
+        scratch.set_outlier_filter(frac=frac)
+
+        # filter() does not mutate the series it is handed, so self is safe here.
+        _, _, lowess_fit = scratch.outlier_filter.filter(self, return_lowess=True)
+
+        detrended = np.asarray(self.data, dtype=float) - lowess_fit
+
+        target = self if inplace else self.copy()
+        target.data = detrended
+        target.lowess_fit = lowess_fit
+        target._update_history_and_process(
             hist_msg=f"Detrended with lowess fit frac={frac}",
             last_process="_lowess_detrend"
         )
-        return processed
+        return target
     
     def detrend(self, method: str = 'linear', inplace: bool = False) -> "baseTs":
         """

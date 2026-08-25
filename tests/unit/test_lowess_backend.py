@@ -19,16 +19,6 @@ from baseTs.LowessOutlierFilter import (
 )
 
 
-@pytest.fixture
-def spiked():
-    """Sine with two large, unambiguous spikes."""
-    t = np.linspace(0, 10, 500)
-    d = np.sin(2 * np.pi * 0.5 * t) + 0.05 * np.random.default_rng(0).standard_normal(500)
-    d[150] += 5.0
-    d[350] -= 5.0
-    return d, t
-
-
 class TestBackendIsStatsmodels:
     def test_moepy_is_not_imported(self, spiked):
         """The filter must work with moepy made unimportable."""

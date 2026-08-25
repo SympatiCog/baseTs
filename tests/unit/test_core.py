@@ -369,3 +369,105 @@ class TestRelativeBandPower:
         assert np.array_equal(ts.data, data_before)
         assert len(ts.history) == history_before
         assert ts.last_process == last_process_before
+
+
+class TestLowessDetrend:
+    """Tests for lowess_detrend, centred on its inplace=False purity contract."""
+
+    @staticmethod
+    def _ts(spiked):
+        d, t = spiked
+        return baseTs(data=d.copy(), times=t.copy(), signal_name="SpikedSignal")
+
+    def test_fixture_actually_triggers_the_filter(self, spiked):
+        """
+        Guard for the purity tests below.
+
+        They assert that self.data survives lowess_detrend untouched. If the
+        filter never finds an outlier there is nothing to interpolate away, so
+        self.data would be unchanged even on the buggy implementation and the
+        assertion would pass vacuously. Fail loudly here instead.
+        """
+        ts = self._ts(spiked)
+        ts.set_outlier_filter(frac=0.25)
+        ts.filter_outliers(inplace=True)
+
+        assert len(ts.outlier_indices) > 0
+
+    def test_inplace_false_leaves_self_untouched(self, spiked):
+        """Issue #6: the caller's object must survive a non-inplace detrend."""
+        ts = self._ts(spiked)
+        before = {
+            'data': np.asarray(ts.data, dtype=float).copy(),
+            'lowess_fit': ts.lowess_fit,
+            'outlier_indices': ts.outlier_indices,
+            'is_outlier_filtered': ts.is_outlier_filtered,
+            'history': list(ts.history),
+            'last_process': ts.last_process,
+        }
+
+        out = ts.lowess_detrend(frac=0.25, inplace=False)
+
+        assert out is not ts
+        assert np.array_equal(np.asarray(ts.data, dtype=float), before['data'])
+        assert ts.lowess_fit is before['lowess_fit']
+        assert ts.outlier_indices is before['outlier_indices']
+        assert ts.is_outlier_filtered == before['is_outlier_filtered']
+        assert ts.history == before['history']
+        assert ts.last_process == before['last_process']
+
+    def test_inplace_false_does_not_reconfigure_filter(self, spiked):
+        """
+        Issue #6: detrending must not rewrite the caller's filter config.
+
+        set_outlier_filter resets *every* parameter to its signature default,
+        so a detrend at a different frac silently moves z_threshold too. Note
+        that baseTs.copy() shares the outlier_filter by reference, so fixing
+        this by detrending "on a copy" does not help.
+        """
+        ts = self._ts(spiked)
+        ts.set_outlier_filter(frac=0.11, z_threshold=4.2)
+        before = dict(ts.get_outlier_filter_params())
+
+        ts.lowess_detrend(frac=0.25, inplace=False)
+
+        assert ts.get_outlier_filter_params() == before
+
+    def test_inplace_true_detrends_in_place(self, spiked):
+        """The inplace path removes the trend and reports the fit it used."""
+        d, t = spiked
+        ramped = baseTs(data=d + 0.5 * t, times=t.copy())
+        slope_before = np.polyfit(t, np.asarray(ramped.data, dtype=float), 1)[0]
+
+        out = ramped.lowess_detrend(frac=0.25, inplace=True)
+
+        assert out is ramped
+        slope_after = np.polyfit(t, np.asarray(ramped.data, dtype=float), 1)[0]
+        assert abs(slope_after) < 0.05 * abs(slope_before)
+        assert ramped.lowess_fit is not None
+        assert ramped.last_process == "_lowess_detrend"
+
+    def test_outliers_survive_detrending(self, spiked):
+        """
+        Detrending subtracts a robust trend from the *original* data.
+
+        The spikes are what the trend is made robust against, not something
+        the operation removes: they must still be the extremes afterwards.
+        """
+        out = self._ts(spiked).lowess_detrend(frac=0.25, inplace=False)
+        detrended = np.asarray(out.data, dtype=float)
+
+        assert detrended.argmax() == 150
+        assert detrended.argmin() == 350
+
+    @pytest.mark.parametrize("bad_frac", [0.0, -0.1, 1.5])
+    def test_frac_validation(self, spiked, bad_frac):
+        """
+        frac is a LOWESS bandwidth in (0, 1] and is rejected up front.
+
+        statsmodels already rejects <0 and >1 from inside the fit, but frac=0
+        slips through and yields a degenerate fit. Match on our own message so
+        the contract belongs to baseTs rather than to the backend's internals.
+        """
+        with pytest.raises(ValueError, match=r"must be in \(0, 1\]"):
+            self._ts(spiked).lowess_detrend(frac=bad_frac)
