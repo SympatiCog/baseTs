@@ -164,8 +164,15 @@ peak_freq = ts.get_peak_freq()
 
 # Gap filling and interpolation
 ts_with_gaps = ts.copy()
-ts_with_gaps.data[100:110] = np.nan  # Introduce gaps
+# Introduce gaps. Note: ts.data returns a read-only view under pandas
+# Copy-on-Write, so `ts.data[100:110] = np.nan` raises ValueError. Assign
+# through .iloc, or use set_indices_to_nan_and_interpolate() to do both
+# steps at once.
+ts_with_gaps.iloc[100:110] = np.nan
 ts_filled = ts_with_gaps.interpolate_gaps(method='spline')
+
+# Or, in a single step:
+ts_filled = ts.set_indices_to_nan_and_interpolate(list(range(100, 110)))
 
 print(f"Correlation: {correlation:.3f}")
 print(f"Peak frequency: {peak_freq} Hz")

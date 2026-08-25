@@ -1343,6 +1343,125 @@ max_change_time = tf_analysis['time_centers'][max_change_idx]
 print(f"  Maximum frequency change at: {max_change_time:.2f} s ({freq_gradient[max_change_idx]:.1f} Hz/window)")
 ```
 
+### Relative Band Power and fALFF
+
+Answering "how much of this signal lives in band X?" — the classic case being fractional amplitude
+of low-frequency fluctuations (fALFF), which compares the 0.01–0.1 Hz band against the whole
+spectrum.
+
+```python
+import numpy as np
+from baseTs import baseTs
+
+# Simulate a slow physiological signal: 0.05 Hz oscillation, a slow drift,
+# a baseline offset, and measurement noise.
+fs, duration = 2.0, 600.0            # 2 Hz for 10 minutes
+n = int(fs * duration)
+t = np.arange(n) / fs
+
+np.random.seed(42)
+signal = (
+    np.sin(2 * np.pi * 0.05 * t)     # the low-frequency fluctuation of interest
+    + 0.5 * np.random.randn(n)       # measurement noise
+    + 0.002 * t                      # slow linear drift
+    + 5.0                            # baseline offset
+)
+
+ts = baseTs(signal, t, freq=fs, signal_name="slow_oscillation")
+
+# Detrend FIRST. Band power is a measurement, not a transform - the library
+# leaves the preprocessing pipeline to you.
+clean = ts.detrend('linear')
+
+# Fraction of the signal's variance in the 0.01-0.1 Hz band
+power_ratio = clean.relative_band_power(0.01, 0.1)
+print(f"Power ratio  : {power_ratio:.3f}")     # ~0.717
+
+# Classic fALFF (amplitude convention, Zou et al. 2008)
+falff = clean.falff()
+print(f"fALFF        : {falff:.3f}")           # ~0.147
+```
+
+**Always interpret the ratio against its null.** For white noise both conventions converge on the
+fraction of bins that fall inside the band — so a "high" number only means something relative to
+that baseline:
+
+```python
+res = clean.relative_band_power(0.01, 0.1, details=True)
+
+print(f"ratio        : {res.ratio:.3f}")
+print(f"null         : {res.bin_fraction:.3f}   (white-noise expectation)")
+print(f"enrichment   : {res.ratio / res.bin_fraction:.1f}x")
+print(f"band bins    : {res.n_band_bins} of {res.n_total_bins}")
+print(f"resolution   : {res.freq_resolution:.5f} Hz")
+
+# ratio        : 0.717
+# null         : 0.092   (white-noise expectation)
+# enrichment   : 7.8x
+# band bins    : 55 of 599
+# resolution   : 0.00167 Hz
+```
+
+**Check that your recording is long enough.** Frequency resolution is `1 / duration`, so a 0.01 Hz
+lower edge needs at least 100 s of data just to land one bin in the band — and realistically several
+hundred seconds for a stable estimate. A band narrower than the resolution raises a `ValueError`
+that tells you how much data you would need:
+
+```python
+short = baseTs(signal[:100], t[:100], freq=fs)   # only 50 s
+res_short = short.relative_band_power(0.01, 0.1, details=True)
+print(f"{res_short.n_band_bins} bins at {res_short.freq_resolution:.3f} Hz resolution")
+# 5 bins at 0.020 Hz resolution   <- it computes, but it is far too coarse to trust
+
+# Ask for a band narrower than the resolution and it refuses outright
+try:
+    short.relative_band_power(0.01, 0.015)
+except ValueError as e:
+    print(e)
+# No frequency bins fall in [0.01, 0.015] Hz. The frequency resolution is
+# 0.02 Hz (100 samples at 2.0 Hz); resolving a band this narrow needs at
+# least 200 s of data.
+```
+
+Note that the coarse case does *not* raise — five bins is enough to produce a number. The guard
+only catches a band with no bins at all, so checking `n_band_bins` and `freq_resolution` yourself
+is worthwhile on short recordings.
+
+**Choosing a convention.** `ratio='power'` gives the fraction of variance and stays roughly stable
+across sampling rates; `ratio='amplitude'` reproduces published fALFF but its denominator grows with
+the number of noise bins, so values are not comparable across acquisitions with different bandwidth:
+
+```python
+for fs_test in (0.5, 2.0, 10.0):
+    n_test = int(fs_test * duration)
+    tt = np.arange(n_test) / fs_test
+    np.random.seed(3)
+    sig = np.sin(2 * np.pi * 0.05 * tt) + 0.5 * np.random.randn(n_test)
+    test_ts = baseTs(sig, tt, freq=fs_test)
+    print(f"fs={fs_test:5}  power={test_ts.relative_band_power(0.01, 0.1):.3f}  "
+          f"amplitude={test_ts.falff():.3f}")
+
+# fs=  0.5  power=0.807  amplitude=0.444
+# fs=  2.0  power=0.686  amplitude=0.138
+# fs= 10.0  power=0.676  amplitude=0.046
+```
+
+Same signal, same noise level — the amplitude ratio falls tenfold while the power ratio holds. If
+you are comparing across recordings, use `ratio='power'`.
+
+**Visualize the band** you measured:
+
+```python
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(10, 4))
+clean.plot_fft_power(max_rate=0.3, highlight_band=(0.01, 0.1), ax=ax,
+                     title="Power spectrum with fALFF band")
+plt.show()
+```
+
+---
+
 ---
 
 ## Performance Optimization
@@ -1497,9 +1616,11 @@ def scientific_pandas_integration(ts_data):
     results = {}
     
     # 1. Resampling for different time scales
-    results['hourly_mean'] = ts_data.resample('H').mean()
-    results['daily_max'] = ts_data.resample('D').max()
-    results['weekly_std'] = ts_data.resample('W').std()
+    # Aggregate with method=; the aggregation happens inside resample().
+    # Offsets must be fixed - 'W' and 'M' are not valid on a timedelta index.
+    results['hourly_mean'] = ts_data.resample('h', method='mean')
+    results['daily_max'] = ts_data.resample('D', method='max')
+    results['daily_std'] = ts_data.resample('D', method='std')
     
     # 2. Time-based grouping and analysis
     results['monthly_stats'] = ts_data.groupby(ts_data.index.month).agg([

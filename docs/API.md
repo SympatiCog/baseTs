@@ -187,7 +187,11 @@ def copy(self) -> 'baseTs':
 **Example:**
 ```python
 ts_copy = ts.copy()
-ts_copy.data[0] = 999  # Doesn't affect original ts
+ts_copy.iloc[0] = 999  # Doesn't affect original ts
+
+# NB: ts.data returns a read-only view under pandas Copy-on-Write, so
+# `ts_copy.data[0] = 999` raises ValueError. Assign through .iloc, or
+# replace the whole array with the setter: `ts_copy.data = new_array`.
 ```
 
 ---
@@ -453,23 +457,45 @@ spline_interp = ts.interpolate_gaps(method='spline', order=2, limit=10)
 time_interp = ts.interpolate_gaps(method='time')
 ```
 
-### `resample(factor)`
+### `resample(freq, method='mean', **kwargs)`
 
-Resample the time series.
+Resample the time series to a different sampling rate.
+
+This overrides `pandas.Series.resample`, and has to: a baseTs carries a plain
+numeric (float seconds) index, and pandas' `resample` requires a `DatetimeIndex`,
+`TimedeltaIndex` or `PeriodIndex`. Calling pandas' version directly would raise
+`TypeError`. This method converts the numeric index to a timedelta, resamples,
+aggregates, and converts back.
 
 **Parameters:**
-- `factor` (float): Resampling factor (>1 for upsampling, <1 for downsampling)
+- `freq` (str): Target interval as a pandas offset string — `'1s'`, `'100ms'`,
+  `'0.5s'`, `'1min'`, `'h'`, `'D'`. Must be a **fixed** frequency; non-fixed
+  offsets such as `'W'` or `'M'` raise `ValueError`, because the underlying index
+  is a timedelta rather than a calendar.
+- `method` (str, optional): Aggregation applied to each bin — `'mean'`,
+  `'median'`, `'sum'`, `'min'`, `'max'`, `'std'`. Default: `'mean'`
+- `**kwargs`: Passed through to the pandas aggregation
 
 **Returns:**
 - `baseTs`: New resampled baseTs object
 
-**Example:**
-```python
-# Upsample by factor of 2
-upsampled = ts.resample(factor=2)
+**Aggregate with `method=`, not by chaining.** The aggregation happens *inside*
+this call, so `ts.resample('1s').max()` does not mean "max per one-second bin" —
+it resamples using the default `mean`, then takes a single scalar max over those
+means. Pass the aggregation you want:
 
-# Downsample by factor of 2
-downsampled = ts.resample(factor=0.5)
+```python
+# Downsample to 1 Hz, averaging each bin
+ts_1hz = ts.resample('1s')                    # method='mean' by default
+
+# Maximum within each one-second bin
+ts_peaks = ts.resample('1s', method='max')    # returns a baseTs
+
+# NOT this - returns a single float, not a series
+wrong = ts.resample('1s').max()
+
+# Upsample to 100 Hz
+ts_100hz = ts.resample('10ms')
 ```
 
 ---
@@ -687,6 +713,120 @@ peak = ts.get_peak_freq(window='blackman', min_freq=1.0, max_freq=50.0)  # Retur
 peak_with_dc = ts.get_peak_freq(min_freq=0.0)  # May return 0.0 if DC is strongest
 ```
 
+### `relative_band_power(low_freq, high_freq, ratio='power', window=None, details=False)`
+
+Compute the relative power (or amplitude) in a frequency band — the quantity behind fractional
+amplitude of low-frequency fluctuations (fALFF) and relative band power in EEG/HRV work.
+
+**Parameters:**
+- `low_freq` (float): Lower band edge in Hz (inclusive)
+- `high_freq` (float): Upper band edge in Hz (inclusive)
+- `ratio` (str, optional): `'power'` (variance fraction, default) or `'amplitude'` (classic fALFF)
+- `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
+- `details` (bool, optional): If True, return a `BandPowerResult` breakdown. Default: False
+
+**Returns:**
+- `float`: The relative band power, or a `BandPowerResult` if `details=True`
+
+**Choosing a convention.** The two are different measurements, not stylistic variants:
+
+| | `ratio='power'` | `ratio='amplitude'` |
+|---|---|---|
+| Sums | `\|X(f)\|²` | `\|X(f)\|` |
+| Means | Fraction of signal *variance* in band (Parseval-exact) | Classic fALFF (Zou et al., 2008) |
+| Across sampling rates | Roughly stable | Falls sharply — denominator grows with the noise-bin count |
+| Use when | You want a variance decomposition comparable across recordings | You need to reproduce published fALFF values |
+
+For a fixed 0.05 Hz signal in noise, the amplitude ratio drops roughly tenfold between fs = 0.5 Hz
+and fs = 10 Hz while the power ratio barely moves. This is the standard caveat on comparing fALFF
+across acquisitions with different TR or bandwidth.
+
+**The null is not zero.** For white noise both conventions converge on `n_band_bins / n_total_bins`.
+Use `details=True` and compare `ratio` against `bin_fraction` to judge whether a value reflects real
+band-specific structure.
+
+**DC handling.** The 0 Hz bin is always excluded from both numerator and denominator.
+`get_frequency_content()` does not demean, so on a signal with a non-zero mean the DC bin holds the
+overwhelming majority of raw power — excluding it keeps the result meaningful even if you have not
+detrended upstream.
+
+**Preconditions:**
+- **Detrend first** on trending data: `ts.detrend('linear')`. This method does not detrend for you.
+- **Resample to a uniform grid first** if the series is irregular, since `freq` is an *effective*
+  sampling frequency.
+- **The series must be long enough.** Frequency resolution is `1 / duration`, so a 0.01 Hz lower
+  edge needs at least 100 s of data for a single bin. A band narrower than the resolution raises
+  `ValueError`.
+
+**Raises:**
+- `ValueError`: Invalid band, band above Nyquist, band narrower than the frequency resolution,
+  NaN/Inf in the data, or an effectively constant signal
+
+**Example:**
+```python
+# Fraction of variance between 0.01 and 0.1 Hz
+ratio = ts.detrend('linear').relative_band_power(0.01, 0.1)  # Returns: 0.717
+
+# Classic fALFF convention
+falff = ts.relative_band_power(0.01, 0.1, ratio='amplitude')  # Returns: 0.147
+
+# Full breakdown, including the white-noise null
+res = ts.relative_band_power(0.01, 0.1, details=True)
+print(res.ratio, res.bin_fraction)  # 0.717 0.092  -> well above the null
+```
+
+### `falff(low_freq=0.01, high_freq=0.1, ratio='amplitude', window=None, details=False)`
+
+Fractional amplitude of low-frequency fluctuations. Convenience wrapper around
+`relative_band_power()` using the band and convention from Zou et al. (2008),
+*J Neurosci Methods* 172(1):137-141.
+
+Note the deliberate default split: `relative_band_power()` defaults to `ratio='power'` as the
+better-behaved general-purpose measure, while `falff()` defaults to `ratio='amplitude'` so it
+reproduces published values.
+
+**Parameters:**
+- `low_freq` (float, optional): Lower band edge in Hz. Default: 0.01
+- `high_freq` (float, optional): Upper band edge in Hz. Default: 0.1
+- `ratio` (str, optional): `'amplitude'` (default) or `'power'`
+- `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
+- `details` (bool, optional): If True, return a `BandPowerResult` breakdown. Default: False
+
+**Returns:**
+- `float`: The fALFF value, or a `BandPowerResult` if `details=True`
+
+**Example:**
+```python
+# Classic fALFF on a detrended signal
+value = ts.detrend('linear').falff()  # Returns: 0.147
+
+# Custom band
+value = ts.falff(0.01, 0.08)
+```
+### `plot` — line plot, or the pandas plotting accessor
+
+`ts.plot` is a hybrid: **calling** it draws the baseTs line plot (it is an alias
+for `plot_line`), and **attribute access** falls through to the pandas `.plot`
+accessor.
+
+It works this way because `pandas.Series.plot` is an *object*, not a method.
+Aliasing `plot` to a plain method used to shadow it, making `ts.plot.line()`,
+`.bar()`, `.hist()` and the other pandas plot kinds unreachable.
+
+```python
+# Calling it: unchanged baseTs behaviour
+ts.plot()
+ts.plot(lowess=True, title="Signal", ax=ax)
+
+# Attribute access: the pandas plot kinds
+ts.plot.bar()
+ts.plot.hist(bins=30)
+ts.plot.kde()
+```
+
+Available pandas kinds: `line`, `bar`, `barh`, `hist`, `box`, `kde`, `density`,
+`area`, `pie`, `scatter`, `hexbin`.
+
 ### `plot_fft_power(max_rate=np.nan, min_rate=0.0, window=None, show=True, ax=None)`
 
 Plot FFT power spectrum with enhanced windowing and frequency range control.
@@ -697,6 +837,8 @@ Plot FFT power spectrum with enhanced windowing and frequency range control.
 - `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
 - `show` (bool, optional): Whether to display the plot. Default: True
 - `ax` (matplotlib.axes.Axes, optional): Axes to plot on
+- `highlight_band` (tuple, optional): `(low_freq, high_freq)` in Hz to shade on the plot, e.g.
+  `(0.01, 0.1)` to mark the fALFF band alongside `relative_band_power(0.01, 0.1)`
 
 **Returns:**
 - `matplotlib.axes.Axes`: The plot axes
@@ -803,7 +945,7 @@ ts = baseTs(data=data, times=times)
 ts.describe()          # Statistical summary
 ts.quantile(0.95)      # 95th percentile
 ts.rolling(10).mean()  # Native pandas rolling
-ts.resample('1S').max() # Native pandas resampling
+ts.resample('1s', method='max')  # baseTs resampling; see resample() above
 
 # Enhanced frequency analysis with windowing
 freqs, power = ts.get_frequency_content(window='hann')
