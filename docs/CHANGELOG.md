@@ -56,6 +56,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Relative Band Power / fALFF**:
+  - `relative_band_power(low_freq, high_freq, ratio='power', window=None, details=False)`:
+    Relative power or amplitude in a frequency band. Defaults to `ratio='power'`, the fraction
+    of signal variance in the band; `ratio='amplitude'` reproduces classic fALFF
+    (Zou et al., 2008).
+  - `falff(low_freq=0.01, high_freq=0.1, ratio='amplitude')`: Convenience wrapper using the
+    literature band and convention.
+  - `BandPowerResult` dataclass returned by `details=True`, carrying `band_sum`, `total_sum`,
+    bin counts, frequency resolution, and `bin_fraction` — the white-noise null both conventions
+    converge on, so a ratio can be interpreted against a baseline.
+  - The DC (0 Hz) bin is always excluded from both numerator and denominator. Since
+    `get_frequency_content()` does not demean, DC would otherwise dominate the denominator on any
+    signal with a non-zero mean and drive the ratio toward zero.
+  - Validation for bands above Nyquist, bands narrower than the frequency resolution (with the
+    required recording duration in the message), NaN/Inf data, and effectively constant signals.
+- **Plotting**: `plot_fft_power(..., highlight_band=(low, high))` shades a frequency band on the
+  power spectrum.
+
 ### Planned
 - Additional windowing functions for spectral analysis
 - Enhanced plotting integration with matplotlib

@@ -11,12 +11,14 @@ import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import Optional, TYPE_CHECKING, Union, List
+from typing import Optional, TYPE_CHECKING, Union, List, Tuple
 
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .LowessOutlierFilter import LowessOutlierFilter, TailType
-from .utils import find_closest_time, compute_fft_power, find_closest, get_peak_freq, get_peaks, ClosestMatch, diff, dediff
+from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
+                    get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
+                    BandPowerResult)
 from .series import TimeSeriesData
 # from .plotting import qc_plot, hist, plot
 
@@ -1599,6 +1601,101 @@ class baseTs(TimeSeriesData):
         return get_peak_freq(self, num_pks=num_pks, window=window, 
                            min_freq=min_freq, max_freq=max_freq)
 
+    def relative_band_power(self, low_freq: float, high_freq: float,
+                            ratio: str = 'power', window: str = None,
+                            details: bool = False) -> Union[float, BandPowerResult]:
+        """
+        Compute the relative power (or amplitude) in a frequency band.
+
+        This is the quantity behind fractional amplitude of low-frequency
+        fluctuations (fALFF) and its EEG/HRV cousin, relative band power.
+        See falff() for the classic 0.01-0.1 Hz parameterization.
+
+        The two conventions are not interchangeable:
+
+        - ratio='power' sums |X(f)|^2 and gives the fraction of the signal's
+          variance in the band. Parseval-exact, and roughly stable across
+          sampling rates.
+        - ratio='amplitude' sums |X(f)| and reproduces classic fALFF (Zou et
+          al., 2008). Its denominator scales with the number of noise bins,
+          so values are not comparable across different bandwidths.
+
+        The DC (0 Hz) bin is always excluded from both numerator and
+        denominator, so the result is robust to an undetrended mean offset.
+
+        Preconditions:
+            - Detrend first for meaningful results on trending data:
+              ts.detrend('linear'). This method does not detrend for you;
+              that belongs in your processing pipeline.
+            - Resample to a uniform grid first if the series is irregular,
+              since self.freq is an effective sampling frequency.
+            - The series must be long enough to resolve the band. Resolution
+              is 1 / duration, so a 0.01 Hz lower edge needs at least 100 s.
+
+        Args:
+            low_freq: Lower band edge in Hz (inclusive)
+            high_freq: Upper band edge in Hz (inclusive)
+            ratio: 'power' (variance fraction, default) or 'amplitude'
+            window: Window function ('hann', 'hamming', 'blackman', None)
+            details: If True, return a BandPowerResult breakdown instead of
+                a bare float
+
+        Returns:
+            Relative band power as a float, or a BandPowerResult if
+            details=True
+
+        Examples:
+            # Fraction of variance between 0.01 and 0.1 Hz
+            ts.detrend('linear').relative_band_power(0.01, 0.1)
+
+            # Classic fALFF convention
+            ts.relative_band_power(0.01, 0.1, ratio='amplitude')
+
+            # Compare against the white-noise null
+            res = ts.relative_band_power(0.01, 0.1, details=True)
+            print(res.ratio, res.bin_fraction)
+        """
+        return relative_band_power(self, low_freq, high_freq, ratio=ratio,
+                                   window=window, details=details)
+
+    def falff(self, low_freq: float = 0.01, high_freq: float = 0.1,
+              ratio: str = 'amplitude', window: str = None,
+              details: bool = False) -> Union[float, BandPowerResult]:
+        """
+        Fractional amplitude of low-frequency fluctuations (fALFF).
+
+        Convenience wrapper around relative_band_power() using the band and
+        convention from Zou et al. (2008), J Neurosci Methods 172(1):137-141.
+
+        Note the deliberate default split: relative_band_power() defaults to
+        ratio='power' as the better-behaved general-purpose measure, while
+        this method defaults to ratio='amplitude' so it reproduces published
+        fALFF values.
+
+        Caveat: amplitude-convention values are not comparable across
+        acquisitions with different sampling rates or bandwidth. Use
+        ratio='power' if you need that comparability.
+
+        Args:
+            low_freq: Lower band edge in Hz. Defaults to 0.01.
+            high_freq: Upper band edge in Hz. Defaults to 0.1.
+            ratio: 'amplitude' (default, classic fALFF) or 'power'
+            window: Window function ('hann', 'hamming', 'blackman', None)
+            details: If True, return a BandPowerResult breakdown
+
+        Returns:
+            fALFF value as a float, or a BandPowerResult if details=True
+
+        Examples:
+            # Classic fALFF on a detrended signal
+            ts.detrend('linear').falff()
+
+            # Custom band
+            ts.falff(0.01, 0.08)
+        """
+        return falff(self, low_freq=low_freq, high_freq=high_freq,
+                     ratio=ratio, window=window, details=details)
+
     def get_peaks(self, min_dist_secs: float = 1.0, min_height: float = None) -> list:
         """
         Get the peaks in the timeseries.
@@ -1694,7 +1791,8 @@ class baseTs(TimeSeriesData):
                             xlabel: str = None,
                             ylabel: str = None, 
                             show: bool = False,
-                            scale_power: bool = False) -> plt.Axes:
+                            scale_power: bool = False,
+                            highlight_band: Optional[Tuple[float, float]] = None) -> plt.Axes:
         """
         Plot the power spectrum of the timeseries using enhanced frequency analysis.
 
@@ -1709,6 +1807,8 @@ class baseTs(TimeSeriesData):
             ylabel (str, optional): Label for the y-axis. Defaults to None.
             show (bool, optional): Whether to display the plot. Defaults to False.
             scale_power (bool, optional): Whether to scale the power spectrum. Defaults to False.
+            highlight_band (tuple, optional): (low_freq, high_freq) in Hz to shade on the plot,
+                e.g. (0.01, 0.1) to mark the fALFF band. Defaults to None.
 
         Returns:
             matplotlib.axes.Axes: The Axes object with the plot.
@@ -1722,6 +1822,9 @@ class baseTs(TimeSeriesData):
             
             # High-quality spectrum with Blackman window
             ts.plot_fft_power(window='blackman', scale_power=True)
+            
+            # Shade the fALFF band alongside the measurement
+            ts.plot_fft_power(max_rate=0.5, highlight_band=(0.01, 0.1))
         """
         # Import plotting here to avoid circular imports
         from .plotting import plot_fft_power
@@ -1735,7 +1838,8 @@ class baseTs(TimeSeriesData):
                         xlabel=xlabel,
                         ylabel=ylabel,  
                         show=show,
-                        scale_power=scale_power)
+                        scale_power=scale_power,
+                        highlight_band=highlight_band)
     
     def lag_plot(self, lag: Union[int, float], lag_unit: str = "index", ax: Optional[plt.Axes] = None, show: bool = False) -> plt.Axes:
         """
