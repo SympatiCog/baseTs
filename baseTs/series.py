@@ -7,9 +7,29 @@ Created for baseTs pandas migration.
 
 from __future__ import annotations
 from typing import Optional, Union, Any, Dict, List
+import copy as copy_module
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+from .LowessOutlierFilter import LowessOutlierFilter
+
+
+def _detach_shared_metadata(obj):
+    """
+    Give `obj` its own `history` list.
+
+    pandas' default __finalize__ assigns metadata by reference, so a derived
+    object would append to the list it inherited - one history for two series.
+
+    `outlier_filter` needs no copy: FilterConfig is frozen and
+    set_outlier_filter rebinds the filter rather than mutating it, so sharing
+    one is safe by construction. `lowess_fit` and `outlier_indices` are left
+    shared, unchanged from before - see #20.
+    """
+    if isinstance(getattr(obj, 'history', None), list):
+        object.__setattr__(obj, 'history', list(obj.history))
+    return obj
 
 
 class TimeSeriesData(pd.Series):
@@ -97,9 +117,13 @@ class TimeSeriesData(pd.Series):
         self.lowess_fit = None
         self.last_process = ""
         self.history = []
+        # _metadata declares these two; without them any derived object
+        # inherited None and clobbered the default it was born with.
+        self.is_outlier_filtered = False
+        self.outlier_filter = LowessOutlierFilter()
 
     def _copy_metadata_from_basetseries(self, base_ts):
-        """Copy metadata from a baseTs object."""
+        """Copy metadata from a baseTs object, without sharing its mutables."""
         for attr in self._metadata:
             if hasattr(base_ts, attr):
                 setattr(self, attr, getattr(base_ts, attr))
@@ -116,6 +140,8 @@ class TimeSeriesData(pd.Series):
                 else:
                     setattr(self, attr, None)
 
+        _detach_shared_metadata(self)
+
     def _calculate_effective_frequency(self) -> float:
         """Calculate effective sampling frequency from time index."""
         if len(self.index) < 2:
@@ -130,16 +156,19 @@ class TimeSeriesData(pd.Series):
 
     def __finalize__(self, other, method=None, **kwargs):
         """
-        Propagate metadata, copying mutable values rather than sharing them.
+        Propagate metadata, detaching what a derived object must not share.
 
         pandas' default __finalize__ assigns metadata by reference, so a derived
         object would share the parent's `history` list - appending to one would
         silently append to the other.
+
+        `outlier_filter` is deliberately left shared: FilterConfig is frozen
+        and set_outlier_filter rebinds rather than mutates it, so a shared
+        filter cannot carry a write from one object to another. `lowess_fit`
+        and `outlier_indices` stay shared too - see _detach_shared_metadata.
         """
         super().__finalize__(other, method=method, **kwargs)
-        if isinstance(getattr(self, 'history', None), list):
-            object.__setattr__(self, 'history', list(self.history))
-        return self
+        return _detach_shared_metadata(self)
 
     @property
     def _constructor(self):
@@ -166,15 +195,24 @@ class TimeSeriesData(pd.Series):
         if not isinstance(copied, TimeSeriesData):
             copied = TimeSeriesData(copied.values, index=copied.index)
         
-        # Copy metadata
+        # Copy metadata. The allow-list bounds what gets deep-copied: an
+        # unguarded deepcopy turns any non-copyable metadata value into a hard
+        # error on routine operations. outlier_filter is not on it, and is
+        # shared at both depths - safe, see _detach_shared_metadata.
         for attr in self._metadata:
             if hasattr(self, attr):
                 value = getattr(self, attr)
                 if deep and isinstance(value, (list, dict, np.ndarray)):
-                    import copy as copy_module
                     value = copy_module.deepcopy(value)
                 setattr(copied, attr, value)
-        
+
+        if not deep:
+            # The loop above re-assigns history by reference, undoing what
+            # __finalize__ already detached. pandas reaches here internally
+            # (sort_values calls copy(deep=False)), so a "shallow" copy must
+            # still not hand back a shared history list. The deep branch
+            # deep-copies it in the loop above.
+            _detach_shared_metadata(copied)
         return copied
 
     def duration(self) -> float:
@@ -230,8 +268,8 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
                 setattr(base_ts, attr, getattr(self, attr))
-        
-        return base_ts
+
+        return _detach_shared_metadata(base_ts)
 
     def info(self):
         """
@@ -333,6 +371,42 @@ class TimeSeriesData(pd.Series):
         result = super().__rpow__(other)
         return self._wrap_result_as_basets(result, "Power")
 
+    def _inplace_arith(self, result):
+        """
+        Adopt an arithmetic result in place, history entry included.
+
+        pandas implements `ts += 1` as __add__ followed by keeping the values
+        and discarding the wrapper, so the entry _wrap_result_as_basets
+        appended would be thrown away with it - `ts += 1` recorded nothing
+        while `ts = ts + 1` recorded an entry.
+        """
+        if not isinstance(result, TimeSeriesData):
+            return result
+        history = list(getattr(result, 'history', []) or [])
+        last_process = getattr(result, 'last_process', "")
+        # reindex_like, as pandas' own _inplace_method does: augmented
+        # assignment must not change the length of the object being assigned
+        # to, even when the operand carries a different index.
+        self._update_inplace(result.reindex_like(self))
+        object.__setattr__(self, 'history', history)
+        object.__setattr__(self, 'last_process', last_process)
+        return self
+
+    def __iadd__(self, other):
+        return self._inplace_arith(self + other)
+
+    def __isub__(self, other):
+        return self._inplace_arith(self - other)
+
+    def __imul__(self, other):
+        return self._inplace_arith(self * other)
+
+    def __itruediv__(self, other):
+        return self._inplace_arith(self / other)
+
+    def __ipow__(self, other):
+        return self._inplace_arith(self ** other)
+
     def _wrap_result_as_basets(self, result, operation_name: str):
         """
         Wrap arithmetic operation results as baseTs objects.
@@ -364,7 +438,11 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
                 setattr(new_basets, attr, getattr(self, attr))
-        
+
+        # Before the history update, not after: the entry appended below would
+        # otherwise land in the operand's own history list.
+        _detach_shared_metadata(new_basets)
+
         # Update history
         new_basets._update_history_and_process(
             f"Applied {operation_name} operation",

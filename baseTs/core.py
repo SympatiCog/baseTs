@@ -19,11 +19,12 @@ from typing import Optional, TYPE_CHECKING, Union, List, Tuple
 
 # Import modules - now using relative imports
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
-from .LowessOutlierFilter import LowessOutlierFilter, TailType
+from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
+from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult)
-from .series import TimeSeriesData
+from .series import TimeSeriesData, _detach_shared_metadata
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -230,14 +231,19 @@ class baseTs(TimeSeriesData):
         if history is None:
             self.history = [f"Created baseTs object with {len(self)} samples"]
         else:
-            self.history = history
+            # list(), not the caller's own object: two series built from one
+            # list would otherwise cross-contaminate each other's history.
+            self.history = list(history)
         
         # Calculate frequency if not provided
         if _is_unset(freq):
             self.freq = self._calculate_effective_frequency()
         
-        # Initialize outlier filter with default parameters
-        self.outlier_filter = LowessOutlierFilter()
+        # Only if the superclass did not already carry one across: baseTs(ts)
+        # takes the conversion branch in TimeSeriesData.__init__, which copies
+        # the source's filter, and this used to overwrite it with a default.
+        if getattr(self, 'outlier_filter', None) is None:
+            self.outlier_filter = LowessOutlierFilter()
 
 
     @property
@@ -344,7 +350,8 @@ class baseTs(TimeSeriesData):
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
-                            'outlier_indices', 'lowess_fit', 'last_process']
+                            'outlier_indices', 'lowess_fit', 'last_process',
+                            'outlier_filter']
             
             for attr in metadata_attrs:
                 if hasattr(self, attr):
@@ -927,17 +934,17 @@ class baseTs(TimeSeriesData):
         
     def set_outlier_filter(self, 
                         params: dict = None,
-                        z_threshold: float = 7,
-                        frac: float = 0.075,
-                        max_iterations: int = 10,
-                        interpolation_method: str = 'linear',
-                        order: int = 2,
-                        use_median: bool = True,
-                        tails: Union[str, TailType] = TailType.BOTH,
+                        z_threshold: Optional[float] = None,
+                        frac: Optional[float] = None,
+                        max_iterations: Optional[int] = None,
+                        interpolation_method: Optional[str] = None,
+                        order: Optional[int] = None,
+                        use_median: Optional[bool] = None,
+                        tails: Union[str, TailType, None] = None,
                         num_fits: Optional[int] = None,
                         *,
-                        it: int = 0,
-                        delta_frac: float = 0.0) -> "baseTs":
+                        it: Optional[int] = None,
+                        delta_frac: Optional[float] = None) -> "baseTs":
         """
         Set outlier filter parameters.
 
@@ -947,28 +954,28 @@ class baseTs(TimeSeriesData):
             Dictionary of parameter values. If provided, overrides individual parameters.
             Valid keys are: 'z_threshold', 'frac', 'max_iterations', 'interpolation_method',
             'order', 'use_median', 'tails', 'it', 'delta_frac'
-        z_threshold : float, default=7
+        z_threshold : float, optional
             Z-score threshold for outlier detection
-        frac : float, default=0.075
+        frac : float, optional
             LOWESS bandwidth: the fraction of points included in each local
             regression window. This is *not* the fraction of points expected to
             be outliers.
-        max_iterations : int, default=10
+        max_iterations : int, optional
             Maximum number of iterations for outlier detection
-        interpolation_method : str, default='linear'
+        interpolation_method : str, optional
             Interpolation method for replacing outliers
-        order : int, default=2
+        order : int, optional
             Order of the interpolation
-        use_median : bool, default=True
+        use_median : bool, optional
             Whether to use median instead of mean for calculations
-        tails : Union[str, TailType], default=TailType.BOTH
+        tails : Union[str, TailType], optional
             Which tails to process for outlier detection. Can be 'BOTH', 'UPPER', 'LOWER',
             or a TailType enum member.
-        it : int, default=0, keyword-only
+        it : int, optional, keyword-only
             Robustifying iterations performed inside the LOWESS fit. Leave at 0
             unless you know why you want otherwise; see FilterConfig.
             Keyword-only so that it cannot occupy num_fits' old positional slot.
-        delta_frac : float, default=0.0, keyword-only
+        delta_frac : float, optional, keyword-only
             Speed/accuracy tradeoff for long series. See FilterConfig.
         num_fits : int, optional
             Deprecated and ignored. Was the number of LOWESS anchor fits under the
@@ -982,7 +989,11 @@ class baseTs(TimeSeriesData):
         
         Notes
         -----
-        This overwrites the default parameters.
+        Only the parameters you name are changed; the rest keep their current
+        values. An unconfigured object starts at FilterConfig's defaults
+        (z_threshold=3.0, max_iterations=5, frac=0.075). Calling this with no
+        arguments therefore changes nothing - it is not a way to reset.
+
         You must re-run filter_outliers to use the new parameters.
         """
         if num_fits is not None or (params is not None and 'num_fits' in params):
@@ -994,57 +1005,67 @@ class baseTs(TimeSeriesData):
                 stacklevel=2,
             )
 
-        # If params dictionary is provided, use it to update parameters
-        if params is not None:
-            valid_params = {
-                'z_threshold': float,
-                'frac': float,
-                'max_iterations': int,
-                'interpolation_method': str,
-                'order': int,
-                'use_median': bool,
-                'tails': (str, TailType),
-                'it': int,
-                'delta_frac': float
-            }
-            
-            # Validate and set parameters from dictionary
-            for param_name, param_type in valid_params.items():
-                if param_name in params:
-                    value = params[param_name]
-                    # Type checking
-                    if param_name == 'tails':
-                        if isinstance(value, str):
-                            try:
-                                value = TailType[value.upper()]
-                            except KeyError:
-                                raise ValueError(f"Invalid string value for tails: {value}. Must be 'BOTH', 'UPPER', or 'LOWER'.")
-                        elif not isinstance(value, TailType):
-                             raise ValueError(f"Invalid type for tails. Expected str or TailType, got {type(value)}.")
-                    elif not isinstance(value, param_type):
-                        try:
-                            value = param_type(value)
-                        except ValueError:
-                            raise ValueError(f"Invalid type for {param_name}. Expected {param_type.__name__}")
-                    setattr(self.outlier_filter.config, param_name, value)
-        else:
-            # Use individual parameters
-            self.outlier_filter.config.z_threshold = z_threshold
-            self.outlier_filter.config.max_iterations = max_iterations
-            self.outlier_filter.config.frac = frac
-            self.outlier_filter.config.interpolation_method = interpolation_method
-            self.outlier_filter.config.order = order
-            self.outlier_filter.config.use_median = use_median
-            if isinstance(tails, str):
+        valid_params = {
+            'z_threshold': float,
+            'frac': float,
+            'max_iterations': int,
+            'interpolation_method': str,
+            'order': int,
+            'use_median': bool,
+            'tails': (str, TailType),
+            'it': int,
+            'delta_frac': float
+        }
+
+        def _coerce(param_name, value):
+            """Validate one parameter, converting where the type allows."""
+            param_type = valid_params[param_name]
+            if param_name == 'tails':
+                if isinstance(value, str):
+                    try:
+                        return TailType[value.upper()]
+                    except KeyError:
+                        raise ValueError(
+                            f"Invalid string value for tails: {value}. "
+                            "Must be 'BOTH', 'UPPER', or 'LOWER'.")
+                if not isinstance(value, TailType):
+                    raise ValueError(
+                        "Invalid type for tails. Expected str or TailType, "
+                        f"got {type(value)}.")
+                return value
+            if not isinstance(value, param_type):
                 try:
-                    self.outlier_filter.config.tails = TailType[tails.upper()]
-                except KeyError:
-                    raise ValueError(f"Invalid string value for tails: {tails}. Must be 'BOTH', 'UPPER', or 'LOWER'.")
-            else: # it's already a TailType enum
-                self.outlier_filter.config.tails = tails
-            self.outlier_filter.config.it = it
-            self.outlier_filter.config.delta_frac = delta_frac
-        
+                    return param_type(value)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Invalid type for {param_name}. "
+                        f"Expected {param_type.__name__}")
+            return value
+
+        # Only the parameters actually named by the caller are changed. They
+        # used to carry real defaults, so set_outlier_filter(frac=...) quietly
+        # reset z_threshold to 7 and max_iterations to 10 as well.
+        if params is not None:
+            updates = {name: _coerce(name, params[name])
+                       for name in valid_params if name in params}
+        else:
+            supplied = {
+                'z_threshold': z_threshold, 'frac': frac,
+                'max_iterations': max_iterations,
+                'interpolation_method': interpolation_method,
+                'order': order, 'use_median': use_median, 'tails': tails,
+                'it': it, 'delta_frac': delta_frac,
+            }
+            updates = {name: _coerce(name, value)
+                       for name, value in supplied.items() if value is not None}
+
+        # Rebind rather than mutate. FilterConfig is frozen and the filter is
+        # rebuilt, so derived objects can share a filter safely: configuring
+        # one of them cannot be seen by the others.
+        current = getattr(self, 'outlier_filter', None)
+        base_config = current.config if current is not None else FilterConfig()
+        self.outlier_filter = LowessOutlierFilter(replace(base_config, **updates))
+
         hist_msg = f"Set new outlier filter parameters: {self.outlier_filter.config.__dict__}"
         last_process = "_outfilt_params"
         
@@ -1056,10 +1077,18 @@ class baseTs(TimeSeriesData):
 
     def get_outlier_filter_params(self) -> dict:
         """
-        Get outlier filter parameters.
-            returns a dictionary of the parameters.
+        Get outlier filter parameters as a plain dict.
+
+        A snapshot, not the live config. Objects derived from one another share
+        a filter - that is safe only because nothing mutates a config in place,
+        and handing out the real ``__dict__`` would have made a write through
+        this dict reach every one of them. frozen=True does not stop that:
+        it blocks setattr, not __dict__ assignment.
+
+        Feed it back through ``set_outlier_filter(params=...)``, which is where
+        the values get validated.
         """
-        return self.outlier_filter.config.__dict__
+        return dict(self.outlier_filter.config.__dict__)
         
     def filter_outliers(self,
                         inplace: bool = False,
@@ -2097,13 +2126,15 @@ class baseTs(TimeSeriesData):
                 signal_name=self.signal_name
             )
             
-            # Deep copy metadata
+            # Deep copy metadata. The allow-list bounds what gets copied:
+            # an unguarded deepcopy turns any non-copyable metadata value into
+            # a hard error. outlier_filter needs no copy - see
+            # _detach_shared_metadata.
             for attr in self._metadata:
                 if hasattr(self, attr):
                     value = getattr(self, attr)
                     if isinstance(value, (list, dict, np.ndarray)):
-                        import copy as copy_module
-                        value = copy_module.deepcopy(value)
+                        value = copy.deepcopy(value)
                     setattr(new_obj, attr, value)
             
             return new_obj
@@ -2118,6 +2149,7 @@ class baseTs(TimeSeriesData):
                 for attr in self._metadata:
                     if hasattr(self, attr):
                         setattr(copied, attr, getattr(self, attr))
+                _detach_shared_metadata(copied)
             return copied
 
     def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
@@ -2241,12 +2273,15 @@ class baseTs(TimeSeriesData):
 
         # Configure a throwaway holder rather than self, so the caller's filter
         # config survives. It is deliberately a minimal two-point series and
-        # not self.copy(): copy() would clone the whole series just to carry a
-        # config, and it shares outlier_filter by reference anyway. Routing
-        # through set_outlier_filter keeps the parameter defaults in a single
-        # place rather than restating them here.
+        # not self.copy(), which would clone the whole series just to carry a
+        # config. Routing through set_outlier_filter keeps the parameter
+        # defaults in a single place rather than restating them here.
         scratch = baseTs(np.zeros(2), np.arange(2.0))
-        scratch.set_outlier_filter(frac=frac)
+        # z_threshold and max_iterations are spelled out because they used to
+        # arrive by accident: set_outlier_filter carried real defaults, so
+        # naming frac alone also set these two. Now that unnamed parameters are
+        # left alone, stating them keeps the trend identical to before.
+        scratch.set_outlier_filter(frac=frac, z_threshold=7, max_iterations=10)
 
         # filter() does not mutate the series it is handed, so self is safe here.
         _, _, lowess_fit = scratch.outlier_filter.filter(self, return_lowess=True)

@@ -37,7 +37,7 @@ class TailType(Enum):
     UPPER = auto()
     LOWER = auto()
 
-@dataclass
+@dataclass(frozen=True)
 class FilterConfig:
     """Configuration parameters for the LowessOutlierFilter.
 
@@ -92,7 +92,7 @@ class LowessOutlierFilter:
             Configuration object containing filter parameters. If None, uses default values.
         """
         self.config = config or FilterConfig()
-        
+
     def filter(self,
                data: Union[np.ndarray, List[float], baseTs],
                time_index: Optional[Union[np.ndarray, List[float]]] = None,

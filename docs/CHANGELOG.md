@@ -371,6 +371,65 @@ Two further corrections while restoring it:
 - **Plotting**: `plot_fft_power(..., highlight_band=(low, high))` shades a frequency band on the
   power spectrum.
 
+### Fixed
+- **Derived objects no longer share the outlier filter.** `outlier_filter` was
+  propagated by reference on every path that produces a new object, so
+  `set_outlier_filter` on a copy, a slice or an arithmetic result reached back
+  and retuned the object it came from.
+
+  `FilterConfig` is now frozen and `set_outlier_filter` rebinds the filter
+  instead of mutating it in place, which makes sharing safe by construction —
+  configuring one object cannot be observed by any other, and no defensive
+  copying runs on the hot path.
+
+- **`set_outlier_filter` no longer resets the parameters you did not name.**
+  Every parameter defaulted to a real value, so `set_outlier_filter(frac=0.1)`
+  quietly also set `z_threshold=7` and `max_iterations=10` — values the caller
+  never chose, and different from `FilterConfig`'s own defaults of `3.0` and
+  `5`. Unnamed parameters are now left alone.
+
+- **Non-inplace methods no longer reset the outlier filter to defaults.**
+  `_create_new_with_data` omitted `outlier_filter` from the metadata it carried,
+  so `zscale()`, `detrend()`, `rolling_mean()`, `lowpass_at()` and every other
+  method routing through it returned an object configured with `FilterConfig`'s
+  defaults. A configured filter silently reverting changes which points are
+  treated as outliers.
+
+- **`ts += 1` records its history entry again.** pandas implements augmented
+  assignment as `__add__` followed by keeping the values and discarding the
+  wrapper, so the entry was appended to an object that was then thrown away.
+
+- **`TimeSeriesData` now has a real outlier filter.** It declared
+  `outlier_filter` and `is_outlier_filtered` in `_metadata` but never set them,
+  so `to_basetseries()` produced an object carrying `None` and the next
+  `filter_outliers()` raised `AttributeError`.
+
+- **`baseTs(..., history=[...])` no longer stores the caller's list.** Two
+  series built from one list cross-contaminated each other's history.
+
+### Changed
+- `copy(deep=False)` hands back its own `history` while still sharing the data
+  buffer. pandas reaches this path internally — `sort_values()` is implemented
+  as `copy(deep=False)` on sorted input — so a shallow copy the caller never
+  asked for was leaking a shared list.
+
+### Behavior change — outlier counts move on chained calls
+
+Because a configured filter now survives into derived objects, code of the form
+
+```python
+ts.set_outlier_filter(frac=0.1)
+ts.zscale().filter_outliers()
+```
+
+filters at the `frac` you set rather than at `FilterConfig`'s default. On a
+400-sample test signal this moved the number of points removed from 88 to 50.
+The previous numbers came from a config the caller never asked for, but if you
+have tuned around them, re-check your thresholds.
+
+`lowess_detrend` is unaffected: it now names `z_threshold` and
+`max_iterations` explicitly, so its trend is bit-identical to before.
+
 ### Planned
 - Additional windowing functions for spectral analysis
 - Enhanced plotting integration with matplotlib
