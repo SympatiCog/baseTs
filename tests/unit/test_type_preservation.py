@@ -164,7 +164,8 @@ class TestMetadataPropagation:
         derived.set_outlier_filter(z_threshold=1.5)
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
 
-    @pytest.mark.parametrize("op", ["ts += 1", "ts -= 1", "ts *= 2"])
+    @pytest.mark.parametrize("op", ["ts += 1", "ts -= 1", "ts *= 2",
+                                    "ts /= 2", "ts **= 2"])
     def test_augmented_assignment_records_its_history(self, ts, op):
         """
         pandas implements `ts += 1` by calling __add__ and keeping only the
@@ -175,6 +176,29 @@ class TestMetadataPropagation:
         exec(op, {"ts": ts})
 
         assert len(ts.history) == before + 1
+
+    def test_augmented_assignment_keeps_its_own_index(self, ts):
+        """
+        pandas' _inplace_method reindexes the result back to self before
+        adopting it. Skipping that let `ts += other` grow the object to the
+        union of the two indexes - 10 elements becoming 19.
+        """
+        other = baseTs(np.ones(len(ts)), ts.times / 10.0)
+        length_before = len(ts)
+
+        ts += other
+
+        assert len(ts) == length_before
+
+    def test_augmented_assignment_is_still_in_place(self, ts):
+        """Other references to the series must observe the update."""
+        alias = ts
+        first_before = float(np.asarray(ts.data, dtype=float)[0])
+
+        ts += 1
+
+        assert alias is ts
+        assert float(np.asarray(alias.data, dtype=float)[0]) == first_before + 1
 
     @pytest.mark.parametrize("method", ["zscale()", "rolling_mean(5)", "detrend()"])
     def test_domain_methods_carry_the_filter_config(self, ts, method):

@@ -385,7 +385,10 @@ class TimeSeriesData(pd.Series):
             return result
         history = list(getattr(result, 'history', []) or [])
         last_process = getattr(result, 'last_process', "")
-        self._update_inplace(result)
+        # reindex_like, as pandas' own _inplace_method does: augmented
+        # assignment must not change the length of the object being assigned
+        # to, even when the operand carries a different index.
+        self._update_inplace(result.reindex_like(self))
         object.__setattr__(self, 'history', history)
         object.__setattr__(self, 'last_process', last_process)
         return self
