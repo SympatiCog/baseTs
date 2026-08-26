@@ -103,20 +103,26 @@ class TestMetadataPropagation:
         assert "child-only" not in ts.history
 
     @pytest.mark.parametrize("op", PANDAS_OPS)
-    def test_outlier_filter_is_copied_not_shared(self, ts, op):
+    def test_configuring_a_derived_object_leaves_the_parent_alone(self, ts, op):
         """
-        The same defect as history, one attribute over.
+        The contract is behavioural, not identity.
 
-        A shared LowessOutlierFilter means set_outlier_filter on any derived
-        object reaches back and retunes its parent's filter.
+        FilterConfig is frozen and set_outlier_filter rebinds the filter, so
+        two objects may share one safely - what must never happen is a write
+        through the derived object reaching the parent.
+
+        Note that rolling/expanding/nlargest (see DROPS_FILTER_CONFIG) satisfy
+        this trivially: they propagate no metadata at all, so their result was
+        never wired to the parent. test_filter_config_survives_the_copy is
+        where that gap is recorded.
         """
         ts.set_outlier_filter(z_threshold=4.2)
         derived = eval(f"ts.{op}")
 
-        assert derived.outlier_filter is not ts.outlier_filter
-
         derived.set_outlier_filter(z_threshold=1.5)
+
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
+        assert derived.get_outlier_filter_params()["z_threshold"] == 1.5
 
     @pytest.mark.parametrize("op", [
         pytest.param(op, marks=pytest.mark.xfail(
@@ -128,9 +134,11 @@ class TestMetadataPropagation:
         """
         Independence must not cost the config: the values still carry over.
 
-        Four operations fail this today for reasons unrelated to sharing - see
-        #14. They are xfailed rather than dropped from the matrix so the gap
-        stays visible and flips to XPASS when it is closed.
+        The three operations in DROPS_FILTER_CONFIG fail this today for
+        reasons unrelated to sharing - see #14. They are xfailed rather than
+        dropped from the matrix so the gap stays visible. strict=True means
+        fixing #14 turns them into failures that name this test, rather than
+        letting a stale marker sit here unnoticed.
         """
         ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
         derived = eval(f"ts.{op}")
@@ -149,87 +157,81 @@ class TestMetadataPropagation:
 
         derived = eval(op)
 
-        assert derived.outlier_filter is not ts.outlier_filter
         assert derived.history is not ts.history
-
         # The "Applied ... operation" entry belongs to the result alone.
         assert ts.history == history_before
 
         derived.set_outlier_filter(z_threshold=1.5)
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
 
+    @pytest.mark.parametrize("op", ["ts += 1", "ts -= 1", "ts *= 2"])
+    def test_augmented_assignment_records_its_history(self, ts, op):
+        """
+        pandas implements `ts += 1` by calling __add__ and keeping only the
+        values, discarding the wrapper - so an entry appended to the result
+        vanishes. The entry has to land on the object the caller still holds.
+        """
+        before = len(ts.history)
+        exec(op, {"ts": ts})
+
+        assert len(ts.history) == before + 1
+
     @pytest.mark.parametrize("method", ["zscale()", "rolling_mean(5)", "detrend()"])
-    def test_domain_methods_carry_an_independent_filter(self, ts, method):
+    def test_domain_methods_carry_the_filter_config(self, ts, method):
         """
         _create_new_with_data omitted outlier_filter from the attributes it
         carries, so every non-inplace domain method handed back a filter reset
-        to FilterConfig's defaults - not even set_outlier_filter's.
+        to FilterConfig's defaults rather than the caller's.
         """
         ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
         derived = eval(f"ts.{method}")
 
         assert derived.get_outlier_filter_params()["z_threshold"] == 4.2
         assert derived.get_outlier_filter_params()["frac"] == 0.11
-        assert derived.outlier_filter is not ts.outlier_filter
 
-    def test_to_basetseries_does_not_share(self, ts):
-        """A documented public conversion, sharing filter and history."""
-        ts.set_outlier_filter(z_threshold=4.2)
-        tsd = TimeSeriesData(ts.values, index=ts.index)
-        tsd.outlier_filter = ts.outlier_filter
-        tsd.history = ts.history
+        derived.set_outlier_filter(z_threshold=1.5)
+        assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
 
-        converted = tsd.to_basetseries()
-
-        assert converted.outlier_filter is not tsd.outlier_filter
-        assert converted.history is not tsd.history
-
-    def test_timeseriesdata_from_basets_does_not_share(self, ts):
-        """TimeSeriesData(some_baseTs) went through the same sharing loop."""
-        ts.set_outlier_filter(z_threshold=4.2)
-        tsd = TimeSeriesData(ts)
-
-        assert tsd.outlier_filter is not ts.outlier_filter
-        assert tsd.history is not ts.history
-
-    def test_deepcopy_preserves_filter_subclass(self):
+    def test_to_basetseries_carries_a_usable_filter(self, ts):
         """
-        __deepcopy__'s fast path is only valid for the base class. A subclass
-        must not be silently downcast, losing its own state - and this runs on
-        every pandas operation.
+        TimeSeriesData never set outlier_filter despite declaring it in
+        _metadata, so a converted object carried None and the next
+        filter_outliers() raised AttributeError.
         """
-        import copy as copy_module
+        base = TimeSeriesData(np.arange(20.), index=np.arange(20.) / 10.0)
+        converted = base.iloc[:16].to_basetseries()
 
-        class _ExtraStateFilter(LowessOutlierFilter):
-            def __init__(self, config=None):
-                super().__init__(config)
-                self.extra = ["keepme"]
+        assert converted.outlier_filter is not None
+        converted.set_outlier_filter(z_threshold=4.2)
+        assert converted.get_outlier_filter_params()["z_threshold"] == 4.2
 
-        original = _ExtraStateFilter()
-        clone = copy_module.deepcopy(original)
-
-        assert type(clone) is _ExtraStateFilter
-        assert clone.extra == ["keepme"]
-        assert clone.extra is not original.extra
-
-    def test_filter_state_is_only_config(self):
-        """
-        LowessOutlierFilter.__deepcopy__ copies `config` and nothing else,
-        because that is all the class holds. New mutable state must be added
-        there too, or copies will silently share it.
-        """
-        assert set(vars(LowessOutlierFilter())) == {"config"}
-
-    def test_copy_has_its_own_filter(self, ts):
+    def test_copy_configuring_does_not_reach_the_original(self, ts):
         """Issue #11: the reported path, copy() rather than a pandas op."""
         ts.set_outlier_filter(z_threshold=4.2)
         c = ts.copy()
 
-        assert c.outlier_filter is not ts.outlier_filter
-
         c.set_outlier_filter(z_threshold=1.5)
+
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
         assert c.get_outlier_filter_params()["z_threshold"] == 1.5
+
+    def test_filter_config_is_frozen(self):
+        """
+        The whole design rests on this: a frozen config plus a rebinding
+        set_outlier_filter is what makes a shared filter safe, and is why no
+        deepcopy runs in __finalize__.
+        """
+        with pytest.raises(Exception):
+            LowessOutlierFilter().config.z_threshold = 99
+
+    def test_history_argument_is_not_stored_by_reference(self):
+        """Two series built from one list would cross-contaminate."""
+        seed = ["seed"]
+        a = baseTs(np.arange(10.), np.arange(10) / 10.0, history=seed)
+
+        a.zscale(inplace=True)
+
+        assert seed == ["seed"]
 
 
 

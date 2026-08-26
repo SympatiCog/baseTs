@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
 import logging
-import copy as copy_module
-from dataclasses import dataclass, is_dataclass, replace
+from dataclasses import dataclass
 from enum import Enum, auto
 
 if TYPE_CHECKING:
@@ -32,7 +31,7 @@ class TailType(Enum):
     UPPER = auto()
     LOWER = auto()
 
-@dataclass
+@dataclass(frozen=True)
 class FilterConfig:
     """Configuration parameters for the LowessOutlierFilter.
 
@@ -88,31 +87,6 @@ class LowessOutlierFilter:
         """
         self.config = config or FilterConfig()
 
-    def __deepcopy__(self, memo):
-        """
-        Fast path for the copy the metadata machinery makes on every op.
-
-        `config` is the only state, and it is a dataclass of immutable scalars,
-        so replace() of it is a complete and independent copy. Generic deepcopy
-        costs roughly 5x more, which is visible once __finalize__ runs it on
-        every slice. test_filter_state_is_only_config pins the assumption.
-
-        A subclass, or a config that is not a dataclass, may hold state this
-        shortcut cannot see - and since __finalize__ runs this on every pandas
-        operation, silently dropping it (or raising from replace()) would break
-        far more than one call. Those take the generic path instead.
-        """
-        if type(self) is not LowessOutlierFilter or not is_dataclass(self.config):
-            new = self.__class__.__new__(self.__class__)
-            memo[id(self)] = new
-            for key, value in vars(self).items():
-                setattr(new, key, copy_module.deepcopy(value, memo))
-            return new
-
-        new = LowessOutlierFilter(replace(self.config))
-        memo[id(self)] = new
-        return new
-        
     def filter(self,
                data: Union[np.ndarray, List[float], baseTs],
                time_index: Optional[Union[np.ndarray, List[float]]] = None,
