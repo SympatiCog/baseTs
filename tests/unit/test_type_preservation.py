@@ -18,12 +18,9 @@ PANDAS_OPS = [
     "cumsum()", "diff()", "rolling(3).mean()", "shift(1)", "round(2)",
     "clip(0, 10)", "fillna(0)", "sort_values()", "astype(float)",
     "interpolate()", "ffill()", "bfill()", "expanding().mean()",
-    "pct_change()", "rank()", "nlargest(3)", "copy()",
+    "pct_change()", "rank()", "nlargest(3)", "nsmallest(3)",
+    "ewm(span=3).mean()", "copy()",
 ]
-
-#: Operations that hand back a filter reset to defaults rather than the
-#: parent's config. Not a sharing problem - see #14.
-DROPS_FILTER_CONFIG = {"rolling(3).mean()", "expanding().mean()", "nlargest(3)"}
 
 #: Arithmetic returns through _wrap_result_as_basets, not through __finalize__,
 #: so it needs its own coverage - PANDAS_OPS contains no arithmetic.
@@ -111,10 +108,6 @@ class TestMetadataPropagation:
         two objects may share one safely - what must never happen is a write
         through the derived object reaching the parent.
 
-        Note that rolling/expanding/nlargest (see DROPS_FILTER_CONFIG) satisfy
-        this trivially: they propagate no metadata at all, so their result was
-        never wired to the parent. test_filter_config_survives_the_copy is
-        where that gap is recorded.
         """
         ts.set_outlier_filter(z_threshold=4.2)
         derived = eval(f"ts.{op}")
@@ -124,21 +117,10 @@ class TestMetadataPropagation:
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
         assert derived.get_outlier_filter_params()["z_threshold"] == 1.5
 
-    @pytest.mark.parametrize("op", [
-        pytest.param(op, marks=pytest.mark.xfail(
-            reason="#14: op resets the filter config to defaults", strict=True))
-        if op in DROPS_FILTER_CONFIG else op
-        for op in PANDAS_OPS
-    ])
+    @pytest.mark.parametrize("op", PANDAS_OPS)
     def test_filter_config_survives_the_copy(self, ts, op):
         """
         Independence must not cost the config: the values still carry over.
-
-        The three operations in DROPS_FILTER_CONFIG fail this today for
-        reasons unrelated to sharing - see #14. They are xfailed rather than
-        dropped from the matrix so the gap stays visible. strict=True means
-        fixing #14 turns them into failures that name this test, rather than
-        letting a stale marker sit here unnoticed.
         """
         ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
         derived = eval(f"ts.{op}")
@@ -318,6 +300,71 @@ class TestEffectiveFrequency:
         """
         for op in ("iloc[0:20]", "rolling(3).mean()", "dropna()", "abs()"):
             assert np.isclose(eval(f"ts.{op}").freq, ts.freq), f"ts.{op} changed freq"
+
+    @pytest.mark.parametrize("op", PANDAS_OPS)
+    def test_freq_matches_parent_for_pandas_ops(self, ts, op):
+        """ts is uniformly sampled, so every op here should agree with it."""
+        assert np.isclose(eval(f"ts.{op}").freq, ts.freq), f"ts.{op} changed freq"
+
+    def test_resample_reports_its_true_rate(self):
+        """
+        #19: resample changes the time base, so the carried freq described
+        the old sampling rate rather than the resampled one.
+        """
+        ts = baseTs(np.sin(np.arange(1000) / 10.0), np.arange(1000) / 100.0, freq=100.0)
+        r = ts.resample('1s', method='mean')
+        assert np.isclose(r.freq, 1.0)
+
+    def test_create_new_with_data_carries_explicit_freq_when_index_unchanged(self):
+        """
+        An explicitly supplied freq may legitimately disagree with the times
+        it was built from - an operation that never touches the index must
+        not silently overwrite it.
+        """
+        ts = baseTs(np.arange(10, dtype=float), np.arange(10) / 10.0, freq=123.0)
+        assert ts.zscale().freq == 123.0
+
+    def test_wrap_result_as_basets_derives_freq_from_result_index(self):
+        """
+        #19: arithmetic on two different time bases must derive from the
+        union index rather than taking the left operand's freq.
+        """
+        x = baseTs(np.arange(10.), np.arange(10) / 10.0, freq=10.0)
+        y = baseTs(np.arange(10.), np.arange(10) / 100.0, freq=100.0)
+        c = x + y
+        assert np.isclose(c.freq, (len(c) - 1) / c.duration())
+        assert not np.isclose(c.freq, 10.0)
+
+    def test_interpto_samples_freq_matches_new_length(self):
+        """#19: interpto_samples assigned n/duration over the corrected derivation."""
+        ts = baseTs(np.sin(np.arange(100) / 10.0), np.arange(100) / 10.0)
+        result = ts.interpto_samples(50)
+        assert np.isclose(result.freq, (50 - 1) / result.duration())
+
+    def test_interp_to_uniform_grid_freq_matches_new_grid(self):
+        """#19: same n/duration error as interpto_samples."""
+        ts = baseTs(np.sin(np.arange(100) / 10.0), np.arange(100) / 10.0)
+        grid = np.linspace(ts.times[0], ts.times[-1], 37)
+        result = ts.interp_to_uniform_grid(grid, inplace=False)
+        assert np.isclose(result.freq, (37 - 1) / result.duration())
+
+    def test_remove_outliers_inplace_and_not_agree_on_freq(self):
+        """#19: the inplace path re-derived freq via the times setter, the
+        non-inplace path carried the stale value - same op, two answers."""
+        t = np.arange(1000) / 100.0
+        d = np.sin(t) + np.where(np.arange(1000) % 137 == 0, 5.0, 0.0)
+        ts = baseTs(d, t, freq=100.0)
+
+        not_inplace = ts.remove_outliers(threshold=2.0, inplace=False)
+        inplace_copy = ts.copy()
+        inplace_copy.remove_outliers(threshold=2.0, inplace=True)
+
+        assert np.isclose(not_inplace.freq, inplace_copy.freq)
+
+    def test_get_statistics_sample_rate_is_exact(self):
+        """core.py's get_statistics had the same n-vs-(n-1) error."""
+        ts = baseTs(np.zeros(5), np.arange(5) / 2.0)
+        assert np.isclose(ts.get_statistics()['sample_rate'], 2.0)
 
     def test_short_series_has_no_frequency(self):
         assert np.isnan(baseTs(np.zeros(1), np.zeros(1), freq=1.0)._calculate_effective_frequency())

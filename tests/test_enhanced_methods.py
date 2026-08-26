@@ -160,8 +160,11 @@ class TestMathematicalOperations:
         assert isinstance(result_pow, baseTs), "Power should return baseTs object"
         np.testing.assert_array_almost_equal(result_pow.data, ts1.data ** 2)
         
-        # Test that metadata is preserved
-        assert result_add.freq == ts1.freq, "Should preserve frequency"
+        # Test that metadata is preserved. freq is derived from the result's
+        # index rather than carried from the left operand (#19) - here that
+        # matches ts1's explicit freq=10.0 only when the times array is
+        # itself uniform at 10 Hz, which sample_data's np.linspace is not.
+        assert np.isclose(result_add.freq, (len(result_add) - 1) / result_add.duration())
         assert result_add.times.shape == ts1.times.shape, "Should preserve time array"
         
         # Test right-hand operations

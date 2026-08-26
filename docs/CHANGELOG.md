@@ -407,6 +407,30 @@ Two further corrections while restoring it:
 - **`baseTs(..., history=[...])` no longer stores the caller's list.** Two
   series built from one list cross-contaminated each other's history.
 
+- **`freq` is now derived rather than carried across operations that change
+  the time base (#19).** `_create_new_with_data` hard-carried `self.freq`
+  into every object it built, so `resample()`, `remove_outliers(inplace=False)`
+  and every other non-inplace method routing through it reported the *old*
+  sampling rate. `interpto_samples` and `interp_to_uniform_grid` computed
+  `freq` as `n / duration`, then assigned that over the correct derivation —
+  the same `n`-vs-`n-1` error already fixed once for
+  `_calculate_effective_frequency`. `get_statistics()`'s `sample_rate` had the
+  identical error and is fixed too. An explicitly supplied `freq` is still
+  carried across operations that leave the index untouched — see the behavior
+  change below.
+
+- **`rolling()`, `expanding()`, and `ewm()` results now carry their parent's
+  metadata (#14).** These build their result directly via the constructor and
+  never call `__finalize__`, so `history`, `outlier_filter`, `signal_name` and
+  everything else in `_metadata` silently reset to constructor defaults.
+
+- **`nlargest()`/`nsmallest()` results now carry their parent's metadata
+  (#14).** They do call `__finalize__`, but lose it at an internal `concat`
+  step where pandas passes a bare `SimpleNamespace` rather than an `NDFrame` —
+  pandas' own default only copies `_metadata` from an `NDFrame`. Recovered by
+  reading it off the first concatenated object instead, the pattern pandas'
+  own subclassing guide documents.
+
 ### Changed
 - `copy(deep=False)` hands back its own `history` while still sharing the data
   buffer. pandas reaches this path internally — `sort_values()` is implemented
@@ -429,6 +453,26 @@ have tuned around them, re-check your thresholds.
 
 `lowess_detrend` is unaffected: it now names `z_threshold` and
 `max_iterations` explicitly, so its trend is bit-identical to before.
+
+### Behavior change — freq on arithmetic between different time bases
+
+`_wrap_result_as_basets` took `freq` from the left operand:
+
+```python
+x = baseTs(np.arange(10.), np.arange(10) / 10.0,  freq=10.0)
+y = baseTs(np.arange(10.), np.arange(10) / 100.0, freq=100.0)
+c = x + y
+# 19 samples spanning the union of both time bases at a true 20.0 Hz,
+# c.freq reported 10.0 - x's rate, regardless of what the result actually is
+```
+
+It now derives `freq` from the result's own index instead, unconditionally —
+unlike `_create_new_with_data`, this site does not carry an explicitly
+supplied `freq` even when the operands share one index, since arithmetic
+between two series is exactly the case where the index most needs re-checking
+rather than assumed. Code that relied on an arithmetic result reporting an
+operand's declared (rather than derived) rate will see a different `freq`
+after this change.
 
 ### Planned
 - Additional windowing functions for spectral analysis

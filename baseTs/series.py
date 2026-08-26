@@ -32,6 +32,41 @@ def _detach_shared_metadata(obj):
     return obj
 
 
+class _FinalizingWindow:
+    """
+    Wraps a pandas window object (Rolling/Expanding/ExponentialMovingWindow)
+    so its aggregations propagate metadata.
+
+    rolling()/expanding()/ewm() build their result via the parent's
+    `_constructor` directly and never call `__finalize__` - the type survives
+    but history, outlier_filter and everything else in `_metadata` resets to
+    constructor defaults. The window object holds the parent as `.obj`; this
+    finalizes each aggregation result against it, mirroring what pandas does
+    for every other operation.
+    """
+
+    def __init__(self, window, parent, method):
+        object.__setattr__(self, '_window', window)
+        object.__setattr__(self, '_parent', parent)
+        object.__setattr__(self, '_method', method)
+
+    def __getattr__(self, name):
+        attr = getattr(self._window, name)
+        if not callable(attr):
+            return attr
+
+        def finalizing_call(*args, **kwargs):
+            result = attr(*args, **kwargs)
+            if isinstance(result, pd.Series):
+                result = result.__finalize__(self._parent, method=self._method)
+            return result
+
+        return finalizing_call
+
+    def __repr__(self):
+        return f"_FinalizingWindow({self._window!r})"
+
+
 class TimeSeriesData(pd.Series):
     """
     Pandas Series subclass optimized for time series analysis.
@@ -166,9 +201,34 @@ class TimeSeriesData(pd.Series):
         and set_outlier_filter rebinds rather than mutates it, so a shared
         filter cannot carry a write from one object to another. `lowess_fit`
         and `outlier_indices` stay shared too - see _detach_shared_metadata.
+
+        method == 'concat' is special-cased: nlargest/nsmallest route through
+        an internal concat step where `other` is a bare SimpleNamespace, not
+        an NDFrame, so pandas' own isinstance(other, NDFrame) branch above
+        skips it and metadata is silently dropped. Recover it from the first
+        concatenated object, per pandas' own subclassing guide.
         """
         super().__finalize__(other, method=method, **kwargs)
+        if method == 'concat':
+            objs = getattr(other, 'objs', None)
+            if objs:
+                source = objs[0]
+                for name in self._metadata:
+                    if hasattr(source, name):
+                        object.__setattr__(self, name, getattr(source, name))
         return _detach_shared_metadata(self)
+
+    def rolling(self, *args, **kwargs):
+        """See _FinalizingWindow: rolling() never calls __finalize__."""
+        return _FinalizingWindow(super().rolling(*args, **kwargs), self, 'rolling')
+
+    def expanding(self, *args, **kwargs):
+        """See _FinalizingWindow: expanding() never calls __finalize__."""
+        return _FinalizingWindow(super().expanding(*args, **kwargs), self, 'expanding')
+
+    def ewm(self, *args, **kwargs):
+        """See _FinalizingWindow: ewm() never calls __finalize__."""
+        return _FinalizingWindow(super().ewm(*args, **kwargs), self, 'ewm')
 
     @property
     def _constructor(self):
@@ -426,11 +486,13 @@ class TimeSeriesData(pd.Series):
             # For scalar results, we can't return a baseTs, so return the scalar
             return result
         
-        # Create new baseTs object with the result
+        # Create new baseTs object with the result. freq is left unset so
+        # baseTs derives it from the result index - arithmetic between two
+        # operands on different time bases produces a union index, and the
+        # left operand's freq no longer describes it.
         new_basets = baseTs(
             data=result.values,
             times=result.index.values,
-            freq=self.freq,
             signal_name=self.signal_name
         )
         
