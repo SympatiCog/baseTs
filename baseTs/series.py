@@ -156,17 +156,16 @@ class TimeSeriesData(pd.Series):
 
     def __finalize__(self, other, method=None, **kwargs):
         """
-        Propagate metadata, copying mutable values rather than sharing them.
+        Propagate metadata, detaching what a derived object must not share.
 
         pandas' default __finalize__ assigns metadata by reference, so a derived
         object would share the parent's `history` list - appending to one would
-        silently append to the other. The same is true of `outlier_filter`:
-        set_outlier_filter on a slice would retune the series it came from.
+        silently append to the other.
 
-        Only the small mutable containers are copied here. `lowess_fit` and
-        `outlier_indices` stay shared on purpose - this runs on every pandas
-        operation, and deep-copying arrays here would make slicing O(n) in the
-        parent's metadata.
+        `outlier_filter` is deliberately left shared: FilterConfig is frozen
+        and set_outlier_filter rebinds rather than mutates it, so a shared
+        filter cannot carry a write from one object to another. `lowess_fit`
+        and `outlier_indices` stay shared too - see _detach_shared_metadata.
         """
         super().__finalize__(other, method=method, **kwargs)
         return _detach_shared_metadata(self)
@@ -196,10 +195,10 @@ class TimeSeriesData(pd.Series):
         if not isinstance(copied, TimeSeriesData):
             copied = TimeSeriesData(copied.values, index=copied.index)
         
-        # Copy metadata. Deep-copy every value rather than an allow-list of
-        # container types: outlier_filter is a mutable object that is none of
-        # them, and was therefore shared with the original. deepcopy is a no-op
-        # on the immutable scalars.
+        # Copy metadata. The allow-list bounds what gets deep-copied: an
+        # unguarded deepcopy turns any non-copyable metadata value into a hard
+        # error on routine operations. outlier_filter is not on it, and is
+        # shared at both depths - safe, see _detach_shared_metadata.
         for attr in self._metadata:
             if hasattr(self, attr):
                 value = getattr(self, attr)
@@ -208,11 +207,11 @@ class TimeSeriesData(pd.Series):
                 setattr(copied, attr, value)
 
         if not deep:
-            # The loop above re-assigns by reference, undoing what
+            # The loop above re-assigns history by reference, undoing what
             # __finalize__ already detached. pandas reaches here internally
             # (sort_values calls copy(deep=False)), so a "shallow" copy must
-            # still not hand back a shared filter. The deep branch has already
-            # copied every value, so it needs no second pass.
+            # still not hand back a shared history list. The deep branch
+            # deep-copies it in the loop above.
             _detach_shared_metadata(copied)
         return copied
 

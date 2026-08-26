@@ -239,6 +239,50 @@ class TestMetadataPropagation:
         assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
         assert c.get_outlier_filter_params()["z_threshold"] == 1.5
 
+    def test_get_outlier_filter_params_is_a_snapshot(self, ts):
+        """
+        The accessor must not hand out the live config.
+
+        Derived objects share one filter, which is safe only because nothing
+        mutates a config in place. Returning the real __dict__ made a write
+        through it reach every sharing object - frozen=True blocks setattr,
+        not __dict__ assignment.
+        """
+        ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
+        derived = ts.copy()
+
+        derived.get_outlier_filter_params()["frac"] = 0.9
+
+        assert ts.get_outlier_filter_params()["frac"] == 0.11
+        assert derived.get_outlier_filter_params()["frac"] == 0.11
+
+    def test_constructing_a_basets_from_a_basets_keeps_its_filter(self, ts):
+        """
+        baseTs(ts) takes the conversion branch in TimeSeriesData.__init__,
+        which carries the source's filter - and __init__ then overwrote it
+        with a fresh default.
+        """
+        ts.set_outlier_filter(z_threshold=4.2)
+
+        assert baseTs(ts).get_outlier_filter_params()["z_threshold"] == 4.2
+
+    def test_naming_one_parameter_leaves_the_others_alone(self, ts):
+        """
+        Every parameter used to carry a real default, so naming frac also set
+        z_threshold to 7 and max_iterations to 10 behind the caller's back.
+        """
+        ts.set_outlier_filter(z_threshold=4.2)
+        ts.set_outlier_filter(frac=0.11)
+
+        params = ts.get_outlier_filter_params()
+        assert params["z_threshold"] == 4.2
+        assert params["frac"] == 0.11
+
+    def test_invalid_parameter_type_raises_valueerror(self, ts):
+        """A container argument used to escape coercion as a raw TypeError."""
+        with pytest.raises(ValueError):
+            ts.set_outlier_filter(order=[1, 2])
+
     def test_filter_config_is_frozen(self):
         """
         The whole design rests on this: a frozen config plus a rebinding

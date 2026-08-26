@@ -239,8 +239,11 @@ class baseTs(TimeSeriesData):
         if _is_unset(freq):
             self.freq = self._calculate_effective_frequency()
         
-        # Initialize outlier filter with default parameters
-        self.outlier_filter = LowessOutlierFilter()
+        # Only if the superclass did not already carry one across: baseTs(ts)
+        # takes the conversion branch in TimeSeriesData.__init__, which copies
+        # the source's filter, and this used to overwrite it with a default.
+        if getattr(self, 'outlier_filter', None) is None:
+            self.outlier_filter = LowessOutlierFilter()
 
 
     @property
@@ -356,11 +359,6 @@ class baseTs(TimeSeriesData):
             
             # Copy history (make a copy to avoid reference issues)
             new_obj.history = self.history.copy()
-            # outlier_filter was absent from the list above, so every method
-            # routing through here handed back a filter reset to FilterConfig's
-            # defaults - not even set_outlier_filter's. Carried now, and
-            # detached so the result does not write back through it.
-            _detach_shared_metadata(new_obj)
         
         return new_obj
 
@@ -956,28 +954,28 @@ class baseTs(TimeSeriesData):
             Dictionary of parameter values. If provided, overrides individual parameters.
             Valid keys are: 'z_threshold', 'frac', 'max_iterations', 'interpolation_method',
             'order', 'use_median', 'tails', 'it', 'delta_frac'
-        z_threshold : float, default=7
+        z_threshold : float, optional
             Z-score threshold for outlier detection
-        frac : float, default=0.075
+        frac : float, optional
             LOWESS bandwidth: the fraction of points included in each local
             regression window. This is *not* the fraction of points expected to
             be outliers.
-        max_iterations : int, default=10
+        max_iterations : int, optional
             Maximum number of iterations for outlier detection
-        interpolation_method : str, default='linear'
+        interpolation_method : str, optional
             Interpolation method for replacing outliers
-        order : int, default=2
+        order : int, optional
             Order of the interpolation
-        use_median : bool, default=True
+        use_median : bool, optional
             Whether to use median instead of mean for calculations
-        tails : Union[str, TailType], default=TailType.BOTH
+        tails : Union[str, TailType], optional
             Which tails to process for outlier detection. Can be 'BOTH', 'UPPER', 'LOWER',
             or a TailType enum member.
-        it : int, default=0, keyword-only
+        it : int, optional, keyword-only
             Robustifying iterations performed inside the LOWESS fit. Leave at 0
             unless you know why you want otherwise; see FilterConfig.
             Keyword-only so that it cannot occupy num_fits' old positional slot.
-        delta_frac : float, default=0.0, keyword-only
+        delta_frac : float, optional, keyword-only
             Speed/accuracy tradeoff for long series. See FilterConfig.
         num_fits : int, optional
             Deprecated and ignored. Was the number of LOWESS anchor fits under the
@@ -991,7 +989,11 @@ class baseTs(TimeSeriesData):
         
         Notes
         -----
-        This overwrites the default parameters.
+        Only the parameters you name are changed; the rest keep their current
+        values. An unconfigured object starts at FilterConfig's defaults
+        (z_threshold=3.0, max_iterations=5, frac=0.075). Calling this with no
+        arguments therefore changes nothing - it is not a way to reset.
+
         You must re-run filter_outliers to use the new parameters.
         """
         if num_fits is not None or (params is not None and 'num_fits' in params):
@@ -1034,7 +1036,7 @@ class baseTs(TimeSeriesData):
             if not isinstance(value, param_type):
                 try:
                     return param_type(value)
-                except ValueError:
+                except (TypeError, ValueError):
                     raise ValueError(
                         f"Invalid type for {param_name}. "
                         f"Expected {param_type.__name__}")
@@ -1075,10 +1077,18 @@ class baseTs(TimeSeriesData):
 
     def get_outlier_filter_params(self) -> dict:
         """
-        Get outlier filter parameters.
-            returns a dictionary of the parameters.
+        Get outlier filter parameters as a plain dict.
+
+        A snapshot, not the live config. Objects derived from one another share
+        a filter - that is safe only because nothing mutates a config in place,
+        and handing out the real ``__dict__`` would have made a write through
+        this dict reach every one of them. frozen=True does not stop that:
+        it blocks setattr, not __dict__ assignment.
+
+        Feed it back through ``set_outlier_filter(params=...)``, which is where
+        the values get validated.
         """
-        return self.outlier_filter.config.__dict__
+        return dict(self.outlier_filter.config.__dict__)
         
     def filter_outliers(self,
                         inplace: bool = False,
