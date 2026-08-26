@@ -117,6 +117,33 @@ that matters — at `delta_frac=0.001` the same series takes 0.03s.
   and interpolates between them, trading accuracy for speed on long series.
   Default `0.0` (fit every point). Successor to `num_fits`.
 - Warning when the residual scale collapses to the floor (see Fixed).
+- `notch_filter`, `highpass_filter` and `bandpass_filter` — aliases for
+  `notch_at`, `highpass_at` and `bandpass_at`, which the docs already referred
+  to by those names. `bandpass_filter` accepts an `order` argument for signature
+  compatibility only; the underlying filter has no order parameter and ignores it.
+- `remove_outliers(method, threshold)` — the statistical counterpart to
+  `filter_outliers`: it drops the points `detect_outliers` flags, rather than
+  interpolating over them via the LOWESS workflow.
+
+### Changed — `lowess_detrend` no longer filters outliers
+
+`lowess_detrend` previously called `self.filter_outliers(inplace=True)` while
+computing the trend. Three consequences, all now gone:
+
+- It mutated the caller even with `inplace=False` (issue #6), so the original
+  object came back with its outliers interpolated away.
+- It overwrote whatever outlier filter the caller had configured, via a
+  `set_outlier_filter` call on `self`.
+- The returned data had outliers removed as a side effect of detrending.
+
+The result is now the *original* data minus the LOWESS trend: **outliers are
+preserved, not interpolated away.** Pipe through `filter_outliers` first if you
+want them gone. The trend is still fitted robustly, so spikes do not drag it
+toward themselves, and the fit now uses a throwaway holder so the caller's
+filter config and `is_outlier_filtered`/`outlier_indices` are left untouched.
+
+Anyone relying on the old side effect will see outliers survive a detrend that
+used to silently remove them.
 
 ### Deprecated
 - `set_outlier_filter(num_fits=...)` is ignored and raises `DeprecationWarning`,
