@@ -25,7 +25,7 @@ def _detach_shared_metadata(obj):
     `outlier_filter` needs no copy: FilterConfig is frozen and
     set_outlier_filter rebinds the filter rather than mutating it, so sharing
     one is safe by construction. `lowess_fit` and `outlier_indices` are left
-    shared, unchanged from before - see #16.
+    shared, unchanged from before - see #20.
     """
     if isinstance(getattr(obj, 'history', None), list):
         object.__setattr__(obj, 'history', list(obj.history))
