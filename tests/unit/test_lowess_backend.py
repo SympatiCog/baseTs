@@ -13,6 +13,7 @@ import pytest
 
 from baseTs import baseTs
 from baseTs.LowessOutlierFilter import (
+    MIN_WINDOW_POINTS,
     SCALE_FLOOR,
     FilterConfig,
     LowessOutlierFilter,
@@ -229,24 +230,128 @@ class TestScaleFloorWarning:
             ("line", 2.0 * np.arange(400, dtype=float) + 1.0, 0.3, 0),
         ],
     )
-    def test_warns_when_scale_collapses(self, caplog, label, data, frac, it):
+    def test_warns_when_scale_collapses(self, label, data, frac, it):
         """A perfectly-fit signal drives MAD to zero; z_threshold then means
-        nothing, so the clamp must announce itself rather than pass silently."""
+        nothing, so the clamp must announce itself rather than pass silently.
+
+        Asserted through `warnings`, not `logging`: this tells the caller their
+        result is meaningless and must reach them under default configuration.
+        """
         t = np.arange(len(data), dtype=float)
         f = LowessOutlierFilter(FilterConfig(frac=frac, z_threshold=3.0, it=it))
-        with caplog.at_level(logging.WARNING, logger="baseTs.LowessOutlierFilter"):
+        with pytest.warns(RuntimeWarning, match="below the .* floor"):
             f.filter(data, t, return_lowess=True)
-        assert any("floor" in r.message.lower() for r in caplog.records), caplog.text
 
-    def test_no_warning_on_well_behaved_data(self, spiked, caplog):
+    def test_no_warning_on_well_behaved_data(self, spiked):
         d, t = spiked
         f = LowessOutlierFilter(FilterConfig(frac=0.1, z_threshold=5.0))
-        with caplog.at_level(logging.WARNING, logger="baseTs.LowessOutlierFilter"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
             f.filter(d, t, return_lowess=True)
-        assert not any("floor" in r.message.lower() for r in caplog.records)
 
     def test_scale_floor_constant_is_exported(self):
         assert SCALE_FLOOR == 1e-6
+
+
+class TestWindowGuard:
+    """A window of <= 3 points makes LOWESS interpolate the data exactly.
+
+    The fit is then the input, every residual is zero, the MAD scale collapses
+    and z_threshold stops discriminating — a result that looks like a clean
+    signal. The threshold is on the window `int(frac * n)`, not on `frac`:
+    frac=0.001 is fine on a long series and degenerate on a short one.
+    """
+
+    @pytest.mark.parametrize("frac", [1e-9, 0.001, 0.003, 0.006])
+    def test_tiny_frac_on_long_series_raises(self, frac):
+        d, t = np.arange(500, dtype=float), np.arange(500, dtype=float)
+        f = LowessOutlierFilter(FilterConfig(frac=frac))
+        with pytest.raises(ValueError, match="local window"):
+            f.filter(d, t, return_lowess=True)
+
+    def test_reasonable_frac_on_short_series_raises(self):
+        """The same default frac that is fine at n=500 is degenerate at n=20."""
+        d, t = np.arange(20, dtype=float), np.arange(20, dtype=float)
+        f = LowessOutlierFilter(FilterConfig(frac=0.075))  # k = 1
+        with pytest.raises(ValueError, match="local window"):
+            f.filter(d, t, return_lowess=True)
+
+    def test_series_too_short_for_any_frac(self):
+        d, t = np.arange(3, dtype=float), np.arange(3, dtype=float)
+        f = LowessOutlierFilter(FilterConfig(frac=1.0))
+        with pytest.raises(ValueError, match="No frac can rescue"):
+            f.filter(d, t, return_lowess=True)
+
+    def test_error_names_a_frac_that_works(self):
+        """The suggested frac must actually satisfy the guard."""
+        n = 60
+        d, t = np.arange(n, dtype=float), np.arange(n, dtype=float)
+        f = LowessOutlierFilter(FilterConfig(frac=0.01))
+        with pytest.raises(ValueError) as exc:
+            f.filter(d, t, return_lowess=True)
+        suggested = float(str(exc.value).split("frac >= ")[1].split()[0])
+        assert int(suggested * n) >= MIN_WINDOW_POINTS
+
+    @pytest.mark.parametrize("n,frac", [(500, 0.008), (100, 0.04), (50, 0.08), (20, 0.2)])
+    def test_smallest_passing_window_is_accepted(self, n, frac):
+        """k == 4 must be allowed: the guard rejects degenerate, not merely small."""
+        assert int(frac * n) == MIN_WINDOW_POINTS
+        rng = np.random.default_rng(0)
+        t = np.linspace(0, 10, n)
+        d = np.sin(t) + 0.1 * rng.standard_normal(n)
+        f = LowessOutlierFilter(FilterConfig(frac=frac, z_threshold=5.0))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # may stop early; see below
+            _, _, line = f.filter(d, t, return_lowess=True)
+        assert len(line) == n
+        assert not np.allclose(line, d, atol=1e-12), "should fit, not interpolate"
+
+    def test_stops_early_when_masking_shrinks_the_window(self):
+        """A run starting at exactly k == 4 falls to k == 3 after one removal.
+
+        The loop must stop and keep the last sound fit rather than overwrite it
+        with one that interpolates the survivors exactly.
+        """
+        n, frac = 500, 0.008
+        rng = np.random.default_rng(0)
+        t = np.linspace(0, 10, n)
+        d = np.sin(t) + 0.1 * rng.standard_normal(n)
+        f = LowessOutlierFilter(FilterConfig(frac=frac, z_threshold=5.0))
+        with pytest.warns(RuntimeWarning, match="Stopping after"):
+            _, _, line = f.filter(d, t, return_lowess=True)
+        # The retained fit is the sound one, not an interpolation of the data.
+        assert not np.allclose(line, d, atol=1e-12)
+        assert np.all(np.isfinite(line))
+
+    def test_comfortable_window_does_not_stop_early(self, spiked):
+        d, t = spiked
+        f = LowessOutlierFilter(FilterConfig(frac=0.1, z_threshold=5.0))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            f.filter(d, t, return_lowess=True)
+
+    def test_guard_counts_usable_points_not_length(self):
+        """NaNs do not count towards the window: 500 slots, 10 real points."""
+        d = np.full(500, np.nan)
+        d[:10] = np.arange(10, dtype=float)
+        t = np.arange(500, dtype=float)
+        f = LowessOutlierFilter(FilterConfig(frac=0.1))  # k=50 on length, k=1 on usable
+        with pytest.raises(ValueError, match="local window"):
+            f.filter(d, t, return_lowess=True)
+
+    def test_guard_reaches_filter_outliers(self, spiked):
+        d, t = spiked
+        ts = baseTs(data=d, times=t)
+        ts.set_outlier_filter(frac=0.001)
+        with pytest.raises(ValueError, match="local window"):
+            ts.filter_outliers()
+
+    def test_guard_reaches_lowess_detrend(self, spiked):
+        """The issue was reported through lowess_detrend, which returned all-zero
+        detrended data because the trend was the data."""
+        d, t = spiked
+        with pytest.raises(ValueError, match="local window"):
+            baseTs(data=d, times=t).lowess_detrend(frac=0.001, inplace=False)
 
 
 class TestArgumentOrder:

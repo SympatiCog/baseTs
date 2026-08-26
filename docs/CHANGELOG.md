@@ -117,6 +117,9 @@ that matters — at `delta_frac=0.001` the same series takes 0.03s.
   and interpolates between them, trading accuracy for speed on long series.
   Default `0.0` (fit every point). Successor to `num_fits`.
 - Warning when the residual scale collapses to the floor (see Fixed).
+- `MIN_WINDOW_POINTS` — the smallest local window (`int(frac * n)`) that yields a
+  fit rather than an exact interpolation of the data. Measured at 4, independent
+  of series length.
 - `notch_filter`, `highpass_filter` and `bandpass_filter` — aliases for
   `notch_at`, `highpass_at` and `bandpass_at`, which the docs already referred
   to by those names. `bandpass_filter` accepts an `order` argument for signature
@@ -173,6 +176,27 @@ used to silently remove them.
   `TypeError`.
 - `docs/API.md` listed `set_outlier_filter(frac=0.1, z_threshold=2.5)`; the real
   defaults are `frac=0.075, z_threshold=7`.
+- `LowessOutlierFilter` silently returned a degenerate fit when the local window
+  came to three points or fewer (issue #12). Tricube weighting zeroes the window's
+  edge points, so at `k = int(frac * n) <= 3` the line is set by at most one
+  effectively-weighted point and passes exactly through the data. The "fit" was
+  then the input, every residual zero, the MAD scale pinned to `SCALE_FLOOR` and
+  `z_threshold` inoperative — a filter that detects nothing looks exactly like a
+  clean signal.
+
+  `filter` now raises `ValueError` up front, naming `frac`, the series length,
+  the resulting window and a `frac` that would work. The check is on the window,
+  not on `frac`: `frac=0.001` is fine on a long series and degenerate on a short
+  one, so no bound on `frac` alone catches this. Both `filter_outliers` and
+  `lowess_detrend` are covered, since both route through `filter`.
+
+  Masking outliers also shrinks the usable series mid-loop — a run starting at
+  exactly `k == 4` drops to `k == 3` after a single removal — so the loop now
+  stops when the window would become degenerate and keeps the last sound fit,
+  rather than overwriting it with an interpolation of the survivors.
+- The `SCALE_FLOOR` notice is now a `RuntimeWarning` rather than a `logging`
+  call. It reports that the caller's result is meaningless, so it must surface
+  under default configuration rather than only when handlers are attached.
 - `filter_outliers(qcplot=True)` produced a QC plot that could not show what it
   claimed, under either value of `inplace` (issue #7):
 

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
 import logging
+import warnings
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 #: Lower bound on the residual scale, guarding against division by zero.
 SCALE_FLOOR = 1e-6
+
+#: Smallest local window (``int(frac * n)``) that yields a fit rather than an
+#: exact interpolation of the data. Below this, tricube weighting leaves at most
+#: one effectively-weighted point per window.
+MIN_WINDOW_POINTS = 4
 
 
 class TailType(Enum):
@@ -117,6 +123,7 @@ class LowessOutlierFilter:
         # Validate inputs
         data_values = self._validate_data(data)
         time_index = self._validate_time_index(data, data_values, time_index)
+        self._validate_window(data_values)
 
         # Initialize tracking variables
         cleaned_data = data_values.copy()
@@ -129,6 +136,26 @@ class LowessOutlierFilter:
             valid_mask = ~np.isnan(cleaned_data)
             if not np.any(valid_mask):
                 logger.warning("All data points are NaN. Exiting the loop.")
+                break
+
+            # Masking outliers shrinks the usable series, and with it the local
+            # window. A run that starts just above the minimum can fall below it
+            # a single removal later, at which point the fit would interpolate
+            # the survivors exactly. Stop instead: the previous iteration's fit
+            # is sound, so keep it rather than overwrite it with a degenerate one.
+            n_valid = int(np.count_nonzero(valid_mask))
+            if int(self.config.frac * n_valid) < MIN_WINDOW_POINTS:
+                warnings.warn(
+                    f"Stopping after {iteration} iteration(s): removing outliers "
+                    f"left {n_valid} usable points, and frac="
+                    f"{self.config.frac:g} gives a local window of "
+                    f"{int(self.config.frac * n_valid)} there, below the "
+                    f"{MIN_WINDOW_POINTS} needed to fit rather than interpolate. "
+                    f"The fit from the previous iteration is retained. Raise frac "
+                    f"to use the full max_iterations={self.config.max_iterations}.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
                 break
 
             # Apply LOWESS smoothing
@@ -165,6 +192,40 @@ class LowessOutlierFilter:
         outlier_indices = sorted(set(outlier_indices))
 
         return (cleaned_data, outlier_indices, lowess_line) if return_lowess else (cleaned_data, outlier_indices)
+
+    def _validate_window(self, data_values: np.ndarray) -> None:
+        """Reject configurations whose local window is too small to smooth.
+
+        LOWESS fits a weighted line within each window of ``k = int(frac * n)``
+        points. Tricube weighting gives the window's edge points zero weight, so
+        for ``k <= 3`` the line is determined by at most one effectively-weighted
+        point and passes exactly through the data. The "fit" is then the input,
+        every residual is zero, the MAD scale collapses to SCALE_FLOOR and
+        z_threshold stops discriminating — a silently useless result.
+
+        The threshold is on ``k``, not on ``frac``: ``frac=0.001`` is fine on a
+        long series and degenerate on a short one, so neither bound alone catches
+        this. Measured to be independent of n; k >= 4 is the first well-behaved
+        window at every length tested.
+        """
+        n = int(np.count_nonzero(~np.isnan(data_values)))
+        k = int(self.config.frac * n)
+        if k >= MIN_WINDOW_POINTS:
+            return
+
+        if n < MIN_WINDOW_POINTS:
+            raise ValueError(
+                f"LOWESS needs at least {MIN_WINDOW_POINTS} usable points to fit "
+                f"anything but the data itself; got {n}. No frac can rescue a "
+                f"series this short."
+            )
+        needed = MIN_WINDOW_POINTS / n
+        raise ValueError(
+            f"frac={self.config.frac:g} on {n} points gives a local window of "
+            f"{k} point(s); LOWESS needs at least {MIN_WINDOW_POINTS} or it "
+            f"interpolates the data exactly, leaving every residual zero and "
+            f"z_threshold inoperative. Use frac >= {needed:.4g} for this series."
+        )
 
     def _apply_lowess(self, y: np.ndarray, x: np.ndarray) -> np.ndarray:
         """Apply LOWESS smoothing to the data.
@@ -243,12 +304,18 @@ class LowessOutlierFilter:
             # the floor and z_threshold stops discriminating. Usually means the fit
             # is interpolating the data (e.g. a staircase signal fitted with
             # internal robustifying iterations, config.it >= 2).
-            logger.warning(
-                "Residual scale %.3g is below the %.0e floor; z-scores are being "
-                "divided by the floor and z_threshold is effectively inoperative. "
-                "Check that the LOWESS fit is not interpolating the data "
-                "(config.it=%d, config.frac=%g).",
-                scale, SCALE_FLOOR, self.config.it, self.config.frac,
+            #
+            # warnings.warn rather than logger.warning: this says the caller's
+            # result is meaningless, which must reach them under default config.
+            # Logging only surfaces if the application configured handlers.
+            warnings.warn(
+                f"Residual scale {scale:.3g} is below the {SCALE_FLOOR:.0e} floor; "
+                f"z-scores are being divided by the floor and z_threshold is "
+                f"effectively inoperative. Check that the LOWESS fit is not "
+                f"interpolating the data (config.it={self.config.it}, "
+                f"config.frac={self.config.frac:g}).",
+                RuntimeWarning,
+                stacklevel=4,
             )
 
         return center, max(scale, SCALE_FLOOR)  # Prevent division by zero
