@@ -344,7 +344,8 @@ class baseTs(TimeSeriesData):
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
-                            'outlier_indices', 'lowess_fit', 'last_process']
+                            'outlier_indices', 'lowess_fit', 'last_process',
+                            'outlier_filter']
             
             for attr in metadata_attrs:
                 if hasattr(self, attr):
@@ -352,6 +353,11 @@ class baseTs(TimeSeriesData):
             
             # Copy history (make a copy to avoid reference issues)
             new_obj.history = self.history.copy()
+            # outlier_filter was absent from the list above, so every method
+            # routing through here handed back a filter reset to FilterConfig's
+            # defaults - not even set_outlier_filter's. Carried now, and
+            # detached so the result does not write back through it.
+            _detach_shared_metadata(new_obj)
         
         return new_obj
 
@@ -2108,7 +2114,8 @@ class baseTs(TimeSeriesData):
                 for attr in self._metadata:
                     if hasattr(self, attr):
                         setattr(copied, attr, getattr(self, attr))
-            return _detach_shared_metadata(copied)
+                _detach_shared_metadata(copied)
+            return copied
 
     def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
         """
@@ -2231,10 +2238,9 @@ class baseTs(TimeSeriesData):
 
         # Configure a throwaway holder rather than self, so the caller's filter
         # config survives. It is deliberately a minimal two-point series and
-        # not self.copy(): copy() would clone the whole series just to carry a
-        # config, and it shares outlier_filter by reference anyway. Routing
-        # through set_outlier_filter keeps the parameter defaults in a single
-        # place rather than restating them here.
+        # not self.copy(), which would clone the whole series just to carry a
+        # config. Routing through set_outlier_filter keeps the parameter
+        # defaults in a single place rather than restating them here.
         scratch = baseTs(np.zeros(2), np.arange(2.0))
         scratch.set_outlier_filter(frac=frac)
 

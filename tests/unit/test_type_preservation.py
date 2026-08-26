@@ -23,7 +23,12 @@ PANDAS_OPS = [
 
 #: Operations that hand back a filter reset to defaults rather than the
 #: parent's config. Not a sharing problem - see #14.
-DROPS_FILTER_CONFIG = {"abs()", "rolling(3).mean()", "expanding().mean()", "nlargest(3)"}
+DROPS_FILTER_CONFIG = {"rolling(3).mean()", "expanding().mean()", "nlargest(3)"}
+
+#: Arithmetic returns through _wrap_result_as_basets, not through __finalize__,
+#: so it needs its own coverage - PANDAS_OPS contains no arithmetic.
+ARITHMETIC_OPS = ["ts + 1", "ts - 1", "ts * 2", "ts / 2", "ts ** 2",
+                  "1 + ts", "1 - ts", "2 * ts", "ts.add(1)", "ts.mul(2)"]
 
 
 @pytest.fixture
@@ -132,6 +137,80 @@ class TestMetadataPropagation:
 
         assert derived.get_outlier_filter_params()["z_threshold"] == 4.2
         assert derived.get_outlier_filter_params()["frac"] == 0.11
+
+    @pytest.mark.parametrize("op", ARITHMETIC_OPS)
+    def test_arithmetic_does_not_share_metadata(self, ts, op):
+        """
+        Arithmetic returns via _wrap_result_as_basets, which assigned every
+        metadata attribute by reference - bypassing __finalize__ entirely.
+        """
+        ts.set_outlier_filter(z_threshold=4.2)
+        history_before = list(ts.history)
+
+        derived = eval(op)
+
+        assert derived.outlier_filter is not ts.outlier_filter
+        assert derived.history is not ts.history
+
+        # The "Applied ... operation" entry belongs to the result alone.
+        assert ts.history == history_before
+
+        derived.set_outlier_filter(z_threshold=1.5)
+        assert ts.get_outlier_filter_params()["z_threshold"] == 4.2
+
+    @pytest.mark.parametrize("method", ["zscale()", "rolling_mean(5)", "detrend()"])
+    def test_domain_methods_carry_an_independent_filter(self, ts, method):
+        """
+        _create_new_with_data omitted outlier_filter from the attributes it
+        carries, so every non-inplace domain method handed back a filter reset
+        to FilterConfig's defaults - not even set_outlier_filter's.
+        """
+        ts.set_outlier_filter(z_threshold=4.2, frac=0.11)
+        derived = eval(f"ts.{method}")
+
+        assert derived.get_outlier_filter_params()["z_threshold"] == 4.2
+        assert derived.get_outlier_filter_params()["frac"] == 0.11
+        assert derived.outlier_filter is not ts.outlier_filter
+
+    def test_to_basetseries_does_not_share(self, ts):
+        """A documented public conversion, sharing filter and history."""
+        ts.set_outlier_filter(z_threshold=4.2)
+        tsd = TimeSeriesData(ts.values, index=ts.index)
+        tsd.outlier_filter = ts.outlier_filter
+        tsd.history = ts.history
+
+        converted = tsd.to_basetseries()
+
+        assert converted.outlier_filter is not tsd.outlier_filter
+        assert converted.history is not tsd.history
+
+    def test_timeseriesdata_from_basets_does_not_share(self, ts):
+        """TimeSeriesData(some_baseTs) went through the same sharing loop."""
+        ts.set_outlier_filter(z_threshold=4.2)
+        tsd = TimeSeriesData(ts)
+
+        assert tsd.outlier_filter is not ts.outlier_filter
+        assert tsd.history is not ts.history
+
+    def test_deepcopy_preserves_filter_subclass(self):
+        """
+        __deepcopy__'s fast path is only valid for the base class. A subclass
+        must not be silently downcast, losing its own state - and this runs on
+        every pandas operation.
+        """
+        import copy as copy_module
+
+        class _ExtraStateFilter(LowessOutlierFilter):
+            def __init__(self, config=None):
+                super().__init__(config)
+                self.extra = ["keepme"]
+
+        original = _ExtraStateFilter()
+        clone = copy_module.deepcopy(original)
+
+        assert type(clone) is _ExtraStateFilter
+        assert clone.extra == ["keepme"]
+        assert clone.extra is not original.extra
 
     def test_filter_state_is_only_config(self):
         """

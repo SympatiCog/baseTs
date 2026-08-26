@@ -121,7 +121,7 @@ class TimeSeriesData(pd.Series):
         self.history = []
 
     def _copy_metadata_from_basetseries(self, base_ts):
-        """Copy metadata from a baseTs object."""
+        """Copy metadata from a baseTs object, without sharing its mutables."""
         for attr in self._metadata:
             if hasattr(base_ts, attr):
                 setattr(self, attr, getattr(base_ts, attr))
@@ -137,6 +137,8 @@ class TimeSeriesData(pd.Series):
                     setattr(self, attr, "")
                 else:
                     setattr(self, attr, None)
+
+        _detach_shared_metadata(self)
 
     def _calculate_effective_frequency(self) -> float:
         """Calculate effective sampling frequency from time index."""
@@ -203,11 +205,14 @@ class TimeSeriesData(pd.Series):
                     value = copy_module.deepcopy(value)
                 setattr(copied, attr, value)
 
-        # The loop above re-assigns by reference on the shallow path, undoing
-        # what __finalize__ already detached. pandas reaches here internally
-        # (sort_values calls copy(deep=False)), so a "shallow" copy must still
-        # not hand back a shared filter.
-        return _detach_shared_metadata(copied)
+        if not deep:
+            # The loop above re-assigns by reference, undoing what
+            # __finalize__ already detached. pandas reaches here internally
+            # (sort_values calls copy(deep=False)), so a "shallow" copy must
+            # still not hand back a shared filter. The deep branch has already
+            # copied every value, so it needs no second pass.
+            _detach_shared_metadata(copied)
+        return copied
 
     def duration(self) -> float:
         """
@@ -262,8 +267,8 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
                 setattr(base_ts, attr, getattr(self, attr))
-        
-        return base_ts
+
+        return _detach_shared_metadata(base_ts)
 
     def info(self):
         """
@@ -396,7 +401,11 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
                 setattr(new_basets, attr, getattr(self, attr))
-        
+
+        # Before the history update, not after: the entry appended below would
+        # otherwise land in the operand's own history list.
+        _detach_shared_metadata(new_basets)
+
         # Update history
         new_basets._update_history_and_process(
             f"Applied {operation_name} operation",

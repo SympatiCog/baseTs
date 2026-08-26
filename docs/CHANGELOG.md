@@ -305,6 +305,35 @@ Two further corrections while restoring it:
 - **Plotting**: `plot_fft_power(..., highlight_band=(low, high))` shades a frequency band on the
   power spectrum.
 
+### Fixed
+- **Derived objects no longer share the outlier filter.** `outlier_filter` was
+  propagated by reference on every path that produces a new object, so
+  `set_outlier_filter` on a copy, a slice or an arithmetic result reached back
+  and retuned the object it came from. This extends the earlier `__finalize__`
+  repair (mutable metadata is copied, not shared) to `outlier_filter`, and to
+  the paths `__finalize__` never reached: both `copy()` depths, arithmetic
+  operators, `to_basetseries()`, and `TimeSeriesData(some_baseTs)`.
+
+  Arithmetic also shared `history`, so the `"Applied ... operation"` entry the
+  result appends landed in the operand's history as well.
+
+  `lowess_fit` and `outlier_indices` stay shared on derived objects by design:
+  the copy runs on every pandas operation, and deep-copying arrays there would
+  make an O(1) slice O(n) in the parent's metadata.
+
+- **Non-inplace methods no longer reset the outlier filter to defaults.**
+  `_create_new_with_data` omitted `outlier_filter` from the metadata it carried,
+  so `zscale()`, `detrend()`, `rolling_mean()`, `lowpass_at()` and every other
+  method routing through it returned an object configured with `FilterConfig`'s
+  defaults - not even `set_outlier_filter`'s. A configured filter silently
+  reverting to `z_threshold=3.0` changes which points are treated as outliers.
+
+### Changed
+- `copy(deep=False)` now hands back its own `history` and `outlier_filter` while
+  still sharing the data buffer. pandas reaches this path internally -
+  `sort_values()` is implemented as `copy(deep=False)` on sorted input - so a
+  shallow copy the caller never asked for was leaking a shared filter.
+
 ### Planned
 - Additional windowing functions for spectral analysis
 - Enhanced plotting integration with matplotlib
