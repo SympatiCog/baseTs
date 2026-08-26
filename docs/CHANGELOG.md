@@ -146,6 +146,21 @@ that matters — at `delta_frac=0.001` the same series takes 0.03s.
   `TypeError`.
 - `docs/API.md` listed `set_outlier_filter(frac=0.1, z_threshold=2.5)`; the real
   defaults are `frac=0.075, z_threshold=7`.
+- `filter_outliers(qcplot=True)` produced a QC plot that could not show what it
+  claimed, under either value of `inplace` (issue #7):
+
+  - with `inplace=True` the "Original" trace was byte-identical to "Filtered",
+    because `self` had already been overwritten with the filtered data before
+    being handed to `qc_plot` — the plot compared the result against itself;
+  - with `inplace=False` the "Lowess Fit" trace was missing entirely, because
+    the fit is assigned to the returned copy and `self.lowess_fit` stays `None`.
+
+  `filter_outliers` now snapshots the pre-filter state before either branch runs
+  and carries the new fit on that snapshot, so both traces are correct either
+  way. The snapshot is taken only when `qcplot=True`, keeping the copy off the
+  normal filtering path. The `ValueError` this used to raise with
+  `inplace=False` was already resolved when `qc_plot` moved its guard onto
+  `lowess_fit`; this closes the remaining half.
 
 ## [0.2.0] - 2026-08-25
 

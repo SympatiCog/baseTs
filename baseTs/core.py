@@ -1083,7 +1083,13 @@ class baseTs(TimeSeriesData):
         filt, idx, lowess_fit = self.outlier_filter.filter(self, return_lowess=True)
         hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.config.__dict__}"
         last_process = "_outfilt"
-                   
+
+        # Snapshot the pre-filter state before either branch below mutates self.
+        # qc_plot draws ts.data as "Original", so passing self after an inplace
+        # filter plotted the result against itself. Taken only when a plot was
+        # asked for, so the copy stays off the normal filtering path.
+        qc_base = self.copy() if qcplot else None
+
         if inplace is True:
             self.data = filt.data
             self.times = filt.times
@@ -1107,9 +1113,12 @@ class baseTs(TimeSeriesData):
             result = newTs
         
         if qcplot:
-            # Generate QC plot, optionally display on user-provided axis,
-            # and optionally show plot to user.
-            _ = qc_plot(self, filt.data, filt.times, show=show_plot, ax=ax)
+            # Carry the new fit and label on the snapshot, not on self: with
+            # inplace=False the caller's object must come back untouched, and
+            # qc_plot gates its "Lowess Fit" trace on lowess_fit being set.
+            qc_base.lowess_fit = lowess_fit
+            qc_base.last_process = last_process
+            _ = qc_plot(qc_base, filt.data, filt.times, show=show_plot, ax=ax)
         
         return result
             
