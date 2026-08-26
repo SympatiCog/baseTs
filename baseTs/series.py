@@ -63,6 +63,16 @@ class _FinalizingWindow:
 
         return finalizing_call
 
+    def __iter__(self):
+        """
+        Python looks up dunder methods on the type, bypassing __getattr__,
+        so this needs an explicit override. The underlying window's own
+        iteration already yields correctly-finalized baseTs objects (pandas
+        builds each one via the parent's _constructor then __finalize__(s)
+        it against the parent internally) - delegate rather than re-wrap.
+        """
+        return iter(self._window)
+
     def __repr__(self):
         return f"_FinalizingWindow({self._window!r})"
 

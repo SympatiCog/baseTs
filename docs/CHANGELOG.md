@@ -423,6 +423,10 @@ Two further corrections while restoring it:
   metadata (#14).** These build their result directly via the constructor and
   never call `__finalize__`, so `history`, `outlier_filter`, `signal_name` and
   everything else in `_metadata` silently reset to constructor defaults.
+  `rolling()`/`expanding()` now return a thin finalizing wrapper rather than
+  pandas' own window object; `for w in ts.rolling(3): ...` still works
+  (delegated straight to the underlying window's own iteration, which already
+  finalized correctly on its own) - caught by adversarial review of this fix.
 
 - **`nlargest()`/`nsmallest()` results now carry their parent's metadata
   (#14).** They do call `__finalize__`, but lose it at an internal `concat`

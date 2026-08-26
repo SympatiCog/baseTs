@@ -88,6 +88,17 @@ class TestMetadataPropagation:
         assert sliced.signal_name == ts.signal_name
         assert sliced.is_filtered is True
 
+    @pytest.mark.parametrize("op", ["rolling(3)", "expanding()"])
+    def test_window_objects_are_still_iterable(self, ts, op):
+        """
+        pandas supports `for window in ts.rolling(3): ...`, yielding each
+        window as its own baseTs. The finalizing wrapper around rolling()/
+        expanding() must delegate __iter__, not just attribute lookups.
+        """
+        windows = list(eval(f"ts.{op}"))
+        assert len(windows) == len(ts)
+        assert all(isinstance(w, baseTs) for w in windows)
+
     def test_history_is_copied_not_shared(self, ts):
         """
         pandas' default __finalize__ assigns metadata by reference, so parent
