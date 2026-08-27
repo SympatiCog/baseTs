@@ -471,3 +471,48 @@ def test_get_peaks_still_accepts_nonpositive_freq(freq):
     ts = baseTs(sig, np.arange(300) / 30.0, freq=freq)
 
     assert get_peaks(ts) == [50, 150, 250]
+
+
+@pytest.mark.parametrize("bad,label", [
+    (10 ** 400, "OverflowError from float()"),
+    (np.bool_(True), "np.bool_ is not a bool subclass"),
+    (np.array([30.0]), "size-1 array: float() differs across numpy majors"),
+    (np.array([1.0, 2.0]), "multi-element array"),
+])
+def test_validate_sampling_freq_rejects_lookalikes(bad, label):
+    """Each of these reached a non-ValueError or was silently accepted."""
+    from baseTs.utils import validate_sampling_freq
+
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        validate_sampling_freq(bad)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16, np.float64])
+def test_get_peaks_rejects_nonfinite_numpy_scalars(dtype):
+    """np.float32/16 are not float subclasses, so an isinstance gate missed them.
+
+    They fell through to int(), raising the raw conversion error the guard
+    exists to replace - or OverflowError for an infinity, which is not even a
+    ValueError.
+    """
+    from baseTs.utils import get_peaks
+
+    ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+    for bad in (dtype(np.nan), dtype(np.inf)):
+        ts.freq = bad
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            get_peaks(ts)
+
+
+def test_filters_use_the_normalised_rate():
+    """validate_sampling_freq accepts Decimal; the caller must use its return.
+
+    Discarding it left `0.5 * fs` to raise a raw TypeError outside the
+    try/except, so it was not an InvalidParameterError.
+    """
+    from decimal import Decimal
+    from baseTs.filters import highpass_filter, lowpass_filter
+
+    data = np.sin(np.arange(200) / 10.0)
+    assert len(highpass_filter(data, 1.0, Decimal('30'), 4)) == 200
+    assert len(lowpass_filter(data, 1.0, Decimal('30'), 4)) == 200

@@ -33,39 +33,42 @@ def _detach_shared_metadata(obj):
     "history is always a list" hold for every consumer, instead of asking each
     of the nine call sites that touch it to guard for itself.
 
-    The fallback is `else`, not `elif history is None`: a str, tuple or
-    ndarray history is just as fatal to .append() as None, and coercing only
-    None would leave the invariant this docstring claims still false. A str is
-    wrapped rather than exploded into characters - list('note') gives four
-    single-letter entries, which is silent corruption where the old
-    AttributeError was at least loud.
+    Any non-list history is coerced, not just None: a str, tuple or ndarray is
+    just as fatal to .append(). See normalise_history for the coercion rules.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
     return obj
 
 
-def normalise_history(history):
+def normalise_history(history: Any) -> list:
     """Coerce any history value to a fresh list.
 
     The single definition of the "history is always a list" invariant, so the
-    __finalize__ path and _create_new_with_data cannot drift apart. Always
-    returns a new list, never the caller's own object: two series built from
-    one list would otherwise cross-contaminate each other's history.
+    __finalize__ path, _create_new_with_data, the constructor kwarg and
+    _update_history_and_process cannot drift apart. Always returns a new list,
+    never the caller's own object: two series built from one list would
+    otherwise cross-contaminate each other's history.
 
-    A str or bytes is wrapped, not iterated - list('note') gives four
-    single-character entries, which is silent corruption where the old
-    AttributeError was at least loud.
+    Only genuine sequences are iterated. Anything else is wrapped as a single
+    entry, because iterating it loses data silently where the old
+    AttributeError was at least loud:
+
+      - str/bytes: list('note') gives four single-character entries
+      - Mapping:   list({'a': 'x'}) gives ['a'] and drops every value
+      - set:       order varies with PYTHONHASHSEED
+      - iterator:  consumed by the first derivation, empty for every later one
+
+    Wrapping preserves the value so nothing is lost, and the result is still a
+    list, so .append() works and the invariant holds.
     """
     if history is None:
         return []
-    if isinstance(history, (str, bytes)):
-        return [history]
     if isinstance(history, list):
         return list(history)
-    try:
+    if isinstance(history, (tuple, np.ndarray, pd.Series, pd.Index)):
         return list(history)
-    except TypeError:
-        return [history]
+    # Deliberately not a bare `list(history)` fallback - see the docstring.
+    return [history]
 
 
 class _FinalizingWindow:
@@ -365,12 +368,15 @@ class TimeSeriesData(pd.Series):
     def _update_history_and_process(self, hist_msg: str, last_process: str):
         """Helper method to update history and last_process.
 
-        The guard tests for None as well as absence: hasattr alone is True for
-        a history that __finalize__ propagated as None, which then dies on
-        None.append.
+        Normalises rather than testing `is None`. _detach_shared_metadata only
+        runs on *derivation* - copy(), iloc, _create_new_with_data - so it
+        never touches the object an in-place method mutates. A str, tuple or
+        dict history set on an object and then passed to set_timestamp_offset,
+        set_outlier_filter or any inplace=True filter reached .append()
+        untouched and raised the very AttributeError this guard exists to
+        prevent.
         """
-        if getattr(self, 'history', None) is None:
-            self.history = []
+        self.history = normalise_history(getattr(self, 'history', None))
         self.history.append(hist_msg)
         self.last_process = last_process
 
@@ -439,11 +445,13 @@ class TimeSeriesData(pd.Series):
         for key, value in times_info.items():
             print(f"  {key}: {value}")
         
-        # `and self.history` is a truthiness test, which raises on an ndarray
-        # history; len() is unambiguous. Kept in step with baseTs.info().
-        if getattr(self, 'history', None) is not None and len(self.history):
-            print("\nHistory:")
-            for entry in self.history:
+        # normalise_history, not a truthiness test: `and self.history` raises
+        # on an ndarray and len() raises on a generator, and a bare loop over
+        # a str prints one line per character. Kept identical to baseTs.info(),
+        # which prints the header unconditionally - the two used to disagree
+        # on an empty history.
+        print("\nHistory:")
+        for entry in normalise_history(getattr(self, 'history', None)):
                 print(f"  {entry}")
 
     def __repr__(self) -> str:

@@ -48,15 +48,30 @@ def validate_sampling_freq(freq: Any) -> float:
     # everything np.fft.fftfreq can actually use, including 0-d arrays and
     # Decimal, and raises for multi-element arrays.
     #
-    # str and bool are excluded first: float("30") succeeds, and bool is a
-    # Real, so True would otherwise be accepted as 1.0 Hz.
-    if isinstance(freq, (bool, str, bytes)):
+    # str and bool are excluded first: float("30") succeeds, and a bool is a
+    # Real, so True would otherwise be accepted as 1.0 Hz. np.bool_ is listed
+    # explicitly because it is NOT a subclass of Python bool, and it is what
+    # every numpy comparison yields (`arr.mean() > 0`, `np.any(...)`).
+    if isinstance(freq, (bool, np.bool_, str, bytes)):
         raise ValueError(
             f"Invalid sampling frequency: {freq!r} is not a real number."
         )
+    # A size-1 ndarray is rejected rather than unwrapped: float() accepts it on
+    # numpy 1.x (with a DeprecationWarning) and raises on 2.x, so allowing it
+    # would make this guard's accept/reject set differ across the CI matrix -
+    # the same version-sensitivity that produced the objs/input_objs bug in
+    # PR #25. 0-d arrays convert identically on both majors and stay allowed.
+    if isinstance(freq, np.ndarray) and freq.ndim > 0:
+        raise ValueError(
+            f"Invalid sampling frequency: {freq!r} is not a scalar. Pass a "
+            f"single number, e.g. float(arr[0])."
+        )
     try:
         value = float(freq)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError, not just TypeError/ValueError: float(10**400) raises
+        # it, and it is neither - so it would escape both this contract and
+        # the `except ValueError` translation in filters.
         raise ValueError(
             f"Invalid sampling frequency: {freq!r} is not a real number."
         ) from exc
@@ -555,10 +570,19 @@ def get_peaks(
     # here would be an API break for input that worked. NaN is different: it
     # reaches int() and dies with "cannot convert float NaN to integer",
     # naming the conversion rather than the degenerate time base.
-    if isinstance(ts.freq, (int, float)) and not math.isfinite(ts.freq):
+    #
+    # Converted, not isinstance-gated: np.float32/np.float16/np.longdouble are
+    # not float subclasses, so an allowlist silently skipped exactly the numpy
+    # scalar types a freq is most likely to arrive as, letting the raw
+    # conversion error through - and OverflowError, for a float32 infinity.
+    try:
+        rate = float(ts.freq)
+    except (TypeError, ValueError, OverflowError):
+        rate = validate_sampling_freq(ts.freq)   # always raises here
+    if not math.isfinite(rate):
         validate_sampling_freq(ts.freq)
 
-    min_samples = max(25, int(min_dist_secs * ts.freq))
+    min_samples = max(25, int(min_dist_secs * rate))
     peaks, _ = find_peaks(ts.data, distance=min_samples, height=min_height)
     return peaks.tolist()
 

@@ -231,9 +231,13 @@ class baseTs(TimeSeriesData):
         if history is None:
             self.history = [f"Created baseTs object with {len(self)} samples"]
         else:
-            # list(), not the caller's own object: two series built from one
-            # list would otherwise cross-contaminate each other's history.
-            self.history = list(history)
+            # normalise_history, not a bare list(): this is the first place a
+            # history enters the system, and list('note') would explode a str
+            # into four single-character entries that then persist through
+            # every derivation. Also returns a new list rather than the
+            # caller's own object, so two series built from one list do not
+            # cross-contaminate each other's history.
+            self.history = normalise_history(history)
         
         # Calculate frequency if not provided
         if _is_unset(freq):
@@ -346,12 +350,26 @@ class baseTs(TimeSeriesData):
         # self.times by the assignment above) or a genuinely different array,
         # so the O(n) fallback only runs when it can actually change the
         # answer.
-        if new_times is self.times or np.array_equal(new_times, self.times):
+        index_unchanged = (
+            new_times is self.times or np.array_equal(new_times, self.times)
+        )
+        if index_unchanged:
             new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
         
         new_obj = baseTs(new_data, new_times, **new_kwargs)
-        
+
+        # Re-assert the rate after construction when the index did not change.
+        # Passing it as a kwarg is not enough: __init__ routes freq through
+        # _is_unset, which treats NaN as "not supplied" and re-derives from
+        # the index - so a NaN rate was laundered into a fabricated healthy
+        # number. h.freq = nan correctly raised on h.get_frequency_content()
+        # but h.zscale().get_frequency_content() returned a full spectrum at
+        # an invented 10.0 Hz, while h.iloc[:100] kept the NaN. Same series,
+        # opposite behaviour depending only on the derivation path taken.
+        if index_unchanged and 'freq' not in kwargs:
+            new_obj.freq = self.freq
+
         if preserve_metadata:
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
@@ -2226,12 +2244,12 @@ class baseTs(TimeSeriesData):
         for key, value in outlier_filter_params.items():
             print(f"  {key}: {value}")
         
+        # normalise_history, not a truthiness test: `self.history or []`
+        # raises on an ndarray ("truth value ... is ambiguous") after the
+        # header is already on stdout, and a bare loop over a str prints one
+        # line per character. Kept identical to TimeSeriesData.info().
         print("\nHistory:")
-        # `self.history or []` would work for a list, but adds a truthiness
-        # test that raises on an ndarray history ("truth value ... is
-        # ambiguous") after the header is already on stdout, leaving a
-        # half-rendered report where the old bare loop printed fine.
-        for entry in (self.history if self.history is not None else []):
+        for entry in normalise_history(getattr(self, 'history', None)):
             print(f"  {entry}")
             
     def set_timestamp_offset(self, ts_offset: float):

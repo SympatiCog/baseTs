@@ -44,7 +44,7 @@ class InvalidParameterError(FilterError):
 def validate_filter_params(data: ArrayLike, 
                           sampling_freq: float,
                           cutoff_freq: float,
-                          order: int) -> None:
+                          order: int) -> float:
     """
     Validate filter parameters.
     
@@ -53,7 +53,14 @@ def validate_filter_params(data: ArrayLike,
         sampling_freq: Sampling frequency in Hz
         cutoff_freq: Cutoff frequency in Hz
         order: Filter order
-        
+
+    Returns:
+        The sampling frequency normalised to a float. Callers must use this
+        return value rather than their own argument - validate_sampling_freq
+        accepts exact Reals such as Decimal, which pass validation and then
+        die on `0.5 * fs` with a raw TypeError outside this function's
+        try/except, defeating the InvalidParameterError contract.
+
     Raises:
         InvalidParameterError: If parameters are invalid
     """
@@ -66,7 +73,11 @@ def validate_filter_params(data: ArrayLike,
     # rate, but re-raised as InvalidParameterError to keep this module's
     # exception type for callers that catch it.
     try:
-        validate_sampling_freq(sampling_freq)
+        # The normalised float is returned to the caller, not discarded:
+        # validate_sampling_freq deliberately accepts Decimal and other exact
+        # Reals, which then die downstream on `0.5 * fs` with a raw TypeError
+        # - outside this try, so not an InvalidParameterError.
+        sampling_freq = validate_sampling_freq(sampling_freq)
     except ValueError as exc:
         raise InvalidParameterError(str(exc)) from exc
 
@@ -77,6 +88,8 @@ def validate_filter_params(data: ArrayLike,
 
     if order <= 0:
         raise InvalidParameterError("Filter order must be positive")
+
+    return sampling_freq
 
 def sg_filter(data: ArrayLike, 
               window_length: int = 11, 
@@ -127,7 +140,7 @@ def notch_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, fs_hz, cutoff_hz, order)
+    fs_hz = validate_filter_params(data, fs_hz, cutoff_hz, order)
     
     nyquist_rate = fs_hz / 2.0
     notch = cutoff_hz / nyquist_rate
@@ -154,7 +167,7 @@ def highpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, sampling_freq, highpass_freq, order)
+    sampling_freq = validate_filter_params(data, sampling_freq, highpass_freq, order)
     
     nyquist_rate = sampling_freq / 2.0
     high = highpass_freq / nyquist_rate
@@ -181,7 +194,7 @@ def lowpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, fs, cutoff, order)
+    fs = validate_filter_params(data, fs, cutoff, order)
     
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
@@ -214,7 +227,7 @@ def bandpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
+    sample_Hz = validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
     
     # Effective sampling rate of windowed analysis
     window_step = max(1, window_step - overlap)

@@ -665,11 +665,77 @@ class TestHistoryInvariantHoldsEverywhere:
         assert out.history[0] == 'note'
         assert not any(len(e) == 1 for e in out.history)
 
-    @pytest.mark.parametrize("bad", ['oops', ('a',), None])
-    def test_append_after_normalisation(self, bad):
-        ts = self._with_history(bad).iloc[:5]
+    @pytest.mark.parametrize("bad", ['oops', ('a',), {'k': 'v'}, None])
+    def test_append_with_no_intervening_pandas_op(self, bad):
+        """No .iloc first - that would normalise before the helper runs.
+
+        The earlier version of this test sliced first, so it passed with
+        _update_history_and_process's own guard deleted. In-place methods
+        never get that free normalisation.
+        """
+        ts = self._with_history(bad)
         ts._update_history_and_process('did a thing', '_thing')
         assert ts.history[-1] == 'did a thing'
+
+    @pytest.mark.parametrize("bad", ['note', ('a', 'b'), {'k': 'v'}, np.array(['a', 'b'])])
+    def test_inplace_methods_tolerate_non_list_history(self, bad):
+        """_detach_shared_metadata never runs on the object you mutate.
+
+        set_timestamp_offset, set_outlier_filter and inplace=True filters all
+        append directly to the history of an object that was never derived,
+        so they were still raising issue #22's AttributeError.
+        """
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.history = bad
+        ts.set_timestamp_offset(1.5)
+        assert isinstance(ts.history, list)
+        assert ts.history[-1].startswith('Set timestamp offset')
+
+    def test_dict_history_keeps_its_values(self):
+        """list({'a': 'x'}) is ['a'] - the values vanish.
+
+        A bare list() fallback turned a loud AttributeError into silent data
+        loss, which is the failure normalise_history's docstring cites as the
+        reason not to iterate a str.
+        """
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = {'created': 'note1', 'filtered': 'note2'}
+        assert ts.dropna().history == [{'created': 'note1', 'filtered': 'note2'}]
+
+    def test_constructor_history_kwarg_is_normalised(self):
+        """The first place a history enters the system."""
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0, history='note')
+        assert ts.history == ['note']
+        assert baseTs(np.arange(5.0), np.arange(5) / 5.0, history=5).history == [5]
+
+
+class TestNanFreqIsNotLaundered:
+    """A NaN rate must not become a fabricated healthy number.
+
+    __init__ routes freq through _is_unset, which treats NaN as "not
+    supplied" and re-derives from the index, so forwarding one through
+    _create_new_with_data invented a rate the guards then accepted.
+    """
+
+    @staticmethod
+    def _nan_freq():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.freq = np.nan
+        return ts
+
+    def test_derivation_paths_agree(self):
+        ts = self._nan_freq()
+        assert np.isnan(ts.zscale().freq)
+        assert np.isnan(ts.iloc[:100].freq)
+
+    def test_guard_still_fires_after_derivation(self):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            self._nan_freq().zscale().get_frequency_content()
+
+    def test_explicit_freq_still_honoured(self):
+        """A real declared rate must survive an index-preserving transform."""
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0, freq=999.0)
+        assert ts.zscale().freq == 999.0
 
 
 class TestInfoToleratesOddHistory:

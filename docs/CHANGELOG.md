@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
-## [Unreleased] - freq and history guards
+## [Unreleased] — freq and history guards
 
 ### Fixed — degenerate sampling rates are rejected instead of producing NaN output
 
@@ -85,6 +85,11 @@ keep that module's exception type.
 relying on the silent-NaN behaviour will need to guard the rate itself.
 `get_peaks` is deliberately *not* included — its `max(25, ...)` floor makes a
 zero or negative rate harmless there, so only non-finite rates are rejected.
+
+`validate_sampling_freq` rejects a size-1 ndarray rather than unwrapping it:
+`float(np.array([30.0]))` succeeds on numpy 1.x and raises on 2.x, so accepting
+it would make the guard's behaviour differ across the supported matrix. 0-d
+arrays convert identically on both majors and remain accepted.
 
 ### Fixed — a None history no longer crashes the next operation
 
@@ -407,7 +412,7 @@ Two further corrections while restoring it:
   an exact peak count, so it passed or failed based on preceding global random
   state.
 
-## [Unreleased]
+## [Unreleased] — earlier, unreleased notes
 
 ### Added
 - **Relative Band Power / fALFF**:
