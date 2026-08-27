@@ -244,12 +244,15 @@ class TimeSeriesData(pd.Series):
         return _FinalizingWindow(window, self, method)
 
     def rolling(self, *args, **kwargs) -> _FinalizingWindow:
+        """Rolling window whose aggregations propagate metadata - see _FinalizingWindow."""
         return self._finalizing_window('rolling', *args, **kwargs)
 
     def expanding(self, *args, **kwargs) -> _FinalizingWindow:
+        """Expanding window whose aggregations propagate metadata - see _FinalizingWindow."""
         return self._finalizing_window('expanding', *args, **kwargs)
 
     def ewm(self, *args, **kwargs) -> _FinalizingWindow:
+        """EWM window whose aggregations propagate metadata - see _FinalizingWindow."""
         return self._finalizing_window('ewm', *args, **kwargs)
 
     @property
