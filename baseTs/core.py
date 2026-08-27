@@ -1063,6 +1063,26 @@ class baseTs(TimeSeriesData):
                         "Invalid type for tails. Expected str or TailType, "
                         f"got {type(value)}.")
                 return value
+            # bool before the generic branch: bool("False") is True, because
+            # every non-empty string is truthy. That silently inverts a flag
+            # supplied from JSON, a CLI or an env var - and for
+            # fill_input_gaps it would reinstate exactly the data-inventing
+            # behaviour the caller was trying to switch off.
+            if param_type is bool and not isinstance(value, bool):
+                if isinstance(value, str):
+                    if value.strip().lower() in ('true', '1', 'yes'):
+                        return True
+                    if value.strip().lower() in ('false', '0', 'no'):
+                        return False
+                    raise ValueError(
+                        f"Invalid value for {param_name}: {value!r}. "
+                        f"Expected a bool, or one of 'true'/'false'.")
+                if isinstance(value, (int, np.integer)) and value in (0, 1):
+                    return bool(value)
+                raise ValueError(
+                    f"Invalid type for {param_name}. Expected bool, "
+                    f"got {type(value).__name__}")
+
             if not isinstance(value, param_type):
                 try:
                     return param_type(value)
@@ -1139,12 +1159,17 @@ class baseTs(TimeSeriesData):
         # Import plotting here to avoid circular imports
         from .plotting import qc_plot
         
+        # Counted here, not stashed on the filter: copy() deliberately shares
+        # outlier_filter by reference, so an attribute written during filter()
+        # would be visible to - and overwritten by - every object sharing that
+        # filter. The count belongs to this call, not to the filter.
+        n_gaps = int(np.count_nonzero(np.isnan(np.asarray(self.data, dtype=float))))
+
         filt, idx, lowess_fit = self.outlier_filter.filter(self, return_lowess=True)
         hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.config.__dict__}"
         # Say what was left alone, not just what was configured. Silently
         # returning a series that is part synthetic is the failure #36 is
         # about, and the history is where a reader looks to find out.
-        n_gaps = getattr(self.outlier_filter, 'n_input_gaps', 0)
         if n_gaps:
             if self.outlier_filter.config.fill_input_gaps:
                 hist_msg += f"; interpolated {n_gaps} pre-existing gap sample(s)"
