@@ -392,10 +392,11 @@ Breaking changes, for the changelog:
    - **`filter_outliers`.** `baseTs(d, t, freq=999.0).filter_outliers().freq`
      is now `999.0`. On `main`, the deleted `newTs.freq = filt.freq` line
      overwrote a declaration with the filter's derived rate. Section 5's
-     deletion table calls those lines "redundant once the index drives the
-     rate" — that is wrong when a declaration exists to be overwritten;
-     deleting them was a behaviour change, not the pure tidying the table
-     claimed.
+     deletion table originally called those lines "redundant once the index
+     drives the rate", which is wrong when a declaration exists to be
+     overwritten; deleting them was a behaviour change, not pure tidying.
+     That row has since been corrected in place, so it no longer reads as
+     quoted here.
    - **`interp_to_uniform_grid(inplace=False)`.** Same series → `999.0`.
      With `new_grid=None` the grid is `linspace(t0, t1, len(data))`, which
      preserves length and both endpoints even though interior spacing
