@@ -1198,6 +1198,7 @@ In `docs/CHANGELOG.md`, add all seven breaking changes verbatim from the spec's 
 5. `TimeSeriesData._metadata` no longer contains `'freq'`.
 6. `baseTs(data, times, freq=0.0)` and `freq=-1.0` raise at construction.
 7. A `DatetimeIndex` series constructs instead of raising `TypeError`; `.freq` reads NaN.
+8. Arithmetic preserves a declared rate when the result's index is unchanged, where it previously always re-derived. Found during implementation (Task 3 fix round 1) and added to the spec's Consequences section — see it for the full reasoning.
 
 - [ ] **Step 5: Commit**
 

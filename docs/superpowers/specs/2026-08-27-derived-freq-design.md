@@ -365,3 +365,14 @@ Breaking changes, for the changelog:
    such objects; this release stops it from doing so. See Section 3.
 7. `baseTs` constructed on a `DatetimeIndex` no longer raises `TypeError`; it
    builds, and `.freq` reads NaN. See Section 6.
+8. Arithmetic between series preserves an explicitly declared rate when the
+   result's index is unchanged, where it previously always re-derived.
+   Found during implementation, not design. On `main`, a series declaring
+   10.0 Hz over a time base measuring 9.9 Hz reported `a.freq == 10.0` but
+   `(a + b).freq == 9.9` — the same object answering differently for an
+   operation that never touched its index, which is #29's defect living in
+   the arithmetic path rather than a separate one. The token makes both
+   answers 10.0. This narrows #19's fix, which deliberately made arithmetic
+   re-derive; #19's actual failure mode was a stale rate surviving an index
+   *change* (`resample` reporting 100 Hz for a 1 Hz series), and that stays
+   fixed, because a changed index moves the token.
