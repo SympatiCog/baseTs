@@ -534,3 +534,96 @@ class TestHistoryNoneGuard:
         ts._update_history_and_process('did a thing', '_thing')
 
         assert ts.history == before + ['did a thing']
+
+
+class TestFiltersRejectNanFreq:
+    """A degenerate time base must not filter to silent all-NaN output.
+
+    validate_filter_params guarded with `sampling_freq <= 0`, which is False
+    for NaN, so butter()/filtfilt() returned an all-NaN array with only a
+    RuntimeWarning. Same defect class as issue #24, different module.
+    """
+
+    @staticmethod
+    def _degenerate():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.zeros(200))
+        assert np.isnan(ts.freq)
+        return ts
+
+    def test_lowpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().lowpass_filter(0.1)
+
+    def test_highpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().highpass_filter(0.1)
+
+    def test_notch_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().notch_filter(0.1)
+
+    def test_bandpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().bandpass_filter(0.1, 0.4)
+
+    def test_healthy_series_still_filters(self):
+        """The guard must not disturb an ordinary series."""
+        ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
+        out = ts.lowpass_filter(0.5)
+        assert not np.any(np.isnan(np.asarray(out.data, float)))
+
+
+class TestHistoryNoneSurvivesRealOperations:
+    """The None-history guard must hold on the paths users actually take.
+
+    Guarding _update_history_and_process alone was not enough: every
+    non-inplace method routes through _create_new_with_data, and eight sites
+    appended to history directly rather than through the helper.
+    """
+
+    @staticmethod
+    def _none_history():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.history = None
+        return ts
+
+    def test_create_new_with_data_path(self):
+        """zscale() dies in _create_new_with_data's history.copy()."""
+        out = self._none_history().zscale()
+        assert isinstance(out.history, list)
+
+    def test_interp_to_uniform_grid(self):
+        ts = self._none_history()
+        out = ts.interp_to_uniform_grid(np.arange(0, 19, 0.2), inplace=False)
+        assert isinstance(out.history, list)
+        assert any("uniform grid" in e for e in out.history)
+
+    def test_set_outlier_filter(self):
+        ts = self._none_history()
+        ts.set_outlier_filter(frac=0.2)
+        assert isinstance(ts.history, list)
+
+    def test_set_timestamp_offset(self):
+        ts = self._none_history()
+        ts.set_timestamp_offset(1.5)
+        assert isinstance(ts.history, list)
+        assert any("timestamp offset" in e for e in ts.history)
+
+    def test_summary_printer_tolerates_none(self, capsys):
+        """info() iterates history; None raised TypeError."""
+        ts = self._none_history()
+        ts.info()
+        assert "History:" in capsys.readouterr().out
+
+    def test_finalize_normalises_none_history(self):
+        """__finalize__ turns a propagated None into a list."""
+        ts = self._none_history()
+        assert isinstance(ts.iloc[:50].history, list)

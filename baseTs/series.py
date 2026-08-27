@@ -26,9 +26,18 @@ def _detach_shared_metadata(obj):
     set_outlier_filter rebinds the filter rather than mutating it, so sharing
     one is safe by construction. `lowess_fit` and `outlier_indices` are left
     shared, unchanged from before - see #20.
+
+    A None history is normalised to [] rather than left alone. pandas
+    propagates metadata from whichever operand carries it, so an operand
+    without a history hands None to the derived object; normalising here makes
+    "history is always a list" hold for every consumer, instead of asking each
+    of the nine call sites that touch it to guard for itself.
     """
-    if isinstance(getattr(obj, 'history', None), list):
-        object.__setattr__(obj, 'history', list(obj.history))
+    history = getattr(obj, 'history', None)
+    if isinstance(history, list):
+        object.__setattr__(obj, 'history', list(history))
+    elif history is None:
+        object.__setattr__(obj, 'history', [])
     return obj
 
 

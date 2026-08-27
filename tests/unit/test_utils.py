@@ -366,3 +366,47 @@ def test_relative_band_power_rejects_nan_freq():
     ts = _degenerate_freq_ts()
     with pytest.raises(ValueError, match="Invalid sampling frequency"):
         relative_band_power(ts, 0.01, 0.1)
+
+
+def test_validate_sampling_freq_rejects_non_real_scalars():
+    """The documented ValueError holds for non-numeric input too.
+
+    `freq > 0` raises TypeError for a string and the ambiguous-truth-value
+    error for an array; both must surface as the documented ValueError.
+    """
+    from baseTs.utils import validate_sampling_freq
+
+    for bad in ("30", None, np.array([1.0, 2.0]), [1.0], {}):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            validate_sampling_freq(bad)
+
+    # bool is a Real, so True would otherwise be accepted as 1.0 Hz
+    with pytest.raises(ValueError, match="not a real number"):
+        validate_sampling_freq(True)
+
+
+def test_validate_sampling_freq_rejects_infinite():
+    from baseTs.utils import validate_sampling_freq
+
+    for bad in (np.inf, -np.inf, np.nan, 0.0, -1.0):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            validate_sampling_freq(bad)
+
+
+def test_validate_sampling_freq_accepts_usable_rates():
+    """Ordinary rates pass through unchanged, as floats."""
+    from baseTs.utils import validate_sampling_freq
+
+    assert validate_sampling_freq(30) == 30.0
+    assert validate_sampling_freq(0.5) == 0.5
+    assert validate_sampling_freq(np.float64(100.0)) == 100.0
+    assert isinstance(validate_sampling_freq(30), float)
+
+
+def test_get_peaks_rejects_nan_freq():
+    """get_peaks scales min_dist_secs by freq; NaN must not reach int()."""
+    from baseTs.utils import get_peaks
+
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        get_peaks(ts)

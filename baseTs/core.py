@@ -372,8 +372,11 @@ class baseTs(TimeSeriesData):
                 if hasattr(self, attr):
                     setattr(new_obj, attr, getattr(self, attr))
             
-            # Copy history (make a copy to avoid reference issues)
-            new_obj.history = self.history.copy()
+            # Copy history (make a copy to avoid reference issues). Tolerates
+            # None: every non-inplace method routes through here, so a history
+            # that arrived as None would otherwise die on .copy() before
+            # reaching any of the guarded append paths.
+            new_obj.history = list(self.history) if self.history is not None else []
         
         return new_obj
 
@@ -714,8 +717,7 @@ class baseTs(TimeSeriesData):
             newTs.times = new_grid
             newTs.is_uniform_grid = True
             hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz"
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
+            newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_interpolated = True
             newTs.is_uniform_grid = True
             return newTs
@@ -724,8 +726,7 @@ class baseTs(TimeSeriesData):
             self.times = new_grid
             self.is_uniform_grid = True
             hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz"
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             self.is_interpolated = True
             self.is_uniform_grid = True
             return self
@@ -936,15 +937,13 @@ class baseTs(TimeSeriesData):
         if inplace is True:
             self.data = filt
             self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             return self
         else:
             newTs = self.copy()
             newTs.data = filt
             newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process   
+            newTs._update_history_and_process(hist_msg, last_process)   
             return newTs
         
     def set_outlier_filter(self, 
@@ -1085,8 +1084,7 @@ class baseTs(TimeSeriesData):
         last_process = "_outfilt_params"
         
         self.is_outlier_filtered = True
-        self.history.append(hist_msg)
-        self.last_process = last_process
+        self._update_history_and_process(hist_msg, last_process)
     
         return self
 
@@ -1139,8 +1137,7 @@ class baseTs(TimeSeriesData):
             self.times = filt.times
             self.freq = filt.freq
             self.is_outlier_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             self.lowess_fit = lowess_fit
             self.outlier_indices = idx
             result = self 
@@ -1149,8 +1146,7 @@ class baseTs(TimeSeriesData):
             newTs.data = filt.data
             newTs.times = filt.times
             newTs.freq = filt.freq
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
+            newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_outlier_filtered = True
             newTs.lowess_fit = lowess_fit
             newTs.outlier_indices = idx
@@ -2236,7 +2232,7 @@ class baseTs(TimeSeriesData):
             print(f"  {key}: {value}")
         
         print("\nHistory:")
-        for entry in self.history:
+        for entry in (self.history or []):
             print(f"  {entry}")
             
     def set_timestamp_offset(self, ts_offset: float):
@@ -2245,8 +2241,9 @@ class baseTs(TimeSeriesData):
         """
         self.ts_offset = ts_offset
         self.times = self.times + ts_offset
-        self.history.append(f"Set timestamp offset to {ts_offset}")
-        self.last_process = "_tso" + str(ts_offset)
+        self._update_history_and_process(
+            f"Set timestamp offset to {ts_offset}", "_tso" + str(ts_offset)
+        )
         self.has_timestamp_offset = True
 
     def to_dataframe(self, set_index: bool = False) -> pd.DataFrame:

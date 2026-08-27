@@ -55,15 +55,26 @@ def validate_filter_params(data: ArrayLike,
     Raises:
         InvalidParameterError: If parameters are invalid
     """
+    from .utils import validate_sampling_freq
+
     if not isinstance(data, (np.ndarray, list)):
         raise InvalidParameterError("Data must be a numpy array or list")
-    
-    if sampling_freq <= 0:
-        raise InvalidParameterError("Sampling frequency must be positive")
-        
-    if cutoff_freq <= 0 or cutoff_freq >= sampling_freq/2:
+
+    # `sampling_freq <= 0` is False for NaN, so a degenerate time base used to
+    # reach butter()/filtfilt() and come back as an all-NaN array with nothing
+    # but a RuntimeWarning. Delegated so there is one definition of a usable
+    # rate, but re-raised as InvalidParameterError to keep this module's
+    # exception type for callers that catch it.
+    try:
+        validate_sampling_freq(sampling_freq)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+    # Also NaN-blind on its own; ordered after the rate check so a NaN rate
+    # reports the degenerate time base rather than a confusing cutoff error.
+    if not (cutoff_freq > 0) or cutoff_freq >= sampling_freq/2:
         raise InvalidParameterError("Cutoff frequency must be positive and less than Nyquist frequency")
-        
+
     if order <= 0:
         raise InvalidParameterError("Filter order must be positive")
 

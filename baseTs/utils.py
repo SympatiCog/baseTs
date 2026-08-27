@@ -5,6 +5,7 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
+import numbers
 from dataclasses import dataclass
 from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
 import numpy as np
@@ -33,9 +34,20 @@ def validate_sampling_freq(freq: Any) -> float:
         The frequency unchanged, as a float, when it is usable
 
     Raises:
-        ValueError: If the frequency is NaN, infinite, zero, or negative
+        ValueError: If the frequency is not a real scalar, or is NaN,
+            infinite, zero, or negative
     """
-    if freq is None or not (freq > 0) or not np.isfinite(freq):
+    # Type-checked before the comparison so the promise of ValueError holds:
+    # `freq > 0` raises TypeError for a string and the ambiguous-truth-value
+    # error for an array, neither of which this docstring claims. bool is
+    # excluded explicitly - it is a Real, so True would otherwise pass as
+    # 1.0 Hz. freq reaches here from constructor kwargs and from metadata
+    # propagation, so it is not fully sanitised upstream.
+    if isinstance(freq, bool) or not isinstance(freq, numbers.Real):
+        raise ValueError(
+            f"Invalid sampling frequency: {freq!r} is not a real number."
+        )
+    if not (freq > 0) or not np.isfinite(freq):
         raise ValueError(
             f"Invalid sampling frequency: {freq} Hz. A NaN rate usually means "
             f"the time base is degenerate (duplicate or non-increasing "
@@ -514,7 +526,16 @@ def get_peaks(
 
     Returns:
         List of peak indices
+
+    Raises:
+        ValueError: If the sampling frequency is not usable (NaN, zero, or
+            negative)
     """
+    # Without this, a NaN rate reaches int() and raises "cannot convert float
+    # NaN to integer" - loud, but pointing at the conversion rather than at
+    # the degenerate time base that caused it.
+    validate_sampling_freq(ts.freq)
+
     min_samples = max(25, int(min_dist_secs * ts.freq))
     peaks, _ = find_peaks(ts.data, distance=min_samples, height=min_height)
     return peaks.tolist()
