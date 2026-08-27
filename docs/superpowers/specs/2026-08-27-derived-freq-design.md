@@ -242,6 +242,53 @@ the arithmetic path iterate the full `_metadata` and need no such edit —
 - **`test_type_preservation.py:82`** asserts every `_metadata` name exists on
   a constructed object, so it will enforce that `_freq_declaration` is
   initialised in `_initialize_default_metadata`.
+- **A non-numeric index derives NaN rather than raising.**
+  `_calculate_effective_frequency` does `float(index[-1] - index[0])`, which
+  raises `TypeError: ... not 'Timedelta'` on a `DatetimeIndex`. Today that
+  fires at the constructor, because construction derives eagerly. This design
+  deletes the eager derivation, so without a guard the object would build
+  cleanly and raise later from `.freq`, `info()`, `__repr__` or any spectral
+  method — which is #31's own complaint ("the error lands three calls away
+  from the mistake") reintroduced by the fix for it. The derivation therefore
+  catches `TypeError` and returns NaN, and the existing consumption guards
+  produce the error at the point of use. Side effect, listed as breaking
+  change 7: `baseTs` becomes constructible from a `DatetimeIndex`.
+
+## Implementation order
+
+Both external reviewers on the adversarial panel dissented from this design
+in favour of two targeted patches, on blast-radius grounds. Neither dissent
+identified a flaw in the token argument; both argued from size of change.
+The architecture stands, but the objection is answered by shipping it in
+three independently revertable commits rather than one:
+
+1. **The property and validation.** Closes #29 and #31. Touches metadata
+   only — no method changes the numbers it returns. This is the commit the
+   design is really about, and it can be reverted without taking anything
+   else with it.
+2. **The `interpto_hz` grid fix.** Closes #23. The *only* commit that alters
+   numeric output, and independent of the freq mechanism — it would be worth
+   doing even if `freq` stayed a stored attribute. Keeping it separate means
+   a regression in resampled data can be bisected and reverted without
+   losing the metadata fix.
+3. **Cleanup.** The `freq=self.freq` constructor kwargs in `copy`,
+   `to_basetseries` and the shallow-copy fallback, and the
+   `attr not in ['freq', ...]` special-cases. Verified by prototype to be
+   *optional*: a NaN `self.freq` is absorbed by `_is_unset` before reaching
+   the setter, so these paths are correct as they stand and this commit is
+   tidying, not repair. Sequencing it last keeps it out of the risk budget.
+
+A prototype of the property against pandas 3.0.5 confirmed the mechanism
+before any of this was committed to: declarations propagate correctly through
+slicing, arithmetic, `dropna`, `copy`, `copy(deep=True)`, pickle, `concat`
+and `nlargest`, expire correctly on `iloc[::2]` and `sort_values`, and the
+setter rejects every invalid rate. Property reads cost 1.4 µs.
+
+**Not yet verified on pandas 2.x.** The prototype ran on 3.0.5; this project
+floors at `pandas>=2.0.0` and CI exercises 2.3.3 on Python 3.9/3.10. A
+version-matrix divergence in exactly this area produced the `objs` /
+`input_objs` bug in PR #25, so commit 1 is not mergeable until CI is green on
+the full matrix, not merely on the developer's interpreter.
 
 ## Testing
 
@@ -263,6 +310,9 @@ New coverage:
 - `baseTs(..., freq=999.0).zscale().freq == 999.0`, guarding the
   `_create_new_with_data` metadata-list addition in Section 5. Without that
   one-line addition this test fails, and nothing else in the suite catches it.
+- A `DatetimeIndex` series constructs and reads `.freq` as NaN rather than
+  raising `TypeError`, and a spectral method on it raises the guard's
+  `ValueError` rather than the raw conversion error.
 
 Existing tests to rewrite:
 
@@ -313,3 +363,5 @@ Breaking changes, for the changelog:
 6. `baseTs(data, times, freq=0.0)` and `freq=-1.0` now raise at construction.
    They were accepted, deliberately, because `interpto_hz(0)` used to mint
    such objects; this release stops it from doing so. See Section 3.
+7. `baseTs` constructed on a `DatetimeIndex` no longer raises `TypeError`; it
+   builds, and `.freq` reads NaN. See Section 6.
