@@ -5,7 +5,7 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
-import numbers
+import math
 from dataclasses import dataclass
 from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
 import numpy as np
@@ -18,42 +18,60 @@ from scipy.signal import find_peaks
 def validate_sampling_freq(freq: Any) -> float:
     """Reject a sampling rate that cannot produce meaningful frequency bins.
 
-    Written as `not (freq > 0)` rather than `freq <= 0` because every
+    Written as `not (value > 0)` rather than `value <= 0` because every
     comparison against NaN is False, so the latter lets NaN straight through.
     A NaN rate is reachable whenever the time base is degenerate:
     _calculate_effective_frequency returns NaN for a zero or negative
-    duration, and derived objects now compute freq from their own index
-    rather than carrying the parent's forward. Passing that into
-    np.fft.fftfreq(n, d=1/freq) yields NaN frequency bins instead of an
-    error, so the caller gets silent nonsense.
+    duration. Passing that into np.fft.fftfreq(n, d=1/freq) yields NaN
+    frequency bins instead of an error, so the caller gets silent nonsense.
+
+    Note this validates at the point of *consumption*. Nothing validates a
+    rate where it is produced - `freq=` reaches TimeSeriesData.__init__
+    unchecked, and __finalize__ copies it between objects verbatim - so a bad
+    rate is still reported some distance from the mistake that made it.
 
     Args:
         freq: The sampling rate to validate, in Hz
 
     Returns:
-        The frequency unchanged, as a float, when it is usable
+        The frequency as a float, when it is usable
 
     Raises:
         ValueError: If the frequency is not a real scalar, or is NaN,
             infinite, zero, or negative
     """
-    # Type-checked before the comparison so the promise of ValueError holds:
-    # `freq > 0` raises TypeError for a string and the ambiguous-truth-value
-    # error for an array, neither of which this docstring claims. bool is
-    # excluded explicitly - it is a Real, so True would otherwise pass as
-    # 1.0 Hz. freq reaches here from constructor kwargs and from metadata
-    # propagation, so it is not fully sanitised upstream.
-    if isinstance(freq, bool) or not isinstance(freq, numbers.Real):
+    # Converted via float() rather than gated on numbers.Real: Fraction, int
+    # >= 2**63 and np.timedelta64 are all Real and all satisfy `> 0`, but
+    # np.isfinite has no object-dtype loop and raises TypeError on them -
+    # which would break the ValueError promise this docstring makes, and
+    # escape the `except ValueError` translation in filters. float() accepts
+    # everything np.fft.fftfreq can actually use, including 0-d arrays and
+    # Decimal, and raises for multi-element arrays.
+    #
+    # str and bool are excluded first: float("30") succeeds, and bool is a
+    # Real, so True would otherwise be accepted as 1.0 Hz.
+    if isinstance(freq, (bool, str, bytes)):
         raise ValueError(
             f"Invalid sampling frequency: {freq!r} is not a real number."
         )
-    if not (freq > 0) or not np.isfinite(freq):
+    try:
+        value = float(freq)
+    except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"Invalid sampling frequency: {freq} Hz. A NaN rate usually means "
-            f"the time base is degenerate (duplicate or non-increasing "
-            f"timestamps, giving zero duration)."
+            f"Invalid sampling frequency: {freq!r} is not a real number."
+        ) from exc
+
+    if not (value > 0) or not math.isfinite(value):
+        # The degenerate-time-base hint applies to NaN only; a zero, negative
+        # or infinite rate is almost always an explicit `freq=` argument, and
+        # pointing those at the timestamps sends the reader the wrong way.
+        hint = (
+            " A NaN rate usually means the time base is degenerate (duplicate "
+            "or non-increasing timestamps, giving zero duration)."
+            if math.isnan(value) else ""
         )
-    return float(freq)
+        raise ValueError(f"Invalid sampling frequency: {freq} Hz.{hint}")
+    return value
 
 def round_values(x: Any, decimals: int = 4) -> Any:
     """Round a float to a specified number of decimal places,
@@ -383,11 +401,11 @@ def relative_band_power(
             f"({high_freq} Hz)"
         )
 
-    # Before the Nyquist comparison, not after: `high_freq > nan` is False, so
-    # a degenerate rate would slip past that check and surface further
-    # downstream as a confusing "too short for band power analysis".
-    validate_sampling_freq(ts.freq)
-
+    # ts.get_frequency_content() below validates the rate and raises the same
+    # ValueError, so this function needs no guard of its own. The Nyquist
+    # comparison that follows is NaN-blind (`high_freq > nan` is False), but
+    # that only means it declines to reject - the error still arrives, with
+    # the same message, from the call at the end of this function.
     nyquist = ts.freq / 2
     if high_freq > nyquist:
         raise ValueError(
@@ -528,13 +546,17 @@ def get_peaks(
         List of peak indices
 
     Raises:
-        ValueError: If the sampling frequency is not usable (NaN, zero, or
-            negative)
+        ValueError: If the sampling frequency is NaN or infinite
     """
-    # Without this, a NaN rate reaches int() and raises "cannot convert float
-    # NaN to integer" - loud, but pointing at the conversion rather than at
-    # the degenerate time base that caused it.
-    validate_sampling_freq(ts.freq)
+    # Deliberately narrower than validate_sampling_freq: only non-finite
+    # rates are rejected, not `freq <= 0`. int(min_dist_secs * 0.0) is 0 and
+    # the max(25, ...) floor absorbs it, so a zero or negative rate provably
+    # produced correct peaks before and must keep doing so - rejecting it
+    # here would be an API break for input that worked. NaN is different: it
+    # reaches int() and dies with "cannot convert float NaN to integer",
+    # naming the conversion rather than the degenerate time base.
+    if isinstance(ts.freq, (int, float)) and not math.isfinite(ts.freq):
+        validate_sampling_freq(ts.freq)
 
     min_samples = max(25, int(min_dist_secs * ts.freq))
     peaks, _ = find_peaks(ts.data, distance=min_samples, height=min_height)

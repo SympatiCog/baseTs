@@ -627,3 +627,70 @@ class TestHistoryNoneSurvivesRealOperations:
         """__finalize__ turns a propagated None into a list."""
         ts = self._none_history()
         assert isinstance(ts.iloc[:50].history, list)
+
+
+class TestHistoryInvariantHoldsEverywhere:
+    """"history is always a list" must hold on every derivation path.
+
+    An earlier revision normalised only None, and only in __finalize__, which
+    left copy(deep=True) and every non-list type still broken.
+    """
+
+    @staticmethod
+    def _with_history(value):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = value
+        return ts
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b'), np.array(['a', 'b'])])
+    def test_copy_deep_normalises(self, bad):
+        """copy(deep=True) is the default path; deepcopy(None) is None."""
+        assert isinstance(self._with_history(bad).copy().history, list)
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b')])
+    def test_copy_shallow_normalises(self, bad):
+        assert isinstance(self._with_history(bad).copy(deep=False).history, list)
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b')])
+    def test_finalize_normalises(self, bad):
+        assert isinstance(self._with_history(bad).iloc[:5].history, list)
+
+    def test_string_history_is_wrapped_not_exploded(self):
+        """list('note') would give four single-character entries."""
+        assert self._with_history('note').iloc[:5].history == ['note']
+
+    def test_string_history_survives_a_real_operation(self):
+        """zscale() routes through _create_new_with_data's list(...) call."""
+        out = self._with_history('note').zscale()
+        assert out.history[0] == 'note'
+        assert not any(len(e) == 1 for e in out.history)
+
+    @pytest.mark.parametrize("bad", ['oops', ('a',), None])
+    def test_append_after_normalisation(self, bad):
+        ts = self._with_history(bad).iloc[:5]
+        ts._update_history_and_process('did a thing', '_thing')
+        assert ts.history[-1] == 'did a thing'
+
+
+class TestInfoToleratesOddHistory:
+    """info() must render fully whatever history holds.
+
+    `self.history or []` adds a truthiness test that raises on an ndarray
+    after the header is already printed, leaving a half-rendered report.
+    """
+
+    @pytest.mark.parametrize("value", [None, np.array(['a', 'b']), np.array([]), [], ['x']])
+    def test_basets_info(self, value, capsys):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = value
+        ts.info()
+        assert "History:" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("value", [None, np.array(['a', 'b']), np.array([]), [], ['x']])
+    def test_timeseriesdata_info(self, value, capsys):
+        from baseTs.series import TimeSeriesData
+
+        tsd = TimeSeriesData(np.arange(10.0), index=np.arange(10) / 10.0)
+        tsd.history = value
+        tsd.info()
+        assert capsys.readouterr().out  # rendered without raising

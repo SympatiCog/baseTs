@@ -23,8 +23,8 @@ from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
 from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
-                    BandPowerResult)
-from .series import TimeSeriesData, _detach_shared_metadata
+                    BandPowerResult, validate_sampling_freq)
+from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -310,18 +310,9 @@ class baseTs(TimeSeriesData):
             setattr(self, attr, val)
             
 
-    def _update_history_and_process(self, hist_msg: str, last_process: str):
-        """Helper method to update history and last_process.
-
-        Tolerates a missing or None history: __finalize__ propagates metadata
-        from whichever operand carries it, so an operand without a history
-        hands None to the derived object, and the next operation would
-        otherwise die on None.append.
-        """
-        if getattr(self, 'history', None) is None:
-            self.history = []
-        self.history.append(hist_msg)
-        self.last_process = last_process
+    # _update_history_and_process is inherited from TimeSeriesData. The
+    # override that used to sit here was byte-for-byte identical to it once
+    # both grew the same None guard, so it is gone rather than left to drift.
 
     def _update_flags(self, **flags):
         """Helper method to update object flags."""
@@ -372,11 +363,12 @@ class baseTs(TimeSeriesData):
                 if hasattr(self, attr):
                     setattr(new_obj, attr, getattr(self, attr))
             
-            # Copy history (make a copy to avoid reference issues). Tolerates
-            # None: every non-inplace method routes through here, so a history
-            # that arrived as None would otherwise die on .copy() before
-            # reaching any of the guarded append paths.
-            new_obj.history = list(self.history) if self.history is not None else []
+            # Copy history (make a copy to avoid reference issues). Shares one
+            # normaliser with __finalize__: every non-inplace method routes
+            # through here, so a history that arrived as None would otherwise
+            # die on .copy() before reaching any of the guarded append paths,
+            # and a bare list() would explode a str into characters.
+            new_obj.history = normalise_history(self.history)
         
         return new_obj
 
@@ -1789,7 +1781,6 @@ class baseTs(TimeSeriesData):
                 negative), or if the window function is unknown
         """
         from scipy import signal
-        from .utils import validate_sampling_freq
 
         # This method builds its own FFT rather than routing through
         # compute_fft_power, so it needs the guard in its own right.
@@ -2157,7 +2148,11 @@ class baseTs(TimeSeriesData):
                     if isinstance(value, (list, dict, np.ndarray)):
                         value = copy.deepcopy(value)
                     setattr(new_obj, attr, value)
-            
+
+            # deepcopy(None) is None, so without this the default copy path
+            # was the one derivation that could still hand back a history
+            # that is not a list.
+            _detach_shared_metadata(new_obj)
             return new_obj
         else:
             # Shallow copy using pandas Series copy
@@ -2232,7 +2227,11 @@ class baseTs(TimeSeriesData):
             print(f"  {key}: {value}")
         
         print("\nHistory:")
-        for entry in (self.history or []):
+        # `self.history or []` would work for a list, but adds a truthiness
+        # test that raises on an ndarray history ("truth value ... is
+        # ambiguous") after the header is already on stdout, leaving a
+        # half-rendered report where the old bare loop printed fine.
+        for entry in (self.history if self.history is not None else []):
             print(f"  {entry}")
             
     def set_timestamp_offset(self, ts_offset: float):

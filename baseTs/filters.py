@@ -12,6 +12,8 @@ from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
 from scipy import signal
 
+from .utils import validate_sampling_freq
+
 if TYPE_CHECKING:
     from .core import baseTs
 
@@ -55,8 +57,6 @@ def validate_filter_params(data: ArrayLike,
     Raises:
         InvalidParameterError: If parameters are invalid
     """
-    from .utils import validate_sampling_freq
-
     if not isinstance(data, (np.ndarray, list)):
         raise InvalidParameterError("Data must be a numpy array or list")
 

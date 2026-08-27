@@ -54,6 +54,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] - freq and history guards
+
+### Fixed — degenerate sampling rates are rejected instead of producing NaN output
+
+`compute_fft_power` guarded an unusable rate with `if ts.freq <= 0`. Every
+comparison against NaN is False, so a NaN rate passed straight through and the
+FFT returned NaN frequency bins rather than raising. A NaN rate is reachable
+whenever the time base is degenerate: `_calculate_effective_frequency` returns
+NaN for a zero or negative duration.
+
+Three further consumers had the same blind spot, one of them with no rate check
+at all:
+
+- `get_frequency_content` builds its own FFT and had **no guard**; it is the
+  path `get_peak_freq` and `relative_band_power` both take
+- `relative_band_power`'s Nyquist comparison (`high_freq > nan` is False) let a
+  NaN rate through to a confusing "too short for band power analysis"
+- `filters.validate_filter_params` had the identical `sampling_freq <= 0`
+  comparison, so `lowpass_filter` and `highpass_filter` on a degenerate series
+  returned **100% NaN data and reported success**. All four filter methods route
+  through it.
+
+All now share `utils.validate_sampling_freq`, which rejects NaN, infinities,
+zero and negative rates. `filters` re-raises it as `InvalidParameterError` to
+keep that module's exception type.
+
+**Behaviour change:** these five entry points now raise `ValueError` (or
+`InvalidParameterError`) where they previously returned NaN-filled output. Code
+relying on the silent-NaN behaviour will need to guard the rate itself.
+`get_peaks` is deliberately *not* included — its `max(25, ...)` floor makes a
+zero or negative rate harmless there, so only non-finite rates are rejected.
+
+### Fixed — a None history no longer crashes the next operation
+
+`__finalize__` propagates metadata from whichever operand carries it, so an
+operand without a history handed `None` to the derived object and the next
+operation died on `None.append`. `_update_history_and_process` guarded with
+`hasattr`, which is True for a `None` history, so both implementations were
+affected.
+
+`history` is now normalised to a list at every derivation path —
+`__finalize__`, `copy()` at both depths, and `_create_new_with_data` — through
+one shared `normalise_history`. Non-list values (str, tuple, ndarray) are
+coerced rather than left to fail later; a str is wrapped rather than exploded
+into characters. The eight sites that appended to `history` directly now route
+through the guarded helper.
+
+### Known limitations
+
+- `freq` is still copied verbatim by `__finalize__`, so a pandas-derived object
+  (`iloc`, `sort_values`) keeps its parent's rate even when the index changed.
+  `_create_new_with_data` re-derives correctly, so the two paths disagree. See
+  the follow-up issue; this predates the guards above and is why they do not
+  fire on those paths.
+- `get_frequency_content` still has no NaN/**data** check, so gappy data yields
+  a fabricated peak frequency. Tracked separately.
+
 ## [0.3.0] - 2026-08-25
 
 ### Changed — LOWESS backend moved from moepy to statsmodels

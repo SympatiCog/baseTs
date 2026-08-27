@@ -27,18 +27,45 @@ def _detach_shared_metadata(obj):
     one is safe by construction. `lowess_fit` and `outlier_indices` are left
     shared, unchanged from before - see #20.
 
-    A None history is normalised to [] rather than left alone. pandas
+    A history that is not a list is normalised rather than left alone. pandas
     propagates metadata from whichever operand carries it, so an operand
     without a history hands None to the derived object; normalising here makes
     "history is always a list" hold for every consumer, instead of asking each
     of the nine call sites that touch it to guard for itself.
+
+    The fallback is `else`, not `elif history is None`: a str, tuple or
+    ndarray history is just as fatal to .append() as None, and coercing only
+    None would leave the invariant this docstring claims still false. A str is
+    wrapped rather than exploded into characters - list('note') gives four
+    single-letter entries, which is silent corruption where the old
+    AttributeError was at least loud.
     """
-    history = getattr(obj, 'history', None)
-    if isinstance(history, list):
-        object.__setattr__(obj, 'history', list(history))
-    elif history is None:
-        object.__setattr__(obj, 'history', [])
+    object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
     return obj
+
+
+def normalise_history(history):
+    """Coerce any history value to a fresh list.
+
+    The single definition of the "history is always a list" invariant, so the
+    __finalize__ path and _create_new_with_data cannot drift apart. Always
+    returns a new list, never the caller's own object: two series built from
+    one list would otherwise cross-contaminate each other's history.
+
+    A str or bytes is wrapped, not iterated - list('note') gives four
+    single-character entries, which is silent corruption where the old
+    AttributeError was at least loud.
+    """
+    if history is None:
+        return []
+    if isinstance(history, (str, bytes)):
+        return [history]
+    if isinstance(history, list):
+        return list(history)
+    try:
+        return list(history)
+    except TypeError:
+        return [history]
 
 
 class _FinalizingWindow:
@@ -304,13 +331,15 @@ class TimeSeriesData(pd.Series):
                     value = copy_module.deepcopy(value)
                 setattr(copied, attr, value)
 
-        if not deep:
-            # The loop above re-assigns history by reference, undoing what
-            # __finalize__ already detached. pandas reaches here internally
-            # (sort_values calls copy(deep=False)), so a "shallow" copy must
-            # still not hand back a shared history list. The deep branch
-            # deep-copies it in the loop above.
-            _detach_shared_metadata(copied)
+        # Unconditionally, not just when shallow. The loop above re-assigns
+        # history by reference, undoing what __finalize__ already detached,
+        # and pandas reaches here internally (sort_values calls
+        # copy(deep=False)), so a "shallow" copy must not hand back a shared
+        # list. The deep branch already deep-copies a list history, but
+        # deepcopy(None) is None, so copy(deep=True) was the one derivation
+        # path that let a malformed history through - the normalisation has
+        # to run on both.
+        _detach_shared_metadata(copied)
         return copied
 
     def duration(self) -> float:
@@ -410,7 +439,9 @@ class TimeSeriesData(pd.Series):
         for key, value in times_info.items():
             print(f"  {key}: {value}")
         
-        if hasattr(self, 'history') and self.history:
+        # `and self.history` is a truthiness test, which raises on an ndarray
+        # history; len() is unambiguous. Kept in step with baseTs.info().
+        if getattr(self, 'history', None) is not None and len(self.history):
             print("\nHistory:")
             for entry in self.history:
                 print(f"  {entry}")

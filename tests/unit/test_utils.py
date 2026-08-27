@@ -362,7 +362,14 @@ def test_get_peak_freq_rejects_nan_freq():
 
 
 def test_relative_band_power_rejects_nan_freq():
-    """A NaN rate makes the Nyquist comparison silently pass; guard first."""
+    """A NaN rate is rejected, via get_frequency_content downstream.
+
+    This pins behaviour, not a particular guard: relative_band_power has no
+    check of its own, and deliberately so - it calls get_frequency_content,
+    whose guard raises this same error. An earlier revision added a
+    redundant local guard and a test that could not tell the two apart, so
+    the guard could be deleted with the suite still green.
+    """
     ts = _degenerate_freq_ts()
     with pytest.raises(ValueError, match="Invalid sampling frequency"):
         relative_band_power(ts, 0.01, 0.1)
@@ -385,12 +392,47 @@ def test_validate_sampling_freq_rejects_non_real_scalars():
         validate_sampling_freq(True)
 
 
-def test_validate_sampling_freq_rejects_infinite():
+@pytest.mark.parametrize("bad", [np.inf, -np.inf, np.nan, 0.0, -1.0])
+def test_validate_sampling_freq_rejects_unusable_rates(bad):
+    """Non-finite and non-positive rates alike."""
     from baseTs.utils import validate_sampling_freq
 
-    for bad in (np.inf, -np.inf, np.nan, 0.0, -1.0):
-        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        validate_sampling_freq(bad)
+
+
+def test_validate_sampling_freq_hint_is_specific_to_nan():
+    """Only NaN gets the degenerate-time-base hint.
+
+    A zero or negative rate is nearly always an explicit freq= argument;
+    pointing those at the timestamps sends the reader the wrong way.
+    """
+    from baseTs.utils import validate_sampling_freq
+
+    with pytest.raises(ValueError, match="time base is degenerate"):
+        validate_sampling_freq(np.nan)
+
+    for bad in (0.0, -1.0, np.inf):
+        with pytest.raises(ValueError) as exc:
             validate_sampling_freq(bad)
+        assert "time base is degenerate" not in str(exc.value)
+
+
+def test_validate_sampling_freq_accepts_real_types_numpy_handles():
+    """Types float() converts must not be rejected, nor crash on isfinite.
+
+    An earlier revision gated on numbers.Real, which let Fraction through to
+    np.isfinite - no object-dtype loop, so TypeError, breaking the documented
+    ValueError contract and escaping filters' except-ValueError translation.
+    """
+    from fractions import Fraction
+    from decimal import Decimal
+    from baseTs.utils import validate_sampling_freq
+
+    assert validate_sampling_freq(Fraction(30, 1)) == 30.0
+    assert validate_sampling_freq(Decimal("2.5")) == 2.5
+    assert validate_sampling_freq(np.array(30.0)) == 30.0   # 0-d array
+    assert validate_sampling_freq(2 ** 63 + 1) > 0
 
 
 def test_validate_sampling_freq_accepts_usable_rates():
@@ -410,3 +452,22 @@ def test_get_peaks_rejects_nan_freq():
     ts = _degenerate_freq_ts()
     with pytest.raises(ValueError, match="Invalid sampling frequency"):
         get_peaks(ts)
+
+
+@pytest.mark.parametrize("freq", [0.0, -1.0])
+def test_get_peaks_still_accepts_nonpositive_freq(freq):
+    """freq <= 0 provably worked here and must keep working.
+
+    int(min_dist_secs * 0.0) is 0 and the max(25, ...) floor absorbs it, so
+    the rate never influenced the result. An earlier revision applied the
+    full validate_sampling_freq here, which turned a harmless input into a
+    hard error - an unannounced API break, since interpto_hz(0) stamps
+    freq=0 on its own result.
+    """
+    from baseTs.utils import get_peaks
+
+    sig = np.zeros(300)
+    sig[[50, 150, 250]] = 5.0
+    ts = baseTs(sig, np.arange(300) / 30.0, freq=freq)
+
+    assert get_peaks(ts) == [50, 150, 250]
