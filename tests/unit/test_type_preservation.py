@@ -99,6 +99,25 @@ class TestMetadataPropagation:
         assert len(windows) == len(ts)
         assert all(isinstance(w, baseTs) for w in windows)
 
+    def test_genuine_concat_does_not_force_one_operands_metadata(self):
+        """
+        The __finalize__ concat special-case exists for nlargest/nsmallest's
+        internal single-real-object-plus-empty-placeholder concat. A genuine
+        multi-operand pd.concat() must not have its freq/signal_name
+        overwritten by whichever operand happens to be first - the
+        constructor already derives correct values from the real merged
+        index.
+        """
+        a = baseTs(np.arange(5.), np.arange(5) / 10.0, freq=10.0, signal_name="A")
+        b = baseTs(np.arange(5.), np.arange(5) / 10.0 + 100, freq=1.0, signal_name="B")
+
+        import pandas as pd
+        c = pd.concat([a, b])
+
+        assert not np.isclose(c.freq, a.freq)
+        assert np.isclose(c.freq, (len(c) - 1) / c.duration())
+        assert c.signal_name != a.signal_name
+
     def test_history_is_copied_not_shared(self, ts):
         """
         pandas' default __finalize__ assigns metadata by reference, so parent

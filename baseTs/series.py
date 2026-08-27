@@ -45,12 +45,12 @@ class _FinalizingWindow:
     for every other operation.
     """
 
-    def __init__(self, window, parent, method):
+    def __init__(self, window: Any, parent: "TimeSeriesData", method: str) -> None:
         object.__setattr__(self, '_window', window)
         object.__setattr__(self, '_parent', parent)
         object.__setattr__(self, '_method', method)
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         attr = getattr(self._window, name)
         if not callable(attr):
             return attr
@@ -73,7 +73,7 @@ class _FinalizingWindow:
         """
         return iter(self._window)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"_FinalizingWindow({self._window!r})"
 
 
@@ -215,30 +215,42 @@ class TimeSeriesData(pd.Series):
         method == 'concat' is special-cased: nlargest/nsmallest route through
         an internal concat step where `other` is a bare SimpleNamespace, not
         an NDFrame, so pandas' own isinstance(other, NDFrame) branch above
-        skips it and metadata is silently dropped. Recover it from the first
-        concatenated object, per pandas' own subclassing guide.
+        skips it and metadata is silently dropped. `input_objs` is the
+        attribute pandas' own __finalize__ docstring documents for this shape
+        (unlike the `objs` alias, which is not part of the documented
+        contract). Recovery only fires when exactly one of those objects is
+        non-empty: that is nlargest/nsmallest's internal
+        single-real-result-plus-empty-placeholder pattern. A genuine
+        multi-operand pd.concat() has more than one non-empty operand, and
+        must not have its result's freq/signal_name/history overwritten by
+        whichever operand happens to be first - the constructor already
+        derived correct values from the real merged index.
         """
         super().__finalize__(other, method=method, **kwargs)
         if method == 'concat':
-            objs = getattr(other, 'objs', None)
+            objs = getattr(other, 'input_objs', None)
             if objs:
-                source = objs[0]
-                for name in self._metadata:
-                    if hasattr(source, name):
-                        object.__setattr__(self, name, getattr(source, name))
+                nonempty = [obj for obj in objs if len(obj) > 0]
+                if len(nonempty) == 1:
+                    source = nonempty[0]
+                    for name in self._metadata:
+                        if hasattr(source, name):
+                            object.__setattr__(self, name, getattr(source, name))
         return _detach_shared_metadata(self)
 
-    def rolling(self, *args, **kwargs):
-        """See _FinalizingWindow: rolling() never calls __finalize__."""
-        return _FinalizingWindow(super().rolling(*args, **kwargs), self, 'rolling')
+    def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:
+        """See _FinalizingWindow: rolling()/expanding()/ewm() never call __finalize__."""
+        window = getattr(super(), method)(*args, **kwargs)
+        return _FinalizingWindow(window, self, method)
 
-    def expanding(self, *args, **kwargs):
-        """See _FinalizingWindow: expanding() never calls __finalize__."""
-        return _FinalizingWindow(super().expanding(*args, **kwargs), self, 'expanding')
+    def rolling(self, *args, **kwargs) -> _FinalizingWindow:
+        return self._finalizing_window('rolling', *args, **kwargs)
 
-    def ewm(self, *args, **kwargs):
-        """See _FinalizingWindow: ewm() never calls __finalize__."""
-        return _FinalizingWindow(super().ewm(*args, **kwargs), self, 'ewm')
+    def expanding(self, *args, **kwargs) -> _FinalizingWindow:
+        return self._finalizing_window('expanding', *args, **kwargs)
+
+    def ewm(self, *args, **kwargs) -> _FinalizingWindow:
+        return self._finalizing_window('ewm', *args, **kwargs)
 
     @property
     def _constructor(self):

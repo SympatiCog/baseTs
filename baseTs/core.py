@@ -343,7 +343,11 @@ class baseTs(TimeSeriesData):
         # base (resample, remove_outliers, ...) must not carry the old rate
         # forward. When the index changed, omit freq so __init__ derives it.
         new_kwargs = {'signal_name': self.signal_name}
-        if np.array_equal(new_times, self.times):
+        # `is` first: most callers either pass new_times=None (identical to
+        # self.times by the assignment above) or a genuinely different array,
+        # so the O(n) fallback only runs when it can actually change the
+        # answer.
+        if new_times is self.times or np.array_equal(new_times, self.times):
             new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
         

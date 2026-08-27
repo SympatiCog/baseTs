@@ -433,7 +433,13 @@ Two further corrections while restoring it:
   step where pandas passes a bare `SimpleNamespace` rather than an `NDFrame` —
   pandas' own default only copies `_metadata` from an `NDFrame`. Recovered by
   reading it off the first concatenated object instead, the pattern pandas'
-  own subclassing guide documents.
+  own subclassing guide documents. The recovery only fires when the
+  `SimpleNamespace`'s `input_objs` has exactly one non-empty object -
+  nlargest/nsmallest's own internal pattern - so a genuine `pd.concat([a, b])`
+  is unaffected and still derives `freq` from the real merged index rather
+  than inheriting whichever operand concat saw first. An earlier version of
+  this fix matched on any `concat` call and was caught doing exactly that by
+  adversarial review before merge.
 
 ### Changed
 - `copy(deep=False)` hands back its own `history` while still sharing the data
