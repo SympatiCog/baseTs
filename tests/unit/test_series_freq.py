@@ -219,3 +219,76 @@ class TestInterptoHzRoutesThroughTheValidatingSetter:
     def test_interpto_hz_valid_rate_is_honoured(self):
         ts = baseTs(np.sin(np.arange(100) / 10.0), np.arange(100) / 10.0)
         assert ts.interpto_hz(50).freq == pytest.approx(50.0)
+
+
+class TestInterpToHzGrid:
+    """The produced grid must actually have the rate it reports.
+
+    linspace(t0, t1, int(duration * new_freq)) puts N points across the full
+    duration, so the spacing is duration/(N-1) and the real rate falls short
+    by (N-1)/N: interpto_hz(5) measured 4.984985 while reporting 5.
+    """
+
+    @pytest.fixture
+    def ts(self):
+        return baseTs(np.sin(np.arange(1000) / 10.0), np.arange(1000) / 10.0)
+
+    @pytest.mark.parametrize("rate", [3, 5, 7, 20, 100])
+    def test_grid_spacing_is_exact(self, ts, rate):
+        r = ts.interpto_hz(rate)
+        spacing = np.diff(r.times)
+        assert spacing == pytest.approx(1.0 / rate)
+
+    @pytest.mark.parametrize("rate", [3, 5, 7, 20, 100])
+    def test_reported_rate_matches_the_grid(self, ts, rate):
+        r = ts.interpto_hz(rate)
+        derived = (len(r) - 1) / float(r.times[-1] - r.times[0])
+        assert r.freq == pytest.approx(rate)
+        assert derived == pytest.approx(rate)
+
+    def test_same_rate_round_trip_keeps_every_sample(self):
+        """Regression: a bare floor() drops a trailing sample.
+
+        (np.arange(1000)/30.0) spans 998.9999999999999 * 30, not 999.0, so
+        floor(duration * new_freq) + 1 gives 999 - one sample lost to float
+        representation, nothing to do with the grid correction.
+        """
+        ts = baseTs(np.sin(np.arange(1000) / 10.0), np.arange(1000) / 30.0)
+        assert len(ts.interpto_hz(30)) == 1000
+
+    def test_grid_never_exceeds_the_source_range(self, ts):
+        for rate in (3, 5, 7, 20, 100):
+            r = ts.interpto_hz(rate)
+            assert r.times[-1] <= ts.times[-1] + 1e-9
+            assert r.times[0] == pytest.approx(ts.times[0])
+
+    def test_declaration_expires_like_any_other(self, ts):
+        assert ts.interpto_hz(5).iloc[::2].freq == pytest.approx(2.5)
+
+
+class TestInterpToHzRejections:
+    """Issue #31's sharpest production site: the one place a user hands
+    baseTs a rate directly."""
+
+    @pytest.fixture
+    def ts(self):
+        return baseTs(np.sin(np.arange(1000) / 10.0), np.arange(1000) / 10.0)
+
+    @pytest.mark.parametrize("bad", [0, -1, np.inf, np.nan, '30', True])
+    def test_rejects_an_invalid_rate(self, ts, bad):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            ts.interpto_hz(bad)
+
+    def test_rejects_a_degenerate_source(self):
+        """Previously returned a length-0 series stamped with the rate.
+
+        deg.interpto_hz(5) gave (0, 5) - a healthy-looking rate on an empty
+        result, silently.
+        """
+        deg = baseTs(np.sin(np.arange(300) / 10.0), np.zeros(300))
+        with pytest.raises(ValueError, match="degenerate|duration"):
+            deg.interpto_hz(5)
+
+    def test_rejects_a_rate_too_low_to_produce_a_series(self, ts):
+        with pytest.raises(ValueError, match="at least two samples"):
+            ts.interpto_hz(0.001)

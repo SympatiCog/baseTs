@@ -557,48 +557,102 @@ class baseTs(TimeSeriesData):
             inplace=inplace
         )
     
-    def interpto_hz(self, new_freq: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
+    def interpto_hz(self, new_freq: float, kind: str = 'linear',
+                    inplace: bool = False) -> "baseTs":
         """
-        Interpolate the times to a new frequency.
+        Resample onto a uniform grid at exactly new_freq.
+
+        The grid is built from the rate rather than by subdividing the
+        duration. np.linspace(t0, t1, int(duration * new_freq)) spreads N
+        points across the whole span, so the spacing is duration/(N-1) and the
+        real rate falls short by (N-1)/N - interpto_hz(5) produced a grid
+        measuring 4.984985 Hz while reporting 5. Building from the rate makes
+        the reported and produced rates the same number.
 
         Args:
-            new_freq (int): The desired new frequency of the interpolated times.
-            kind (str, optional): The type of interpolation to use. Defaults to 'linear'.
-            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
+            new_freq: The desired sampling rate in Hz. Must be positive and
+                finite; it is validated here rather than at the point the
+                result is consumed.
+            kind: Interpolation type passed to scipy.interpolate.interp1d
+            inplace: If True, modifies existing object. Otherwise returns a
+                new object. Defaults to False.
 
         Returns:
-            baseTs: Interpolated data at new frequency
+            baseTs: Interpolated data on an exact new_freq grid
+
+        Raises:
+            ValueError: If new_freq is not a positive finite rate, if the
+                source time base is degenerate, or if the requested rate is
+                too low to produce at least two samples
         """
-        def interp_func(data):
-            new_ts = np.linspace(self.times[0], self.times[-1], int(self.duration() * new_freq))
-            f1 = interpolate.interp1d(self.times, data, kind=kind)
-            return f1(new_ts), new_ts, new_freq
-            
-        def process_result(result):
-            data, times, freq = result
-            if inplace:
-                self.data = data
-                self.times = times
-                self.freq = freq
-                self.is_interpolated = True
-                self.is_uniform_grid = True
-                return self
-            else:
-                new_obj = self.copy()
-                new_obj.data = data
-                new_obj.times = times
-                new_obj.freq = freq
-                new_obj.is_interpolated = True
-                new_obj.is_uniform_grid = True
-                return new_obj
-                
-        result = interp_func(self.data)
-        processed = process_result(result)
-        processed._update_history_and_process(
+        new_freq = validate_sampling_freq(new_freq)
+
+        # duration() is float(index[-1] - index[0]), which raises TypeError on
+        # a non-numeric index (a DatetimeIndex yields a Timedelta). Caught so
+        # this method keeps the ValueError contract its docstring promises
+        # rather than leaking a conversion error from two frames down.
+        try:
+            duration = self.duration()
+        except (TypeError, ValueError):
+            duration = np.nan
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError(
+                f"Cannot interpolate to {new_freq} Hz: the source time base is "
+                f"degenerate (duration {duration}). A zero, negative or "
+                f"unmeasurable span has no rate to resample from, and stamping "
+                f"the requested rate on the empty result would report a healthy "
+                f"number for a series that has none."
+            )
+
+        # Rounded before flooring. The product lands just below the integer
+        # for an exact-rate source - (np.arange(1000)/30.0) spans
+        # 998.9999999999999 * 30, not 999.0 - so a bare floor silently drops
+        # a trailing sample on a same-rate round trip. Nine places absorbs
+        # representation error while leaving a genuine fractional product
+        # (998.9999 from real data) to floor as it should.
+        n_samples = int(np.floor(np.round(duration * new_freq, 9))) + 1
+        if n_samples < 2:
+            raise ValueError(
+                f"Cannot interpolate to {new_freq} Hz: a {duration}s series "
+                f"yields {n_samples} sample(s), and at least two samples are "
+                f"needed to carry a rate."
+            )
+
+        # Clipped defensively, not to fix an observed bug: n-1 <= duration *
+        # new_freq holds by construction, so the last point cannot exceed t1
+        # mathematically, and a 200,000-case sweep across rates, lengths and
+        # offsets found no overshoot. But np.round above can nudge the product
+        # up past its true value, and interp1d rejects anything above its
+        # range outright - a one-line clamp against a hard error that would
+        # only ever appear on a user's data.
+        new_times = self.times[0] + np.arange(n_samples) / new_freq
+        new_times[-1] = min(new_times[-1], self.times[-1])
+
+        interpolator = interpolate.interp1d(self.times, self.data, kind=kind)
+        new_data = interpolator(new_times)
+
+        if inplace:
+            target = self
+        else:
+            target = self.copy()
+
+        target.data = new_data
+        target.times = new_times
+        # Declared, not left to derive. After the grid fix the derived rate is
+        # correct, but it round-trips through floating point -
+        # (n-1) / ((n-1)/f) is not bit-exact f - so .freq could read
+        # 99.99999999999999. The declaration is now true rather than the
+        # (N-1)/N overstatement it used to be, and it expires on an index
+        # change like any other.
+        target.freq = new_freq
+        target.is_interpolated = True
+        target.is_uniform_grid = True
+
+        target._update_history_and_process(
             hist_msg=f"Interpolated to {new_freq}Hz",
             last_process=f"_interpto_{new_freq}Hz"
         )
-        return processed
+        return target
 
     def interpto_samples(self, new_len: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
         """

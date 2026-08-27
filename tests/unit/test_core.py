@@ -86,8 +86,10 @@ class TestBaseTsTransformations:
         new_freq = 200  # 200 Hz
         ts_interp = simple_baseTsObj.interpto_hz(new_freq)
         
-        # Duration is 10 seconds, so 200 Hz should give 2000 points
-        assert len(ts_interp.data) == 2000
+        # Duration is 10 seconds at exactly 200 Hz: 2000 intervals, 2001 samples.
+        # Was 2000 before the grid fix, when the points were spread across the
+        # span and the real rate was 199.9 Hz.
+        assert len(ts_interp.data) == 2001
         assert ts_interp.freq == new_freq
         assert ts_interp.is_interpolated is True
         
