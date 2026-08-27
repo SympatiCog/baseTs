@@ -123,8 +123,29 @@ The setter is the one door, and it runs `validate_sampling_freq`:
   when `times` is omitted, closing the `[nan, inf, inf, ...]` and
   backwards-index cases above.
 
-`_freq_declaration` is a plain attribute with no descriptor, so nothing that
-copies metadata can install a value the setter never saw. The class is closed.
+`_freq_declaration` is a plain attribute with no descriptor, so no ordinary
+metadata copy can install a value the setter never saw. To be precise about
+the limit of that claim: a caller who writes `ts._freq_declaration = (...)`
+directly, or who passes a duck-typed object with a `.freq` but no
+`._freq_declaration` through `_copy_metadata_from_basetseries`
+(`series.py:209-227`), still bypasses validation. That is the same protection
+every other `_metadata` attribute on this class has always had, not a gap
+specific to `freq` — but "closed" overstates it, and the docstring should say
+"single supported door", not "closed".
+
+**Reversing an earlier decision: `freq <= 0` at the constructor.**
+`tests/unit/test_utils.py:457-473` asserts that `baseTs(sig, times, freq=0.0)`
+constructs and that `get_peaks` still works on it. It passes today, and it
+exists because an earlier revision applied `validate_sampling_freq` at that
+consumption site and that was judged an unannounced API break. This design
+reverses it deliberately. The test's own stated justification is that
+`freq <= 0` objects must be tolerated *because* `interpto_hz(0)` mints them —
+and Section 4 makes `interpto_hz(0)` raise, so nothing can mint one any more.
+With the premise gone, tolerating the value at a production site buys nothing
+and costs the chokepoint. The test is rewritten to assert what it actually
+cares about — that `get_peaks` never consults the rate — by calling
+`get_peaks` directly rather than by constructing an invalid object. Listed as
+breaking change 6.
 
 **One deliberate inconsistency.** `baseTs.__init__` uses `freq=np.nan` as its
 public "not supplied" sentinel, so `baseTs(data, times, freq=np.nan)` must
@@ -138,9 +159,25 @@ Changing the sentinel is a separate breaking change and is out of scope.
 The grid is rebuilt to have exact spacing:
 
 ```python
-n = int(np.floor(duration * new_freq)) + 1
+n = int(np.floor(np.round(duration * new_freq, 9))) + 1
 new_ts = t0 + np.arange(n) / new_freq
 ```
+
+**The rounding is not cosmetic.** A bare `floor(duration * new_freq)` silently
+drops a trailing sample on a same-rate round trip, because the product lands
+just below the integer:
+
+```python
+times = np.arange(1000) / 30.0
+float(times[-1] - times[0]) * 30.0   # 998.9999999999999, not 999.0
+```
+
+so `interpto_hz(30)` on a 1000-sample 30 Hz series would return 999 samples.
+That loss has nothing to do with the grid correction this section is making,
+and it must not be shipped as though it did. Rounding to 9 decimal places
+absorbs representation error while leaving a genuine fractional product
+(998.9999 from real data) to floor as it should. The 30 Hz round trip goes in
+the test suite as a regression case.
 
 `new_freq` is validated first. A degenerate source — duration ≤ 0, a
 non-monotonic or non-unique source index, or fewer than two resulting samples
@@ -163,14 +200,32 @@ old grid did not have the rate it claimed.
 
 The design pays for itself in removed machinery:
 
+This table was rebuilt against the actual call sites after review; the first
+draft was written from memory and was missing two required deletions, one
+required *addition*, and mislabelled a method.
+
 | Location | Removed |
 |---|---|
-| `core.py:343-371` | `index_unchanged` computation, conditional `freq` kwarg, post-construction re-assert in `_create_new_with_data` — it now just carries `_freq_declaration` in its metadata copy |
+| `core.py:343-371` | `index_unchanged` computation, conditional `freq` kwarg, post-construction re-assert in `_create_new_with_data` |
+| `core.py:242-244` | the second derive-into-storage branch, `if _is_unset(freq): self.freq = self._calculate_effective_frequency()`, in `baseTs.__init__`. **This one is load-bearing**: left in place it routes a degenerate index's NaN through the validating setter, so `baseTs(data, np.zeros(200))` would raise at construction — contradicting Section 6 and breaking the very test rewrite this spec proposes |
 | `core.py:290` | manual `self.freq = self._calculate_effective_frequency()` in the `times` setter |
-| `core.py:1189,1199` | both `self.freq = filt.freq` lines in `remove_outliers` — redundant once the index drives the rate, and a live hazard once the setter validates, since `filt.freq` can be NaN |
+| `core.py:1189,1199` | both `self.freq = filt.freq` lines in **`filter_outliers`** (not `remove_outliers`, which never touches `.freq` — it routes through `_create_new_with_data`) — redundant once the index drives the rate, and a live hazard once the setter validates, since `filt.freq` can be NaN |
+| `core.py:2193-2196`, `core.py:2222` | `freq=self.freq` passed as a constructor kwarg by `copy(deep=True)` and by the shallow-copy `isinstance` fallback. Same fix as `to_basetseries`: carry `_freq_declaration` as metadata rather than round-tripping the rate through a constructor |
 | `series.py:401-406` | `to_basetseries` passing `freq=self.freq` as a constructor kwarg — which the validating setter would reject for a degenerate source — together with the `attr not in ['freq', 'signal_name']` special-case that exists to compensate for it. It carries `_freq_declaration` like any other metadata name instead |
 | `series.py:583` | the matching `attr not in ['freq', 'signal_name']` special-case in the arithmetic path |
 | `series.py:183-184` | the `else` branch of `TimeSeriesData.__init__` that derives a rate into storage. Nothing replaces it: an object with no declaration derives on read |
+
+One **addition** is required, and it is easy to miss because everything else
+here is a deletion. `_create_new_with_data` does not iterate `self._metadata`
+— it copies a hand-curated `metadata_attrs` list (`core.py:375-378`) that
+deliberately excludes `'freq'`. `_freq_declaration` must be added to that
+list. Without it, deleting `core.py:343-371` as the table says silently drops
+every declaration across index-preserving operations:
+`baseTs(..., freq=999.0).zscale().freq` would stop returning 999.0, breaking
+this design's own acceptance criterion and the existing
+`test_explicit_freq_still_honoured` (`test_core.py:735`). `to_basetseries` and
+the arithmetic path iterate the full `_metadata` and need no such edit —
+`_create_new_with_data` is the lone outlier.
 
 ### 6. Edge cases
 
@@ -201,7 +256,13 @@ New coverage:
 - Setter rejections at assignment and at both constructors, including the
   no-`times` path that builds the index from the rate.
 - `interpto_hz` grid exactness across several rates, plus rejection of a
-  degenerate source and of an invalid `new_freq`.
+  degenerate source and of an invalid `new_freq`. Includes the same-rate
+  round trip `baseTs(data, np.arange(1000)/30.0).interpto_hz(30)` as an
+  explicit regression case for the floating-point undershoot in Section 4 —
+  it must return 1000 samples, not 999.
+- `baseTs(..., freq=999.0).zscale().freq == 999.0`, guarding the
+  `_create_new_with_data` metadata-list addition in Section 5. Without that
+  one-line addition this test fails, and nothing else in the suite catches it.
 
 Existing tests to rewrite:
 
@@ -223,9 +284,20 @@ state the class can no longer enter.
 
 Closes #29, #31 and #23.
 
-Sets up #20. `lowess_fit` and `outlier_indices` have the same "did the index
-change?" question, and the token answers it — invalidate to `None` on
-mismatch, as agreed, rather than reslicing.
+Helps with #20, but less than the first draft claimed. `lowess_fit` and
+`outlier_indices` have the same "did the index change?" question, and the
+token *shape* is reusable for it — invalidate to `None` on mismatch, as
+agreed, rather than reslicing. But the equivalence argument that makes the
+token airtight here does not carry over: it holds because the token is
+exactly what `_calculate_effective_frequency` reads, and those two attributes
+are position-indexed, so an interior permutation that leaves the token intact
+would still invalidate them. #20 needs a stricter check than this one.
+
+Documentation to update, none of which the first draft mentioned:
+`docs/EXAMPLES.md:1064` assigns `ts.freq = sampling_rate`; `docs/API.md`,
+`docs/API_SERIES.md` and `docs/USER_GUIDE.md` all document `freq` as a stored
+attribute and `interpto_hz`'s current grid behaviour. `docs/CHANGELOG.md`
+takes the six breaking changes.
 
 Breaking changes, for the changelog:
 
@@ -238,3 +310,6 @@ Breaking changes, for the changelog:
 4. `interpto_hz` raises on a degenerate source instead of returning an empty
    series stamped with the requested rate.
 5. `TimeSeriesData._metadata` no longer contains `'freq'`.
+6. `baseTs(data, times, freq=0.0)` and `freq=-1.0` now raise at construction.
+   They were accepted, deliberately, because `interpto_hz(0)` used to mint
+   such objects; this release stops it from doing so. See Section 3.
