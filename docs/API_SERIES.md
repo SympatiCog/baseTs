@@ -371,13 +371,25 @@ weekly_patterns = df.groupby('day_of_week')['value'].mean()
 
 ## TimeSeriesData Class Reference
 
+### `freq` Property
+
+**`freq`** *(property, float)* — the sampling rate in Hz. Derived from the
+time index unless you set one explicitly. An explicitly set rate is honoured
+only while the index still matches the one it was set against; any operation
+that changes the index (`iloc`, `sort_values`, `resample`, `dropna`) re-derives.
+Setting a non-positive, non-finite or non-numeric rate raises `ValueError`.
+Reads as `NaN` when the index cannot support a rate — fewer than two samples,
+a zero or negative span, or a non-numeric index such as a `DatetimeIndex`.
+
 ### Metadata Attributes
 
 The TimeSeriesData class preserves metadata through pandas' `_metadata` attribute:
 
 ```python
 _metadata = [
-    'freq',                    # Sampling frequency in Hz
+    '_freq_declaration',      # An explicitly set sampling rate, plus the
+                               # index token it was set against (internal;
+                               # read/write the public `freq` property instead)
     'signal_name',            # Name of the signal
     'history',                # Processing history list
     'is_filtered',            # Whether the data has been filtered
@@ -390,6 +402,12 @@ _metadata = [
     'last_process'            # Last processing operation performed
 ]
 ```
+
+`freq` is no longer one of these entries — see [`freq` Property](#freq-property)
+above. `__finalize__`, `copy()` and arithmetic all just carry
+`_freq_declaration` along like any other metadata entry; it is the `freq`
+property getter that re-checks it against the live index on every read and
+decides whether it still applies.
 
 ### Constructor
 

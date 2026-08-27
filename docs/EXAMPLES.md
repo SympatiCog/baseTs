@@ -1061,6 +1061,9 @@ def comprehensive_spectral_analysis(ts, sampling_rate=None):
         Dictionary containing various spectral analyses
     """
     if sampling_rate is not None:
+        # This declares sampling_rate as the rate for ts; the declaration
+        # holds only until an operation changes ts's time index, at which
+        # point .freq re-derives from the index again.
         ts.freq = sampling_rate
     
     # Window functions to compare
