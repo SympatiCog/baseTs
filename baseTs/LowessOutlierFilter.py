@@ -63,6 +63,17 @@ class FilterConfig:
         If > 0, LOWESS fits only at points separated by ``delta_frac * ptp(x)``
         and interpolates between them, trading a little accuracy for speed on
         long series. 0.0 fits every point. Successor to the removed ``num_fits``.
+    fill_input_gaps : bool
+        Whether to also interpolate NaNs that were already present in the input.
+        Defaults to False: an acquisition dropout is not an outlier, and filling
+        one returns synthetic samples with nothing left to mark them. Samples
+        this filter blanks itself are always interpolated regardless - that is
+        what the filter is for.
+
+        Set True to restore the pre-#36 behaviour, which filled every gap
+        without bound. Prefer pipelining ``interpolate_gaps(limit=...)``
+        yourself, which lets you bound how much absence you are willing to
+        invent through.
     """
     z_threshold: float = 3.0
     max_iterations: int = 5
@@ -73,6 +84,7 @@ class FilterConfig:
     use_median: bool = True
     it: int = 0
     delta_frac: float = 0.0
+    fill_input_gaps: bool = False
 
 class LowessOutlierFilter:
     """
@@ -124,6 +136,12 @@ class LowessOutlierFilter:
         data_values = self._validate_data(data)
         time_index = self._validate_time_index(data, data_values, time_index)
         self._validate_window(data_values)
+
+        # Gaps present in the input are a different population from the samples
+        # this filter blanks itself, and only the latter are its business to
+        # fill. Captured before the loop because after it the two are
+        # indistinguishable - both are just NaN. See #36.
+        input_gaps = np.isnan(data_values)
 
         # Initialize tracking variables
         cleaned_data = data_values.copy()
@@ -184,6 +202,22 @@ class LowessOutlierFilter:
         cleaned_data = self._interpolate_missing_values(cleaned_data, time_index)
         if return_lowess and np.any(np.isnan(lowess_line)):
             lowess_line = self._interpolate_missing_values(lowess_line, time_index)
+
+        # Put the input's own gaps back. _interpolate_missing_values fills
+        # every NaN without bound - and its ffill().bfill() fallback fills
+        # leading and trailing gaps with a *constant*, which reads downstream
+        # as real low-variance signal. Interpolating first and restoring after
+        # is deliberate: an outlier sitting next to a gap still gets filled
+        # from its real neighbours rather than being stranded.
+        self.n_input_gaps = int(np.count_nonzero(input_gaps))
+        if self.n_input_gaps and not self.config.fill_input_gaps:
+            # np.array(..., copy=True): _interpolate_missing_values returns
+            # pandas' .values, which can be a read-only view.
+            cleaned_data = np.array(cleaned_data, dtype=float, copy=True)
+            cleaned_data[input_gaps] = np.nan
+            if return_lowess:
+                lowess_line = np.array(lowess_line, dtype=float, copy=True)
+                lowess_line[input_gaps] = np.nan
 
         # Convert back to original type if needed
         if isinstance(data, baseTs):

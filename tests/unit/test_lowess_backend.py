@@ -181,6 +181,26 @@ class TestNonFiniteInput:
         cleaned, idx, line = f.filter(d, t, return_lowess=True)
         assert len(cleaned) == len(d)
         assert len(line) == len(d)
+
+        # The two input NaNs stay NaN (#36): an acquisition gap is not an
+        # outlier, and filling it returns synthetic samples with nothing left
+        # to mark them. This assertion used to be `np.all(np.isfinite(...))`,
+        # which pinned the fill-everything behaviour that issue removed.
+        assert np.isnan(cleaned[[10, 400]]).all()
+        others = np.delete(cleaned, [10, 400])
+        assert np.all(np.isfinite(others))
+
+    def test_nan_input_is_filled_when_asked(self, spiked):
+        """fill_input_gaps=True restores the pre-#36 behaviour."""
+        d, t = spiked
+        d = d.copy()
+        d[10] = np.nan
+        d[400] = np.nan
+        f = LowessOutlierFilter(
+            FilterConfig(frac=0.1, z_threshold=5.0, fill_input_gaps=True)
+        )
+        cleaned, idx, line = f.filter(d, t, return_lowess=True)
+        assert len(cleaned) == len(d)
         assert np.all(np.isfinite(cleaned))
 
     def test_inf_input_does_not_crash(self, spiked):

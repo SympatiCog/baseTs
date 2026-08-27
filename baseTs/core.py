@@ -968,7 +968,8 @@ class baseTs(TimeSeriesData):
                         num_fits: Optional[int] = None,
                         *,
                         it: Optional[int] = None,
-                        delta_frac: Optional[float] = None) -> "baseTs":
+                        delta_frac: Optional[float] = None,
+                        fill_input_gaps: Optional[bool] = None) -> "baseTs":
         """
         Set outlier filter parameters.
 
@@ -1001,6 +1002,10 @@ class baseTs(TimeSeriesData):
             Keyword-only so that it cannot occupy num_fits' old positional slot.
         delta_frac : float, optional, keyword-only
             Speed/accuracy tradeoff for long series. See FilterConfig.
+        fill_input_gaps : bool, optional, keyword-only
+            Whether to also interpolate NaNs that were already in the input.
+            Defaults to False - see FilterConfig. Samples this filter blanks
+            itself are always interpolated regardless.
         num_fits : int, optional
             Deprecated and ignored. Was the number of LOWESS anchor fits under the
             moepy backend, which has been replaced by statsmodels. Use
@@ -1038,7 +1043,8 @@ class baseTs(TimeSeriesData):
             'use_median': bool,
             'tails': (str, TailType),
             'it': int,
-            'delta_frac': float
+            'delta_frac': float,
+            'fill_input_gaps': bool
         }
 
         def _coerce(param_name, value):
@@ -1079,6 +1085,7 @@ class baseTs(TimeSeriesData):
                 'interpolation_method': interpolation_method,
                 'order': order, 'use_median': use_median, 'tails': tails,
                 'it': it, 'delta_frac': delta_frac,
+                'fill_input_gaps': fill_input_gaps,
             }
             updates = {name: _coerce(name, value)
                        for name, value in supplied.items() if value is not None}
@@ -1134,6 +1141,15 @@ class baseTs(TimeSeriesData):
         
         filt, idx, lowess_fit = self.outlier_filter.filter(self, return_lowess=True)
         hist_msg = f"Filtered outliers with lowess: {self.outlier_filter.config.__dict__}"
+        # Say what was left alone, not just what was configured. Silently
+        # returning a series that is part synthetic is the failure #36 is
+        # about, and the history is where a reader looks to find out.
+        n_gaps = getattr(self.outlier_filter, 'n_input_gaps', 0)
+        if n_gaps:
+            if self.outlier_filter.config.fill_input_gaps:
+                hist_msg += f"; interpolated {n_gaps} pre-existing gap sample(s)"
+            else:
+                hist_msg += f"; left {n_gaps} pre-existing gap sample(s) as NaN"
         last_process = "_outfilt"
 
         # Snapshot the pre-filter state before either branch below mutates self.

@@ -54,6 +54,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — bounded gap handling in filter_outliers
+
+### Fixed — filter_outliers no longer invents data in pre-existing gaps
+
+**Behaviour change.** `filter_outliers` used to fill every NaN in the series,
+without bound, and left nothing to mark which samples were synthetic. On a
+600-sample series a 400-sample acquisition gap came back fully populated:
+
+| input | pre-NaN | post-NaN (before) | post-NaN (now) |
+|---|---|---|---|
+| mid gap, 2 samples | 2 | 0 | 2 |
+| mid gap, 100 samples | 100 | 0 | 100 |
+| mid gap, 400 of 600 | 400 | 0 | 400 |
+| leading gap, 200 samples | 200 | 0 | 200 |
+| trailing gap, 200 samples | 200 | 0 | 200 |
+
+Leading and trailing gaps were worse than interpolated: the `ffill().bfill()`
+fallback filled them with a **constant**, which reads downstream as genuine
+low-variance signal.
+
+Two populations of NaN were being conflated. Samples the filter blanks itself
+should be interpolated — that is what the filter is for. NaNs already in the
+input are acquisition dropouts, and the filter was never asked to invent them.
+By the time the post-processing step ran, the two were indistinguishable. The
+input mask is now captured before the iteration loop and restored afterwards.
+
+`lowess_fit` gets the same treatment, so the QC plot no longer draws a
+confident fit across a region with no data.
+
+**Migration:** if you relied on receiving a gap-free series, either set
+`fill_input_gaps=True` on the filter to restore the old behaviour, or — better
+— pipeline `interpolate_gaps(limit=...)` yourself, which lets you bound how
+much absence you are willing to interpolate through. The number of samples left
+as NaN is now recorded in the history entry.
+
+The filter's *fit* already handled gaps correctly and is unchanged: LOWESS
+regresses against real timestamps over the valid mask, so gap duration is
+respected and no structure is fabricated in the fit itself.
+
 ## [Unreleased] — freq and history guards
 
 ### Fixed — degenerate sampling rates are rejected instead of producing NaN output
