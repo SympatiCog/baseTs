@@ -71,6 +71,34 @@ def normalise_history(history: Any) -> list:
     return [history]
 
 
+def _freq_token(index: Any) -> tuple:
+    """Fingerprint an index for the purpose of sampling-rate derivation.
+
+    Deliberately exactly the three values _calculate_effective_frequency
+    reads - length, first timestamp, last timestamp - and nothing else. That
+    is what makes the token trustworthy rather than merely convenient: two
+    equal tokens guarantee that re-deriving the rate right now would return
+    the number it returned when the token was taken, so a declaration stamped
+    against it is as valid as it was on the day it was made.
+
+    It follows that the token is blind to interior reordering. That is
+    correct, not a gap - the derivation is blind to it too, and an index
+    permutation that leaves length and endpoints alone leaves the mean rate
+    alone. It does NOT mean the grid is still uniform; nothing in this class
+    has ever claimed that.
+
+    Args:
+        index: Any pandas Index or sequence supporting len() and [] access
+
+    Returns:
+        A tuple safe to compare with ==; (0,) for an empty index
+    """
+    n = len(index)
+    if n == 0:
+        return (0,)
+    return (n, index[0], index[-1])
+
+
 class _FinalizingWindow:
     """
     Wraps a pandas window object (Rolling/Expanding/ExponentialMovingWindow)
@@ -227,10 +255,27 @@ class TimeSeriesData(pd.Series):
         _detach_shared_metadata(self)
 
     def _calculate_effective_frequency(self) -> float:
-        """Calculate effective sampling frequency from time index."""
+        """Derive the sampling frequency from the time index.
+
+        Returns NaN rather than raising for any index this cannot measure -
+        too short, zero or negative duration, or a non-numeric dtype. NaN is
+        the value the consumption guards (validate_sampling_freq and friends)
+        are built to reject with a message naming the degenerate time base;
+        a raw TypeError escaping from here would name the subtraction
+        instead, some distance from the mistake.
+
+        The TypeError arm specifically covers a DatetimeIndex, where
+        index[-1] - index[0] is a Timedelta and float() refuses it.
+
+        Returns:
+            Samples per unit time, or NaN when the index cannot support a rate
+        """
         if len(self.index) < 2:
             return np.nan
-        duration = float(self.index[-1] - self.index[0])
+        try:
+            duration = float(self.index[-1] - self.index[0])
+        except (TypeError, ValueError):
+            return np.nan
         if duration <= 0:
             return np.nan
         # n samples span n-1 intervals. Using len(self) here over-reported the
