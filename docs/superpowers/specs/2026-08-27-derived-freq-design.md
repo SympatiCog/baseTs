@@ -344,10 +344,16 @@ are position-indexed, so an interior permutation that leaves the token intact
 would still invalidate them. #20 needs a stricter check than this one.
 
 Documentation to update, none of which the first draft mentioned:
-`docs/EXAMPLES.md:1064` assigns `ts.freq = sampling_rate`; `docs/API.md`,
-`docs/API_SERIES.md` and `docs/USER_GUIDE.md` all document `freq` as a stored
-attribute and `interpto_hz`'s current grid behaviour. `docs/CHANGELOG.md`
-takes the six breaking changes.
+`docs/EXAMPLES.md:1064` assigns `ts.freq = sampling_rate`; `docs/API.md` and
+`docs/API_SERIES.md` document `freq` as a stored attribute.
+`docs/CHANGELOG.md` takes the breaking changes.
+
+Corrected during implementation: this list originally named
+`docs/USER_GUIDE.md` too, and that was wrong. Every `freq` reference in that
+file is either a constructor kwarg with a positive rate or a read of
+`ts.freq`, both of which remain valid — there was no stale claim to fix.
+`interpto_hz` turned out to have no prior documentation at all in any of
+these files, so its entry is new rather than a rewrite.
 
 Breaking changes, for the changelog:
 
