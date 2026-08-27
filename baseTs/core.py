@@ -2239,7 +2239,6 @@ class baseTs(TimeSeriesData):
             new_obj = baseTs(
                 data=self.values.copy(),
                 times=self.index.values.copy(),
-                freq=self.freq,
                 signal_name=self.signal_name
             )
             
@@ -2264,8 +2263,8 @@ class baseTs(TimeSeriesData):
             copied = super().copy(deep=False)
             # Ensure it's still a baseTs object
             if not isinstance(copied, baseTs):
-                copied = baseTs(copied.values, copied.index.values, 
-                              freq=self.freq, signal_name=self.signal_name)
+                copied = baseTs(copied.values, copied.index.values,
+                              signal_name=self.signal_name)
                 # Copy metadata
                 for attr in self._metadata:
                     if hasattr(self, attr):

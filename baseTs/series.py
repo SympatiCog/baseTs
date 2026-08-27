@@ -498,23 +498,24 @@ class TimeSeriesData(pd.Series):
     def to_basetseries(self):
         """
         Convert back to a legacy baseTs object for compatibility.
-        
+
         Returns:
             baseTs object with equivalent data and metadata
         """
         from .core import baseTs
-        
+
         # Create baseTs object with numpy arrays
         base_ts = baseTs(
             data=self.values,
             times=self.index.values,
-            freq=self.freq,
             signal_name=self.signal_name
         )
-        
-        # Copy metadata
+
+        # Copy metadata. freq is no longer special-cased out: the rate is not
+        # in _metadata any more, _freq_declaration is, and the constructed
+        # object derives from an index identical to this one.
         for attr in self._metadata:
-            if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
+            if hasattr(self, attr) and attr != 'signal_name':
                 setattr(base_ts, attr, getattr(self, attr))
 
         return _detach_shared_metadata(base_ts)
@@ -686,23 +687,13 @@ class TimeSeriesData(pd.Series):
             signal_name=self.signal_name
         )
 
-        # Copy relevant metadata. This carries _freq_declaration like any
-        # other name in _metadata - the 'freq' entry in the exclusion list
-        # below is stale (there is no metadata attribute called 'freq' any
-        # more) and excludes nothing.
-        #
-        # That is safe rather than a regression: the property re-validates
-        # the copied declaration against *this* object's own index. Two
-        # operands built on the same time base produce a result whose index
-        # is that same time base, so the declaration's token still matches
-        # and it is correctly honoured - the left operand's declared rate
-        # actually does describe the sum. Two operands on different time
-        # bases produce a union index the token cannot match, so it correctly
-        # re-derives instead, which is the "left operand's freq no longer
-        # describes it" case this comment used to describe by unconditionally
-        # dropping freq, before there was a token to check.
+        # Copy relevant metadata. _freq_declaration rides along like any other
+        # name: arithmetic between two operands on different time bases
+        # produces a union index, whose token will not match the declaration,
+        # so the result re-derives. The explicit freq exclusion this loop used
+        # to carry is what the token now does properly.
         for attr in self._metadata:
-            if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
+            if hasattr(self, attr) and attr != 'signal_name':
                 setattr(new_basets, attr, getattr(self, attr))
 
         # Before the history update, not after: the entry appended below would
