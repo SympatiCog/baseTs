@@ -454,23 +454,39 @@ def test_get_peaks_rejects_nan_freq():
         get_peaks(ts)
 
 
-@pytest.mark.parametrize("freq", [0.0, -1.0])
-def test_get_peaks_still_accepts_nonpositive_freq(freq):
-    """freq <= 0 provably worked here and must keep working.
+class _FreqStub:
+    """The whole interface get_peaks needs: .data and .freq.
 
-    int(min_dist_secs * 0.0) is 0 and the max(25, ...) floor absorbs it, so
-    the rate never influenced the result. An earlier revision applied the
-    full validate_sampling_freq here, which turned a harmless input into a
-    hard error - an unannounced API break, since interpto_hz(0) stamps
-    freq=0 on its own result.
+    Used where the point is get_peaks' own tolerance of a rate, not baseTs'
+    willingness to hold one. baseTs now rejects freq <= 0 at construction, so
+    routing these cases through the constructor would test the constructor.
+    """
+
+    def __init__(self, data, freq):
+        self.data = data
+        self.freq = freq
+
+
+@pytest.mark.parametrize("freq", [0.0, -1.0])
+def test_get_peaks_ignores_nonpositive_freq(freq):
+    """freq <= 0 provably never influenced the result and still must not.
+
+    int(min_dist_secs * 0.0) is 0 and the max(25, ...) floor absorbs it. This
+    guards get_peaks' deliberately-narrow guard: it rejects only non-finite
+    rates, not non-positive ones, and must stay narrower than
+    validate_sampling_freq.
+
+    Previously constructed a baseTs with freq=0.0. baseTs now refuses that at
+    construction - the premise for tolerating such objects was that
+    interpto_hz(0) minted them, and interpto_hz(0) now raises. The subject
+    here was always get_peaks' arithmetic, so it tests that directly.
     """
     from baseTs.utils import get_peaks
 
     sig = np.zeros(300)
     sig[[50, 150, 250]] = 5.0
-    ts = baseTs(sig, np.arange(300) / 30.0, freq=freq)
 
-    assert get_peaks(ts) == [50, 150, 250]
+    assert get_peaks(_FreqStub(sig, freq)) == [50, 150, 250]
 
 
 @pytest.mark.parametrize("bad,label", [
@@ -497,11 +513,10 @@ def test_get_peaks_rejects_nonfinite_numpy_scalars(dtype):
     """
     from baseTs.utils import get_peaks
 
-    ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+    sig = np.sin(np.arange(200) / 10.0)
     for bad in (dtype(np.nan), dtype(np.inf)):
-        ts.freq = bad
         with pytest.raises(ValueError, match="Invalid sampling frequency"):
-            get_peaks(ts)
+            get_peaks(_FreqStub(sig, bad))
 
 
 def test_filters_use_the_normalised_rate():
