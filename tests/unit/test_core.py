@@ -494,3 +494,43 @@ class TestLowessDetrend:
         """
         with pytest.raises(ValueError, match=r"must be in \(0, 1\]"):
             self._ts(spiked).lowess_detrend(frac=bad_frac)
+
+
+class TestHistoryNoneGuard:
+    """A `history` of None must not crash the next operation (issue #22).
+
+    __finalize__ propagates metadata from whichever operand carries it, so a
+    None history can reach a derived object from any operand lacking one. Both
+    _update_history_and_process implementations must tolerate it.
+    """
+
+    def test_basets_update_history_tolerates_none(self):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = None
+
+        derived = ts.copy()
+        derived._update_history_and_process('did a thing', '_thing')
+
+        assert derived.history == ['did a thing']
+        assert derived.last_process == '_thing'
+
+    def test_timeseriesdata_update_history_tolerates_none(self):
+        """The superclass guard is hasattr-only, so None slips past it too."""
+        from baseTs.series import TimeSeriesData
+
+        tsd = TimeSeriesData(np.arange(10.0), index=np.arange(10) / 10.0)
+        tsd.history = None
+
+        tsd._update_history_and_process('did a thing', '_thing')
+
+        assert tsd.history == ['did a thing']
+        assert tsd.last_process == '_thing'
+
+    def test_existing_history_is_appended_not_replaced(self):
+        """The guard must not discard a history that is genuinely present."""
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        before = list(ts.history)
+
+        ts._update_history_and_process('did a thing', '_thing')
+
+        assert ts.history == before + ['did a thing']

@@ -311,3 +311,58 @@ def test_falff(lf_baseTsObj):
         falff(lf_baseTsObj, 0.01, 0.08, ratio='power'),
         relative_band_power(lf_baseTsObj, 0.01, 0.08, ratio='power'),
     )
+
+
+def _degenerate_freq_ts():
+    """A series whose time base is degenerate, so freq derives to NaN.
+
+    _calculate_effective_frequency returns NaN when duration <= 0. This is its
+    documented contract; the point of these tests is that consumers of freq
+    reject the NaN loudly instead of propagating it into their output.
+    """
+    ts = baseTs(np.array([1.0, 2.0, 3.0, 4.0]), np.array([0.0, 0.0, 0.0, 0.0]))
+    assert np.isnan(ts.freq), "fixture precondition: freq should derive to NaN"
+    return ts
+
+
+def test_compute_fft_power_rejects_nan_freq():
+    """A NaN sampling rate raises rather than producing NaN frequencies.
+
+    `nan <= 0` is False, so a bare `if ts.freq <= 0` guard lets NaN through
+    and the FFT silently returns NaN frequency bins (issue #24).
+    """
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        compute_fft_power(ts)
+
+
+def test_compute_fft_power_still_rejects_nonpositive_freq():
+    """The original zero/negative rejection is preserved."""
+    ts = baseTs(np.array([1.0, 2.0, 3.0, 4.0]), np.arange(4) / 4.0, freq=0.0)
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        compute_fft_power(ts)
+
+
+def test_get_frequency_content_rejects_nan_freq():
+    """get_frequency_content computes its own FFT and needs its own guard.
+
+    It does not route through compute_fft_power, so fixing that guard alone
+    leaves this path returning NaN bins.
+    """
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        ts.get_frequency_content()
+
+
+def test_get_peak_freq_rejects_nan_freq():
+    """get_peak_freq inherits the guard through get_frequency_content."""
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        get_peak_freq(ts)
+
+
+def test_relative_band_power_rejects_nan_freq():
+    """A NaN rate makes the Nyquist comparison silently pass; guard first."""
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        relative_band_power(ts, 0.01, 0.1)

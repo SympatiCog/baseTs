@@ -325,8 +325,13 @@ class TimeSeriesData(pd.Series):
         return len(self)
 
     def _update_history_and_process(self, hist_msg: str, last_process: str):
-        """Helper method to update history and last_process."""
-        if not hasattr(self, 'history'):
+        """Helper method to update history and last_process.
+
+        The guard tests for None as well as absence: hasattr alone is True for
+        a history that __finalize__ propagated as None, which then dies on
+        None.append.
+        """
+        if getattr(self, 'history', None) is None:
             self.history = []
         self.history.append(hist_msg)
         self.last_process = last_process

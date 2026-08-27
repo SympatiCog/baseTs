@@ -14,6 +14,35 @@ from scipy.signal import find_peaks
 # if TYPE_CHECKING:
 #     from .core import baseTs
 
+def validate_sampling_freq(freq: Any) -> float:
+    """Reject a sampling rate that cannot produce meaningful frequency bins.
+
+    Written as `not (freq > 0)` rather than `freq <= 0` because every
+    comparison against NaN is False, so the latter lets NaN straight through.
+    A NaN rate is reachable whenever the time base is degenerate:
+    _calculate_effective_frequency returns NaN for a zero or negative
+    duration, and derived objects now compute freq from their own index
+    rather than carrying the parent's forward. Passing that into
+    np.fft.fftfreq(n, d=1/freq) yields NaN frequency bins instead of an
+    error, so the caller gets silent nonsense.
+
+    Args:
+        freq: The sampling rate to validate, in Hz
+
+    Returns:
+        The frequency unchanged, as a float, when it is usable
+
+    Raises:
+        ValueError: If the frequency is NaN, infinite, zero, or negative
+    """
+    if freq is None or not (freq > 0) or not np.isfinite(freq):
+        raise ValueError(
+            f"Invalid sampling frequency: {freq} Hz. A NaN rate usually means "
+            f"the time base is degenerate (duplicate or non-increasing "
+            f"timestamps, giving zero duration)."
+        )
+    return float(freq)
+
 def round_values(x: Any, decimals: int = 4) -> Any:
     """Round a float to a specified number of decimal places,
     or return the value unchanged if not a float."""
@@ -130,9 +159,8 @@ def compute_fft_power(
     # Input validation
     if len(ts.data) == 0:
         raise ValueError("Time series data is empty")
-    if ts.freq <= 0:
-        raise ValueError(f"Invalid sampling frequency: {ts.freq} Hz")
-    
+    validate_sampling_freq(ts.freq)
+
     data = ts.data.copy()
     
     # Validate data doesn't contain NaN or Inf
@@ -342,6 +370,11 @@ def relative_band_power(
             f"low_freq ({low_freq} Hz) must be less than high_freq "
             f"({high_freq} Hz)"
         )
+
+    # Before the Nyquist comparison, not after: `high_freq > nan` is False, so
+    # a degenerate rate would slip past that check and surface further
+    # downstream as a confusing "too short for band power analysis".
+    validate_sampling_freq(ts.freq)
 
     nyquist = ts.freq / 2
     if high_freq > nyquist:

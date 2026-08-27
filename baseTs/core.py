@@ -311,7 +311,15 @@ class baseTs(TimeSeriesData):
             
 
     def _update_history_and_process(self, hist_msg: str, last_process: str):
-        """Helper method to update history and last_process."""
+        """Helper method to update history and last_process.
+
+        Tolerates a missing or None history: __finalize__ propagates metadata
+        from whichever operand carries it, so an operand without a history
+        hands None to the derived object, and the next operation would
+        otherwise die on None.append.
+        """
+        if getattr(self, 'history', None) is None:
+            self.history = []
         self.history.append(hist_msg)
         self.last_process = last_process
 
@@ -1779,9 +1787,18 @@ class baseTs(TimeSeriesData):
             
         Returns:
             Tuple of (frequencies, power_spectrum)
+
+        Raises:
+            ValueError: If the sampling frequency is not usable (NaN, zero, or
+                negative), or if the window function is unknown
         """
         from scipy import signal
-        
+        from .utils import validate_sampling_freq
+
+        # This method builds its own FFT rather than routing through
+        # compute_fft_power, so it needs the guard in its own right.
+        validate_sampling_freq(self.freq)
+
         data = self.values.copy()
         
         # Apply window function if specified
