@@ -754,7 +754,12 @@ class baseTs(TimeSeriesData):
 
         Returns:
             new_ts: baseTs object with uniform sampling grid
-                    Note: freq is recalculated to match the new grid.
+                    Note: freq is recalculated to match the new grid, unless
+                    a declared rate survives the change - see breaking
+                    change 8. With new_grid=None the new grid is
+                    linspace(t0, t1, len(data)), which preserves
+                    (len, first, last), so a declaration on the source
+                    carries over even though interior spacing changed.
         """
         if new_grid is None:
             # create new evenly spaced grid at the effective sample rate
@@ -766,8 +771,11 @@ class baseTs(TimeSeriesData):
         f1 = interpolate.interp1d(self.times, self.data, kind=kind)
         last_process = "_unigrid"
         transfer = f1(new_grid)
-        # freq is not computed here - the times setter below recomputes it
-        # via _calculate_effective_frequency, which does not over-report by
+        # freq is not assigned here - it is read, not computed, whenever the
+        # property is accessed below. A surviving declaration is honoured (see
+        # breaking change 8: this grid preserves (len, first, last) when
+        # new_grid is None); otherwise the getter derives via
+        # _calculate_effective_frequency, which does not over-report by
         # n/(n-1) the way len(new_grid) / self.duration() did.
         if inplace is False:
             newTs = self.copy()

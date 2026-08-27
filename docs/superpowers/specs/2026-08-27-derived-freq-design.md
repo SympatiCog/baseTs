@@ -179,9 +179,13 @@ absorbs representation error while leaving a genuine fractional product
 (998.9999 from real data) to floor as it should. The 30 Hz round trip goes in
 the test suite as a regression case.
 
-`new_freq` is validated first. A degenerate source — duration ≤ 0, a
-non-monotonic or non-unique source index, or fewer than two resulting samples
-— raises, replacing today's silent empty-result-stamped-5-Hz behaviour.
+`new_freq` is validated first. A degenerate source — `duration <= 0`, or a
+requested rate too low to yield at least two resulting samples — raises,
+replacing today's silent empty-result-stamped-5-Hz behaviour. Those are the
+only two gates: a non-unique source index does not raise on its own
+(`interpto_hz(5)` on a duplicated time base still returns 25 samples), and a
+non-monotonic one raises only when it happens to drive `duration` to zero or
+negative — there is no separate monotonicity or uniqueness check.
 
 The result also **declares** `new_freq`. Not because the grid needs it: after
 the fix the rate derives correctly. It is because the derived value
@@ -209,7 +213,7 @@ required *addition*, and mislabelled a method.
 | `core.py:343-371` | `index_unchanged` computation, conditional `freq` kwarg, post-construction re-assert in `_create_new_with_data` |
 | `core.py:242-244` | the second derive-into-storage branch, `if _is_unset(freq): self.freq = self._calculate_effective_frequency()`, in `baseTs.__init__`. **This one is load-bearing**: left in place it routes a degenerate index's NaN through the validating setter, so `baseTs(data, np.zeros(200))` would raise at construction — contradicting Section 6 and breaking the very test rewrite this spec proposes |
 | `core.py:290` | manual `self.freq = self._calculate_effective_frequency()` in the `times` setter |
-| `core.py:1189,1199` | both `self.freq = filt.freq` lines in **`filter_outliers`** (not `remove_outliers`, which never touches `.freq` — it routes through `_create_new_with_data`) — redundant once the index drives the rate, and a live hazard once the setter validates, since `filt.freq` can be NaN |
+| `core.py:1189,1199` | both `self.freq = filt.freq` lines in **`filter_outliers`** (not `remove_outliers`, which never touches `.freq` — it routes through `_create_new_with_data`) — a live hazard once the setter validates, since `filt.freq` can be NaN. **Not the pure redundancy this row originally claimed**: `filter_outliers` preserves the index's `(len, first, last)`, so where a declaration exists, deleting these lines stops it from being overwritten by the filter's derived rate — a behaviour change, listed as breaking change 8, not tidying |
 | `core.py:2193-2196`, `core.py:2222` | `freq=self.freq` passed as a constructor kwarg by `copy(deep=True)` and by the shallow-copy `isinstance` fallback. Same fix as `to_basetseries`: carry `_freq_declaration` as metadata rather than round-tripping the rate through a constructor |
 | `series.py:401-406` | `to_basetseries` passing `freq=self.freq` as a constructor kwarg — which the validating setter would reject for a degenerate source — together with the `attr not in ['freq', 'signal_name']` special-case that exists to compensate for it. It carries `_freq_declaration` like any other metadata name instead |
 | `series.py:583` | the matching `attr not in ['freq', 'signal_name']` special-case in the arithmetic path |
@@ -371,14 +375,28 @@ Breaking changes, for the changelog:
    such objects; this release stops it from doing so. See Section 3.
 7. `baseTs` constructed on a `DatetimeIndex` no longer raises `TypeError`; it
    builds, and `.freq` reads NaN. See Section 6.
-8. Arithmetic between series preserves an explicitly declared rate when the
-   result's index is unchanged, where it previously always re-derived.
-   Found during implementation, not design. On `main`, a series declaring
-   10.0 Hz over a time base measuring 9.9 Hz reported `a.freq == 10.0` but
-   `(a + b).freq == 9.9` — the same object answering differently for an
-   operation that never touched its index, which is #29's defect living in
-   the arithmetic path rather than a separate one. The token makes both
-   answers 10.0. This narrows #19's fix, which deliberately made arithmetic
-   re-derive; #19's actual failure mode was a stale rate surviving an index
-   *change* (`resample` reporting 100 Hz for a 1 Hz series), and that stays
-   fixed, because a changed index moves the token.
+8. Any operation whose result index has the same `(len, first, last)` as its
+   input now preserves an explicitly declared rate, where it previously
+   re-derived or overwrote it — general, not arithmetic-specific, because
+   those three values are exactly the token. Found during implementation,
+   not design, and verified in three instances:
+   - **Arithmetic.** On `main`, a series declaring 10.0 Hz over a time base
+     measuring 9.9 Hz reported `a.freq == 10.0` but `(a + b).freq == 9.9` —
+     the same object answering differently for an operation that never
+     touched its index, which is #29's defect living in the arithmetic path
+     rather than a separate one. The token makes both answers 10.0. This
+     narrows #19's fix, which deliberately made arithmetic re-derive;
+     #19's actual failure mode was a stale rate surviving an index *change*
+     (`resample` reporting 100 Hz for a 1 Hz series), and that stays fixed,
+     because a changed index moves the token.
+   - **`filter_outliers`.** `baseTs(d, t, freq=999.0).filter_outliers().freq`
+     is now `999.0`. On `main`, the deleted `newTs.freq = filt.freq` line
+     overwrote a declaration with the filter's derived rate. Section 5's
+     deletion table calls those lines "redundant once the index drives the
+     rate" — that is wrong when a declaration exists to be overwritten;
+     deleting them was a behaviour change, not the pure tidying the table
+     claimed.
+   - **`interp_to_uniform_grid(inplace=False)`.** Same series → `999.0`.
+     With `new_grid=None` the grid is `linspace(t0, t1, len(data))`, which
+     preserves length and both endpoints even though interior spacing
+     changed, so the token still matches.

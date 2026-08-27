@@ -397,9 +397,11 @@ _metadata = [
     'is_uniform_grid',        # Whether the data is on a uniform time grid
     'ts_offset',              # Timestamp offset in seconds
     'has_timestamp_offset',   # Whether a timestamp offset has been applied
-    'filtered_indices',       # Indices that were filtered/removed
+    'outlier_indices',        # Indices that were filtered/removed as outliers
     'lowess_fit',             # LOWESS fit data (if applicable)
-    'last_process'            # Last processing operation performed
+    'last_process',           # Last processing operation performed
+    'is_outlier_filtered',    # Whether filter_outliers has been applied
+    'outlier_filter',         # The LowessOutlierFilter instance used to filter outliers
 ]
 ```
 

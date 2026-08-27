@@ -69,7 +69,7 @@ raises immediately instead of surfacing much later as a NaN FFT bin or a
 wrong filter cutoff. `interpto_hz` was also rebuilt so the grid it produces
 actually measures the rate it reports.
 
-Eight breaking changes fall out of these two fixes:
+Nine breaking changes fall out of these two fixes:
 
 1. **A declared rate expires when the index changes.**
    `baseTs(..., freq=999).iloc[:50].freq` now returns the rate derived from
@@ -118,16 +118,39 @@ Eight breaking changes fall out of these two fixes:
    catching `TypeError` to detect a `DatetimeIndex` input, check
    `np.isnan(ts.freq)` instead, or resample to a numeric index first.
 
-8. **Arithmetic between two series now preserves an explicitly declared
-   rate when the result's index is unchanged**, where it previously always
-   re-derived. Found during implementation, not design: a series declaring
-   10.0 Hz over a time base measuring 9.9 Hz reported `a.freq == 10.0` but
-   `(a + b).freq == 9.9` — the same object answering differently for an
-   operation that never touched its index. **Migrate:** code that relied on
-   arithmetic always re-deriving `freq`, even when the index didn't change,
-   will now see the operand's declared rate instead. See
+8. **Any operation whose result index has the same `(len, first, last)` now
+   preserves a declared rate**, where it previously re-derived or
+   overwrote it. This is general — not specific to arithmetic — because the
+   token the property compares against is exactly those three values.
+   Three instances are known on this branch:
+   - **Arithmetic.** Found during implementation, not design: a series
+     declaring 10.0 Hz over a time base measuring 9.9 Hz reported
+     `a.freq == 10.0` but `(a + b).freq == 9.9` — the same object answering
+     differently for an operation that never touched its index.
+   - **`filter_outliers`.** `baseTs(d, t, freq=999.0).filter_outliers().freq`
+     is now `999.0`. On `main`, a `newTs.freq = filt.freq` assignment (this
+     branch deleted it) overwrote the declaration with the filter's derived
+     rate; deleting it was a behaviour change, not the redundant tidying the
+     design's deletion table described it as.
+   - **`interp_to_uniform_grid(inplace=False)`.** Same series → `999.0`.
+     With `new_grid=None` the grid is `linspace(t0, t1, len(data))`, which
+     preserves length and both endpoints, so the token survives even though
+     interior spacing changed.
+
+   **Migrate:** code that relied on any index-preserving operation always
+   re-deriving `freq` will now see the operand's declared rate instead. See
    `docs/superpowers/specs/2026-08-27-derived-freq-design.md` (Consequences,
    item 8) for the full reasoning.
+
+9. **A pickle written by an older version can fail to load.** If its
+   `_metadata` contained `'freq'` set to a non-positive or NaN value —
+   plausible, since `main` stored NaN for any degenerate index and
+   `interpto_hz(0)` minted `freq=0` objects — unpickling now raises
+   `ValueError`. pandas' `__setstate__` restores attributes with
+   `object.__setattr__`, which honours the `freq` data descriptor and so
+   runs the validating setter on every old pickle, not just new ones.
+   **Migrate:** don't unpickle old objects that carried a degenerate rate;
+   re-create them from their underlying data and times instead.
 
 ## [Unreleased] — bounded gap handling in filter_outliers
 

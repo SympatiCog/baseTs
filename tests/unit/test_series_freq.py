@@ -167,13 +167,26 @@ class TestValidationAtProductionSites:
         with pytest.raises(ValueError, match="Invalid sampling frequency"):
             ts.freq = bad
 
-    @pytest.mark.parametrize("bad", [0.0, -1.0, np.inf])
+    @pytest.mark.parametrize("bad", [0.0, -1.0, np.inf, '30', b'30'])
     def test_index_built_from_a_bad_rate_is_rejected(self, bad):
         """baseTs(data, freq=...) with no times builds the index FROM the rate.
 
         freq=0 produced times [nan, inf, inf, inf, inf]; freq=-10 ran the
         index backwards; freq=inf collapsed it to all-zeros. A third
         production site neither #29 nor #31 named.
+
+        The numeric cases (0.0, -1.0, np.inf) still raise ValueError even
+        without the `freq = validate_sampling_freq(freq)` call this test
+        exists to pin: np.arange(len(data)) / freq divides cleanly for all
+        three (no exception, just a degenerate times array), so the raw
+        value survives to reach `super().__init__(freq=freq, ...)` a few
+        lines down, and the `freq` property setter validates it there
+        instead - later, but still a ValueError. '30' and b'30' are what
+        make the line load-bearing - without it, `np.arange(...) / '30'`
+        raises a raw TypeError ("ufunc 'divide' not supported...") before
+        the property setter is ever reached, because a non-numeric type has
+        no such division fallback. Trimming the non-numeric cases back out
+        of this list would silently reopen that gap.
         """
         with pytest.raises(ValueError, match="Invalid sampling frequency"):
             baseTs(np.ones(5), freq=bad)
