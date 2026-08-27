@@ -160,12 +160,24 @@ class TestMathematicalOperations:
         assert isinstance(result_pow, baseTs), "Power should return baseTs object"
         np.testing.assert_array_almost_equal(result_pow.data, ts1.data ** 2)
         
-        # Test that metadata is preserved. freq is derived from the result's
-        # index rather than carried from the left operand (#19) - here that
-        # matches ts1's explicit freq=10.0 only when the times array is
-        # itself uniform at 10 Hz, which sample_data's np.linspace is not.
-        assert np.isclose(result_add.freq, (len(result_add) - 1) / result_add.duration())
+        # Test that metadata is preserved. ts1 and ts2 share the same `times`
+        # array, so ts1 + ts2 leaves the index untouched - the declared
+        # freq=10.0's token still matches, so it is honoured rather than
+        # re-derived (#29). This is what makes the arithmetic path agree with
+        # the object it came from, instead of reporting one number for
+        # `ts1.freq` and a different, freshly re-derived one for `(ts1 +
+        # ts2).freq` purely because addition happens to route through
+        # __wrap_result_as_basets instead of __finalize__.
+        assert result_add.freq == ts1.freq
         assert result_add.times.shape == ts1.times.shape, "Should preserve time array"
+
+        # ...and does not survive when the result's index genuinely differs:
+        # a shifted time base produces a union index the declaration's token
+        # cannot match, so it correctly re-derives instead of carrying 10.0
+        # forward onto a time base it never described.
+        ts_shifted = baseTs(data, times + 0.5, freq=10.0, signal_name="shifted")
+        result_shifted = ts1 + ts_shifted
+        assert result_shifted.freq != ts1.freq
         
         # Test right-hand operations
         result_radd = 1.0 + ts1

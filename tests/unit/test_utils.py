@@ -337,10 +337,17 @@ def test_compute_fft_power_rejects_nan_freq():
 
 
 def test_compute_fft_power_still_rejects_nonpositive_freq():
-    """The original zero/negative rejection is preserved."""
-    ts = baseTs(np.array([1.0, 2.0, 3.0, 4.0]), np.arange(4) / 4.0, freq=0.0)
+    """The original zero/negative rejection is preserved.
+
+    Routed through _FreqStub rather than a constructed baseTs. baseTs can no
+    longer hold freq=0 - the validating setter raises at construction, before
+    compute_fft_power ever runs - so building one here would test the
+    constructor instead of this guard. compute_fft_power only reads
+    ts.data and ts.freq (see baseTs/utils.py), which is exactly the interface
+    _FreqStub provides.
+    """
     with pytest.raises(ValueError, match="Invalid sampling frequency"):
-        compute_fft_power(ts)
+        compute_fft_power(_FreqStub(np.array([1.0, 2.0, 3.0, 4.0]), 0.0))
 
 
 def test_get_frequency_content_rejects_nan_freq():

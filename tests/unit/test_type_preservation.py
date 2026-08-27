@@ -331,10 +331,24 @@ class TestEffectiveFrequency:
         for op in ("iloc[0:20]", "rolling(3).mean()", "dropna()", "abs()"):
             assert np.isclose(eval(f"ts.{op}").freq, ts.freq), f"ts.{op} changed freq"
 
-    @pytest.mark.parametrize("op", PANDAS_OPS)
+    @pytest.mark.parametrize("op", [op for op in PANDAS_OPS if op != "nlargest(3)"])
     def test_freq_matches_parent_for_pandas_ops(self, ts, op):
         """ts is uniformly sampled, so every op here should agree with it."""
         assert np.isclose(eval(f"ts.{op}").freq, ts.freq), f"ts.{op} changed freq"
+
+    def test_nlargest_reorders_to_a_non_monotonic_index(self, ts):
+        """nlargest(3) is excluded from the op list above - it is the one op
+        there that does not agree with the parent, correctly.
+
+        ts's data increases monotonically with time, so nlargest(3) picks the
+        last three samples but orders them by *value* descending, giving the
+        index [4.9, 4.8, 4.7]: reversed, non-monotonic, and legitimately a
+        different time base. #29's whole point is that a declared rate must
+        not survive an index change it does not describe - here that means
+        the declaration expires and re-deriving against a reversed span
+        (negative duration) yields NaN, not the parent's 10.0.
+        """
+        assert np.isnan(ts.nlargest(3).freq)
 
     def test_resample_reports_its_true_rate(self):
         """

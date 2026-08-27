@@ -13,6 +13,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from .LowessOutlierFilter import LowessOutlierFilter
+from .utils import validate_sampling_freq
 
 
 def _detach_shared_metadata(obj):
@@ -172,8 +173,16 @@ class TimeSeriesData(pd.Series):
     # None and never written by anything - a half-finished rename. The attribute
     # that actually holds outlier positions is 'outlier_indices', which was
     # absent, so `ts.iloc[:50].outlier_indices` raised AttributeError.
+    #
+    # '_freq_declaration' replaces 'freq'. What propagates is the declaration
+    # plus the index token it was made against, not the rate - so pandas'
+    # __finalize__ copying it verbatim is now correct, because the child
+    # re-validates it against its own index. Listing the property here instead
+    # would be actively wrong: __finalize__ copies with object.__setattr__,
+    # which honours data descriptors, so every propagation would run the
+    # validating setter.
     _metadata = [
-        'freq', 'signal_name', 'history', 'is_filtered',
+        '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
         'has_timestamp_offset', 'outlier_indices', 'lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
@@ -205,12 +214,14 @@ class TimeSeriesData(pd.Series):
             super().__init__(data, index=index, **kwargs)
             self._initialize_default_metadata()
             
-        # Set or calculate frequency
+        # Declare the rate only when one was supplied. With no declaration the
+        # `freq` property derives from the index on read, so there is nothing
+        # to store - the `else` branch that used to derive into an attribute
+        # here was the first of the two places that made freq a value able to
+        # drift from the index it described.
         if freq is not None:
             self.freq = freq
-        else:
-            self.freq = self._calculate_effective_frequency()
-            
+
         # Set signal name
         self.signal_name = signal_name.upper() if signal_name else ""
         
@@ -233,6 +244,9 @@ class TimeSeriesData(pd.Series):
         # inherited None and clobbered the default it was born with.
         self.is_outlier_filtered = False
         self.outlier_filter = LowessOutlierFilter()
+        # _metadata declares this; test_type_preservation.py asserts every
+        # declared name exists on a constructed object.
+        self._freq_declaration = None
 
     def _copy_metadata_from_basetseries(self, base_ts):
         """Copy metadata from a baseTs object, without sharing its mutables."""
@@ -282,6 +296,57 @@ class TimeSeriesData(pd.Series):
         # rate by n/(n-1) - 11% at n=10, 25% at n=5 - for every series built
         # from a times array without an explicit freq.
         return (len(self) - 1) / duration
+
+    @property
+    def freq(self) -> float:
+        """The sampling rate in Hz, derived from the index unless declared.
+
+        An explicitly supplied rate is honoured only while the index still
+        matches the token it was declared against - see _freq_token. This is
+        what makes every derivation path agree: __finalize__, copy() and
+        _create_new_with_data all just carry the declaration, and this one
+        property decides whether it still applies.
+
+        Returns:
+            The declared rate when its token still matches, otherwise the
+            rate derived from the current index (NaN if it cannot support one)
+        """
+        declaration = getattr(self, '_freq_declaration', None)
+        if declaration is not None:
+            try:
+                if declaration[1] == _freq_token(self.index):
+                    return declaration[0]
+            except Exception:
+                # Any failure to build or compare a token - an exotic index
+                # dtype, an object array - falls through to re-deriving.
+                # Failing toward derivation is the safe direction: it is what
+                # the index actually supports.
+                pass
+        return self._calculate_effective_frequency()
+
+    @freq.setter
+    def freq(self, value: Any) -> None:
+        """Declare an explicit sampling rate against the current index.
+
+        The single validating door for a rate entering the object. Issue #31
+        is that there was no such door: `freq=` reached __init__ unchecked and
+        __finalize__ copied it onward, so a bad rate was reported some
+        distance from the mistake, with a diagnosis that could be flatly
+        wrong - a NaN blamed the timestamps when the constructor kwarg was
+        the problem.
+
+        Args:
+            value: A positive finite rate, or None to clear the declaration
+                and return the object to deriving from its index
+
+        Raises:
+            ValueError: If value is not a positive, finite real scalar
+        """
+        if value is None:
+            self._freq_declaration = None
+            return
+        self._freq_declaration = (validate_sampling_freq(value),
+                                  _freq_token(self.index))
 
     def __finalize__(self, other, method=None, **kwargs):
         """
@@ -613,17 +678,29 @@ class TimeSeriesData(pd.Series):
             # For scalar results, we can't return a baseTs, so return the scalar
             return result
         
-        # Create new baseTs object with the result. freq is left unset so
-        # baseTs derives it from the result index - arithmetic between two
-        # operands on different time bases produces a union index, and the
-        # left operand's freq no longer describes it.
+        # No freq= kwarg here - it is carried below instead, as
+        # _freq_declaration, along with the rest of _metadata.
         new_basets = baseTs(
             data=result.values,
             times=result.index.values,
             signal_name=self.signal_name
         )
-        
-        # Copy relevant metadata
+
+        # Copy relevant metadata. This carries _freq_declaration like any
+        # other name in _metadata - the 'freq' entry in the exclusion list
+        # below is stale (there is no metadata attribute called 'freq' any
+        # more) and excludes nothing.
+        #
+        # That is safe rather than a regression: the property re-validates
+        # the copied declaration against *this* object's own index. Two
+        # operands built on the same time base produce a result whose index
+        # is that same time base, so the declaration's token still matches
+        # and it is correctly honoured - the left operand's declared rate
+        # actually does describe the sum. Two operands on different time
+        # bases produce a union index the token cannot match, so it correctly
+        # re-derives instead, which is the "left operand's freq no longer
+        # describes it" case this comment used to describe by unconditionally
+        # dropping freq, before there was a token to check.
         for attr in self._metadata:
             if hasattr(self, attr) and attr not in ['freq', 'signal_name']:
                 setattr(new_basets, attr, getattr(self, attr))

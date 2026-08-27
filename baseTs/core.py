@@ -196,6 +196,12 @@ class baseTs(TimeSeriesData):
         # Handle times array - create if not provided
         if times is None:
             if not _is_unset(freq):
+                # Validated before use, not after: this builds the index FROM
+                # the rate, so freq=0 produced times [nan, inf, inf, ...],
+                # freq=-10 ran the index backwards, and freq=inf collapsed it
+                # to all-zeros - each of them a silently degenerate object
+                # whose real complaint surfaced much later.
+                freq = validate_sampling_freq(freq)
                 times = np.arange(0, len(data)) / freq
             else:
                 raise ValueError("You must provide either a times array or a frequency")
@@ -238,11 +244,7 @@ class baseTs(TimeSeriesData):
             # caller's own object, so two series built from one list do not
             # cross-contaminate each other's history.
             self.history = normalise_history(history)
-        
-        # Calculate frequency if not provided
-        if _is_unset(freq):
-            self.freq = self._calculate_effective_frequency()
-        
+
         # Only if the superclass did not already carry one across: baseTs(ts)
         # takes the conversion branch in TimeSeriesData.__init__, which copies
         # the source's filter, and this used to overwrite it with a default.
@@ -286,8 +288,10 @@ class baseTs(TimeSeriesData):
     def times(self, value: np.ndarray):
         """Set the time values (backward compatibility)."""
         self.index = pd.Index(value)
-        # Recalculate frequency
-        self.freq = self._calculate_effective_frequency()
+        # No freq recalculation. The property derives from the index, so a new
+        # index re-derives on the next read - and any declaration made against
+        # the old index stops matching its token, which is the correct
+        # outcome rather than a side effect to remember to trigger here.
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
@@ -340,54 +344,44 @@ class baseTs(TimeSeriesData):
         if new_times is None:
             new_times = self.times
 
-        # Create new object. freq is carried only when the index is
-        # unchanged - an explicit freq may legitimately disagree with the
-        # times it was built from, but an operation that changed the time
-        # base (resample, remove_outliers, ...) must not carry the old rate
-        # forward. When the index changed, omit freq so __init__ derives it.
+        # No freq handling here any more. The `freq` property derives from the
+        # index, and an explicit declaration travels as _freq_declaration in
+        # the metadata copy below - where the property re-validates it against
+        # this object's own index. The index_unchanged test and the
+        # post-construction re-assert that used to live here were a second
+        # implementation of the "did the index change?" rule, which is
+        # precisely how it came to disagree with __finalize__ (#29).
         new_kwargs = {'signal_name': self.signal_name}
-        # `is` first: most callers either pass new_times=None (identical to
-        # self.times by the assignment above) or a genuinely different array,
-        # so the O(n) fallback only runs when it can actually change the
-        # answer.
-        index_unchanged = (
-            new_times is self.times or np.array_equal(new_times, self.times)
-        )
-        if index_unchanged:
-            new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
-        
-        new_obj = baseTs(new_data, new_times, **new_kwargs)
 
-        # Re-assert the rate after construction when the index did not change.
-        # Passing it as a kwarg is not enough: __init__ routes freq through
-        # _is_unset, which treats NaN as "not supplied" and re-derives from
-        # the index - so a NaN rate was laundered into a fabricated healthy
-        # number. h.freq = nan correctly raised on h.get_frequency_content()
-        # but h.zscale().get_frequency_content() returned a full spectrum at
-        # an invented 10.0 Hz, while h.iloc[:100] kept the NaN. Same series,
-        # opposite behaviour depending only on the derivation path taken.
-        if index_unchanged and 'freq' not in kwargs:
-            new_obj.freq = self.freq
+        new_obj = baseTs(new_data, new_times, **new_kwargs)
 
         if preserve_metadata:
             # Copy metadata
-            metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
+            metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
                             'outlier_indices', 'lowess_fit', 'last_process',
                             'outlier_filter']
-            
+
+            # Not iterating self._metadata: this list is deliberately curated
+            # and excludes history and signal_name, which are handled above and
+            # below. _freq_declaration must be added by name, and is skipped
+            # when the caller declared a rate explicitly - otherwise this copy
+            # would silently overwrite their kwarg with the parent's.
+            if 'freq' not in kwargs:
+                metadata_attrs.append('_freq_declaration')
+
             for attr in metadata_attrs:
                 if hasattr(self, attr):
                     setattr(new_obj, attr, getattr(self, attr))
-            
+
             # Copy history (make a copy to avoid reference issues). Shares one
             # normaliser with __finalize__: every non-inplace method routes
             # through here, so a history that arrived as None would otherwise
             # die on .copy() before reaching any of the guarded append paths,
             # and a bare list() would explode a str into characters.
             new_obj.history = normalise_history(self.history)
-        
+
         return new_obj
 
     def _enhanced_process_with_flags(self, func, hist_msg: str, last_process: str, 
@@ -1186,7 +1180,6 @@ class baseTs(TimeSeriesData):
         if inplace is True:
             self.data = filt.data
             self.times = filt.times
-            self.freq = filt.freq
             self.is_outlier_filtered = True
             self._update_history_and_process(hist_msg, last_process)
             self.lowess_fit = lowess_fit
@@ -1196,7 +1189,6 @@ class baseTs(TimeSeriesData):
             newTs = self.copy()
             newTs.data = filt.data
             newTs.times = filt.times
-            newTs.freq = filt.freq
             newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_outlier_filtered = True
             newTs.lowess_fit = lowess_fit
