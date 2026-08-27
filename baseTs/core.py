@@ -336,12 +336,19 @@ class baseTs(TimeSeriesData):
         """
         if new_times is None:
             new_times = self.times
-            
-        # Create new object
-        new_kwargs = {
-            'freq': self.freq,
-            'signal_name': self.signal_name
-        }
+
+        # Create new object. freq is carried only when the index is
+        # unchanged - an explicit freq may legitimately disagree with the
+        # times it was built from, but an operation that changed the time
+        # base (resample, remove_outliers, ...) must not carry the old rate
+        # forward. When the index changed, omit freq so __init__ derives it.
+        new_kwargs = {'signal_name': self.signal_name}
+        # `is` first: most callers either pass new_times=None (identical to
+        # self.times by the assignment above) or a genuinely different array,
+        # so the O(n) fallback only runs when it can actually change the
+        # answer.
+        if new_times is self.times or np.array_equal(new_times, self.times):
+            new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
         
         new_obj = baseTs(new_data, new_times, **new_kwargs)
@@ -592,16 +599,17 @@ class baseTs(TimeSeriesData):
         """
         def interp_func(data):
             new_ts = np.linspace(self.times[0], self.times[-1], new_len)
-            new_freq = new_len / self.duration()
             f1 = interpolate.interp1d(self.times, data, kind=kind)
-            return f1(new_ts), new_ts, new_freq
-            
+            return f1(new_ts), new_ts
+
         def process_result(result):
-            data, times, freq = result
+            data, times = result
             if inplace:
                 self.data = data
+                # The times setter recomputes freq via
+                # _calculate_effective_frequency - do not overwrite it with
+                # new_len / duration(), which over-reports by n/(n-1).
                 self.times = times
-                self.freq = freq
                 self.is_interpolated = True
                 self.is_uniform_grid = True
                 return self
@@ -609,11 +617,10 @@ class baseTs(TimeSeriesData):
                 new_obj = self.copy()
                 new_obj.data = data
                 new_obj.times = times
-                new_obj.freq = freq
                 new_obj.is_interpolated = True
                 new_obj.is_uniform_grid = True
                 return new_obj
-                
+
         result = interp_func(self.data)
         processed = process_result(result)
         processed._update_history_and_process(
@@ -688,17 +695,17 @@ class baseTs(TimeSeriesData):
                 raise ValueError("new_grid must be monotonically increasing.")
             
         f1 = interpolate.interp1d(self.times, self.data, kind=kind)
-        new_freq = len(new_grid) / self.duration()
-        
-        hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {new_freq}Hz"
         last_process = "_unigrid"
         transfer = f1(new_grid)
+        # freq is not computed here - the times setter below recomputes it
+        # via _calculate_effective_frequency, which does not over-report by
+        # n/(n-1) the way len(new_grid) / self.duration() did.
         if inplace is False:
             newTs = self.copy()
             newTs.data = transfer
             newTs.times = new_grid
             newTs.is_uniform_grid = True
-            newTs.freq = new_freq
+            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz"
             newTs.history.append(hist_msg)
             newTs.last_process = last_process
             newTs.is_interpolated = True
@@ -707,8 +714,8 @@ class baseTs(TimeSeriesData):
         else:
             self.data = transfer
             self.times = new_grid
-            self.freq = new_freq
             self.is_uniform_grid = True
+            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz"
             self.history.append(hist_msg)
             self.last_process = last_process
             self.is_interpolated = True
@@ -1470,7 +1477,8 @@ class baseTs(TimeSeriesData):
             'q75': stats_series['75%'],
             'duration': self.duration(),
             'frequency': self.freq,
-            'sample_rate': len(self) / self.duration() if self.duration() > 0 else 0
+            # n samples span n-1 intervals - see _calculate_effective_frequency.
+            'sample_rate': (len(self) - 1) / self.duration() if self.duration() > 0 else 0
         }
         
         return stats
