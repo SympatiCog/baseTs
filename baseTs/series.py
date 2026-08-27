@@ -213,22 +213,26 @@ class TimeSeriesData(pd.Series):
         and `outlier_indices` stay shared too - see _detach_shared_metadata.
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
-        an internal concat step where `other` is a bare SimpleNamespace, not
-        an NDFrame, so pandas' own isinstance(other, NDFrame) branch above
-        skips it and metadata is silently dropped. `input_objs` is the
-        attribute pandas' own __finalize__ docstring documents for this shape
-        (unlike the `objs` alias, which is not part of the documented
-        contract). Recovery only fires when exactly one of those objects is
-        non-empty: that is nlargest/nsmallest's internal
-        single-real-result-plus-empty-placeholder pattern. A genuine
-        multi-operand pd.concat() has more than one non-empty operand, and
-        must not have its result's freq/signal_name/history overwritten by
-        whichever operand happens to be first - the constructor already
-        derived correct values from the real merged index.
+        an internal concat step where `other` is not an NDFrame (a
+        SimpleNamespace on pandas >= 3.0, a private _Concatenator on
+        pandas 2.x), so pandas' own isinstance(other, NDFrame) branch above
+        skips it and metadata is silently dropped. `objs` is the attribute
+        both shapes carry; the newer `input_objs` pandas' >= 3.0
+        __finalize__ docstring documents does not exist on pandas 2.x and
+        using it there silently no-ops this whole block - caught by CI on
+        Python 3.9/3.10 (pandas 2.3.3), which this project's own
+        `pandas>=2.0.0` floor requires supporting. Recovery only fires when
+        exactly one of those objects is non-empty: that is nlargest/
+        nsmallest's internal single-real-result-plus-empty-placeholder
+        pattern. A genuine multi-operand pd.concat() has more than one
+        non-empty operand, and must not have its result's
+        freq/signal_name/history overwritten by whichever operand happens to
+        be first - the constructor already derived correct values from the
+        real merged index.
         """
         super().__finalize__(other, method=method, **kwargs)
         if method == 'concat':
-            objs = getattr(other, 'input_objs', None)
+            objs = getattr(other, 'objs', None)
             if objs:
                 nonempty = [obj for obj in objs if len(obj) > 0]
                 if len(nonempty) == 1:
