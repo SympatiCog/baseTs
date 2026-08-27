@@ -311,3 +311,208 @@ def test_falff(lf_baseTsObj):
         falff(lf_baseTsObj, 0.01, 0.08, ratio='power'),
         relative_band_power(lf_baseTsObj, 0.01, 0.08, ratio='power'),
     )
+
+
+def _degenerate_freq_ts():
+    """A series whose time base is degenerate, so freq derives to NaN.
+
+    _calculate_effective_frequency returns NaN when duration <= 0. This is its
+    documented contract; the point of these tests is that consumers of freq
+    reject the NaN loudly instead of propagating it into their output.
+    """
+    ts = baseTs(np.array([1.0, 2.0, 3.0, 4.0]), np.array([0.0, 0.0, 0.0, 0.0]))
+    assert np.isnan(ts.freq), "fixture precondition: freq should derive to NaN"
+    return ts
+
+
+def test_compute_fft_power_rejects_nan_freq():
+    """A NaN sampling rate raises rather than producing NaN frequencies.
+
+    `nan <= 0` is False, so a bare `if ts.freq <= 0` guard lets NaN through
+    and the FFT silently returns NaN frequency bins (issue #24).
+    """
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        compute_fft_power(ts)
+
+
+def test_compute_fft_power_still_rejects_nonpositive_freq():
+    """The original zero/negative rejection is preserved."""
+    ts = baseTs(np.array([1.0, 2.0, 3.0, 4.0]), np.arange(4) / 4.0, freq=0.0)
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        compute_fft_power(ts)
+
+
+def test_get_frequency_content_rejects_nan_freq():
+    """get_frequency_content computes its own FFT and needs its own guard.
+
+    It does not route through compute_fft_power, so fixing that guard alone
+    leaves this path returning NaN bins.
+    """
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        ts.get_frequency_content()
+
+
+def test_get_peak_freq_rejects_nan_freq():
+    """get_peak_freq inherits the guard through get_frequency_content."""
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        get_peak_freq(ts)
+
+
+def test_relative_band_power_rejects_nan_freq():
+    """A NaN rate is rejected, via get_frequency_content downstream.
+
+    This pins behaviour, not a particular guard: relative_band_power has no
+    check of its own, and deliberately so - it calls get_frequency_content,
+    whose guard raises this same error. An earlier revision added a
+    redundant local guard and a test that could not tell the two apart, so
+    the guard could be deleted with the suite still green.
+    """
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        relative_band_power(ts, 0.01, 0.1)
+
+
+def test_validate_sampling_freq_rejects_non_real_scalars():
+    """The documented ValueError holds for non-numeric input too.
+
+    `freq > 0` raises TypeError for a string and the ambiguous-truth-value
+    error for an array; both must surface as the documented ValueError.
+    """
+    from baseTs.utils import validate_sampling_freq
+
+    for bad in ("30", None, np.array([1.0, 2.0]), [1.0], {}):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            validate_sampling_freq(bad)
+
+    # bool is a Real, so True would otherwise be accepted as 1.0 Hz
+    with pytest.raises(ValueError, match="not a real number"):
+        validate_sampling_freq(True)
+
+
+@pytest.mark.parametrize("bad", [np.inf, -np.inf, np.nan, 0.0, -1.0])
+def test_validate_sampling_freq_rejects_unusable_rates(bad):
+    """Non-finite and non-positive rates alike."""
+    from baseTs.utils import validate_sampling_freq
+
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        validate_sampling_freq(bad)
+
+
+def test_validate_sampling_freq_hint_is_specific_to_nan():
+    """Only NaN gets the degenerate-time-base hint.
+
+    A zero or negative rate is nearly always an explicit freq= argument;
+    pointing those at the timestamps sends the reader the wrong way.
+    """
+    from baseTs.utils import validate_sampling_freq
+
+    with pytest.raises(ValueError, match="time base is degenerate"):
+        validate_sampling_freq(np.nan)
+
+    for bad in (0.0, -1.0, np.inf):
+        with pytest.raises(ValueError) as exc:
+            validate_sampling_freq(bad)
+        assert "time base is degenerate" not in str(exc.value)
+
+
+def test_validate_sampling_freq_accepts_real_types_numpy_handles():
+    """Types float() converts must not be rejected, nor crash on isfinite.
+
+    An earlier revision gated on numbers.Real, which let Fraction through to
+    np.isfinite - no object-dtype loop, so TypeError, breaking the documented
+    ValueError contract and escaping filters' except-ValueError translation.
+    """
+    from fractions import Fraction
+    from decimal import Decimal
+    from baseTs.utils import validate_sampling_freq
+
+    assert validate_sampling_freq(Fraction(30, 1)) == 30.0
+    assert validate_sampling_freq(Decimal("2.5")) == 2.5
+    assert validate_sampling_freq(np.array(30.0)) == 30.0   # 0-d array
+    assert validate_sampling_freq(2 ** 63 + 1) > 0
+
+
+def test_validate_sampling_freq_accepts_usable_rates():
+    """Ordinary rates pass through unchanged, as floats."""
+    from baseTs.utils import validate_sampling_freq
+
+    assert validate_sampling_freq(30) == 30.0
+    assert validate_sampling_freq(0.5) == 0.5
+    assert validate_sampling_freq(np.float64(100.0)) == 100.0
+    assert isinstance(validate_sampling_freq(30), float)
+
+
+def test_get_peaks_rejects_nan_freq():
+    """get_peaks scales min_dist_secs by freq; NaN must not reach int()."""
+    from baseTs.utils import get_peaks
+
+    ts = _degenerate_freq_ts()
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        get_peaks(ts)
+
+
+@pytest.mark.parametrize("freq", [0.0, -1.0])
+def test_get_peaks_still_accepts_nonpositive_freq(freq):
+    """freq <= 0 provably worked here and must keep working.
+
+    int(min_dist_secs * 0.0) is 0 and the max(25, ...) floor absorbs it, so
+    the rate never influenced the result. An earlier revision applied the
+    full validate_sampling_freq here, which turned a harmless input into a
+    hard error - an unannounced API break, since interpto_hz(0) stamps
+    freq=0 on its own result.
+    """
+    from baseTs.utils import get_peaks
+
+    sig = np.zeros(300)
+    sig[[50, 150, 250]] = 5.0
+    ts = baseTs(sig, np.arange(300) / 30.0, freq=freq)
+
+    assert get_peaks(ts) == [50, 150, 250]
+
+
+@pytest.mark.parametrize("bad,label", [
+    (10 ** 400, "OverflowError from float()"),
+    (np.bool_(True), "np.bool_ is not a bool subclass"),
+    (np.array([30.0]), "size-1 array: float() differs across numpy majors"),
+    (np.array([1.0, 2.0]), "multi-element array"),
+])
+def test_validate_sampling_freq_rejects_lookalikes(bad, label):
+    """Each of these reached a non-ValueError or was silently accepted."""
+    from baseTs.utils import validate_sampling_freq
+
+    with pytest.raises(ValueError, match="Invalid sampling frequency"):
+        validate_sampling_freq(bad)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16, np.float64])
+def test_get_peaks_rejects_nonfinite_numpy_scalars(dtype):
+    """np.float32/16 are not float subclasses, so an isinstance gate missed them.
+
+    They fell through to int(), raising the raw conversion error the guard
+    exists to replace - or OverflowError for an infinity, which is not even a
+    ValueError.
+    """
+    from baseTs.utils import get_peaks
+
+    ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+    for bad in (dtype(np.nan), dtype(np.inf)):
+        ts.freq = bad
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            get_peaks(ts)
+
+
+def test_filters_use_the_normalised_rate():
+    """validate_sampling_freq accepts Decimal; the caller must use its return.
+
+    Discarding it left `0.5 * fs` to raise a raw TypeError outside the
+    try/except, so it was not an InvalidParameterError.
+    """
+    from decimal import Decimal
+    from baseTs.filters import highpass_filter, lowpass_filter
+
+    data = np.sin(np.arange(200) / 10.0)
+    assert len(highpass_filter(data, 1.0, Decimal('30'), 4)) == 200
+    assert len(lowpass_filter(data, 1.0, Decimal('30'), 4)) == 200

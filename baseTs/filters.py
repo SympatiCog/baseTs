@@ -12,6 +12,8 @@ from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
 from scipy import signal
 
+from .utils import validate_sampling_freq
+
 if TYPE_CHECKING:
     from .core import baseTs
 
@@ -42,7 +44,7 @@ class InvalidParameterError(FilterError):
 def validate_filter_params(data: ArrayLike, 
                           sampling_freq: float,
                           cutoff_freq: float,
-                          order: int) -> None:
+                          order: int) -> float:
     """
     Validate filter parameters.
     
@@ -51,21 +53,43 @@ def validate_filter_params(data: ArrayLike,
         sampling_freq: Sampling frequency in Hz
         cutoff_freq: Cutoff frequency in Hz
         order: Filter order
-        
+
+    Returns:
+        The sampling frequency normalised to a float. Callers must use this
+        return value rather than their own argument - validate_sampling_freq
+        accepts exact Reals such as Decimal, which pass validation and then
+        die on `0.5 * fs` with a raw TypeError outside this function's
+        try/except, defeating the InvalidParameterError contract.
+
     Raises:
         InvalidParameterError: If parameters are invalid
     """
     if not isinstance(data, (np.ndarray, list)):
         raise InvalidParameterError("Data must be a numpy array or list")
-    
-    if sampling_freq <= 0:
-        raise InvalidParameterError("Sampling frequency must be positive")
-        
-    if cutoff_freq <= 0 or cutoff_freq >= sampling_freq/2:
+
+    # `sampling_freq <= 0` is False for NaN, so a degenerate time base used to
+    # reach butter()/filtfilt() and come back as an all-NaN array with nothing
+    # but a RuntimeWarning. Delegated so there is one definition of a usable
+    # rate, but re-raised as InvalidParameterError to keep this module's
+    # exception type for callers that catch it.
+    try:
+        # The normalised float is returned to the caller, not discarded:
+        # validate_sampling_freq deliberately accepts Decimal and other exact
+        # Reals, which then die downstream on `0.5 * fs` with a raw TypeError
+        # - outside this try, so not an InvalidParameterError.
+        sampling_freq = validate_sampling_freq(sampling_freq)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+    # Also NaN-blind on its own; ordered after the rate check so a NaN rate
+    # reports the degenerate time base rather than a confusing cutoff error.
+    if not (cutoff_freq > 0) or cutoff_freq >= sampling_freq/2:
         raise InvalidParameterError("Cutoff frequency must be positive and less than Nyquist frequency")
-        
+
     if order <= 0:
         raise InvalidParameterError("Filter order must be positive")
+
+    return sampling_freq
 
 def sg_filter(data: ArrayLike, 
               window_length: int = 11, 
@@ -116,7 +140,7 @@ def notch_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, fs_hz, cutoff_hz, order)
+    fs_hz = validate_filter_params(data, fs_hz, cutoff_hz, order)
     
     nyquist_rate = fs_hz / 2.0
     notch = cutoff_hz / nyquist_rate
@@ -143,7 +167,7 @@ def highpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, sampling_freq, highpass_freq, order)
+    sampling_freq = validate_filter_params(data, sampling_freq, highpass_freq, order)
     
     nyquist_rate = sampling_freq / 2.0
     high = highpass_freq / nyquist_rate
@@ -170,7 +194,7 @@ def lowpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, fs, cutoff, order)
+    fs = validate_filter_params(data, fs, cutoff, order)
     
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
@@ -203,7 +227,7 @@ def bandpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
+    sample_Hz = validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
     
     # Effective sampling rate of windowed analysis
     window_step = max(1, window_step - overlap)

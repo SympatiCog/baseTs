@@ -494,3 +494,269 @@ class TestLowessDetrend:
         """
         with pytest.raises(ValueError, match=r"must be in \(0, 1\]"):
             self._ts(spiked).lowess_detrend(frac=bad_frac)
+
+
+class TestHistoryNoneGuard:
+    """A `history` of None must not crash the next operation (issue #22).
+
+    __finalize__ propagates metadata from whichever operand carries it, so a
+    None history can reach a derived object from any operand lacking one. Both
+    _update_history_and_process implementations must tolerate it.
+    """
+
+    def test_basets_update_history_tolerates_none(self):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = None
+
+        derived = ts.copy()
+        derived._update_history_and_process('did a thing', '_thing')
+
+        assert derived.history == ['did a thing']
+        assert derived.last_process == '_thing'
+
+    def test_timeseriesdata_update_history_tolerates_none(self):
+        """The superclass guard is hasattr-only, so None slips past it too."""
+        from baseTs.series import TimeSeriesData
+
+        tsd = TimeSeriesData(np.arange(10.0), index=np.arange(10) / 10.0)
+        tsd.history = None
+
+        tsd._update_history_and_process('did a thing', '_thing')
+
+        assert tsd.history == ['did a thing']
+        assert tsd.last_process == '_thing'
+
+    def test_existing_history_is_appended_not_replaced(self):
+        """The guard must not discard a history that is genuinely present."""
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        before = list(ts.history)
+
+        ts._update_history_and_process('did a thing', '_thing')
+
+        assert ts.history == before + ['did a thing']
+
+
+class TestFiltersRejectNanFreq:
+    """A degenerate time base must not filter to silent all-NaN output.
+
+    validate_filter_params guarded with `sampling_freq <= 0`, which is False
+    for NaN, so butter()/filtfilt() returned an all-NaN array with only a
+    RuntimeWarning. Same defect class as issue #24, different module.
+    """
+
+    @staticmethod
+    def _degenerate():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.zeros(200))
+        assert np.isnan(ts.freq)
+        return ts
+
+    def test_lowpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().lowpass_filter(0.1)
+
+    def test_highpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().highpass_filter(0.1)
+
+    def test_notch_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().notch_filter(0.1)
+
+    def test_bandpass_filter_raises(self):
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().bandpass_filter(0.1, 0.4)
+
+    def test_healthy_series_still_filters(self):
+        """The guard must not disturb an ordinary series."""
+        ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
+        out = ts.lowpass_filter(0.5)
+        assert not np.any(np.isnan(np.asarray(out.data, float)))
+
+
+class TestHistoryNoneSurvivesRealOperations:
+    """The None-history guard must hold on the paths users actually take.
+
+    Guarding _update_history_and_process alone was not enough: every
+    non-inplace method routes through _create_new_with_data, and eight sites
+    appended to history directly rather than through the helper.
+    """
+
+    @staticmethod
+    def _none_history():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.history = None
+        return ts
+
+    def test_create_new_with_data_path(self):
+        """zscale() dies in _create_new_with_data's history.copy()."""
+        out = self._none_history().zscale()
+        assert isinstance(out.history, list)
+
+    def test_interp_to_uniform_grid(self):
+        ts = self._none_history()
+        out = ts.interp_to_uniform_grid(np.arange(0, 19, 0.2), inplace=False)
+        assert isinstance(out.history, list)
+        assert any("uniform grid" in e for e in out.history)
+
+    def test_set_outlier_filter(self):
+        ts = self._none_history()
+        ts.set_outlier_filter(frac=0.2)
+        assert isinstance(ts.history, list)
+
+    def test_set_timestamp_offset(self):
+        ts = self._none_history()
+        ts.set_timestamp_offset(1.5)
+        assert isinstance(ts.history, list)
+        assert any("timestamp offset" in e for e in ts.history)
+
+    def test_summary_printer_tolerates_none(self, capsys):
+        """info() iterates history; None raised TypeError."""
+        ts = self._none_history()
+        ts.info()
+        assert "History:" in capsys.readouterr().out
+
+    def test_finalize_normalises_none_history(self):
+        """__finalize__ turns a propagated None into a list."""
+        ts = self._none_history()
+        assert isinstance(ts.iloc[:50].history, list)
+
+
+class TestHistoryInvariantHoldsEverywhere:
+    """"history is always a list" must hold on every derivation path.
+
+    An earlier revision normalised only None, and only in __finalize__, which
+    left copy(deep=True) and every non-list type still broken.
+    """
+
+    @staticmethod
+    def _with_history(value):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = value
+        return ts
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b'), np.array(['a', 'b'])])
+    def test_copy_deep_normalises(self, bad):
+        """copy(deep=True) is the default path; deepcopy(None) is None."""
+        assert isinstance(self._with_history(bad).copy().history, list)
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b')])
+    def test_copy_shallow_normalises(self, bad):
+        assert isinstance(self._with_history(bad).copy(deep=False).history, list)
+
+    @pytest.mark.parametrize("bad", [None, 'note', ('a', 'b')])
+    def test_finalize_normalises(self, bad):
+        assert isinstance(self._with_history(bad).iloc[:5].history, list)
+
+    def test_string_history_is_wrapped_not_exploded(self):
+        """list('note') would give four single-character entries."""
+        assert self._with_history('note').iloc[:5].history == ['note']
+
+    def test_string_history_survives_a_real_operation(self):
+        """zscale() routes through _create_new_with_data's list(...) call."""
+        out = self._with_history('note').zscale()
+        assert out.history[0] == 'note'
+        assert not any(len(e) == 1 for e in out.history)
+
+    @pytest.mark.parametrize("bad", ['oops', ('a',), {'k': 'v'}, None])
+    def test_append_with_no_intervening_pandas_op(self, bad):
+        """No .iloc first - that would normalise before the helper runs.
+
+        The earlier version of this test sliced first, so it passed with
+        _update_history_and_process's own guard deleted. In-place methods
+        never get that free normalisation.
+        """
+        ts = self._with_history(bad)
+        ts._update_history_and_process('did a thing', '_thing')
+        assert ts.history[-1] == 'did a thing'
+
+    @pytest.mark.parametrize("bad", ['note', ('a', 'b'), {'k': 'v'}, np.array(['a', 'b'])])
+    def test_inplace_methods_tolerate_non_list_history(self, bad):
+        """_detach_shared_metadata never runs on the object you mutate.
+
+        set_timestamp_offset, set_outlier_filter and inplace=True filters all
+        append directly to the history of an object that was never derived,
+        so they were still raising issue #22's AttributeError.
+        """
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.history = bad
+        ts.set_timestamp_offset(1.5)
+        assert isinstance(ts.history, list)
+        assert ts.history[-1].startswith('Set timestamp offset')
+
+    def test_dict_history_keeps_its_values(self):
+        """list({'a': 'x'}) is ['a'] - the values vanish.
+
+        A bare list() fallback turned a loud AttributeError into silent data
+        loss, which is the failure normalise_history's docstring cites as the
+        reason not to iterate a str.
+        """
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = {'created': 'note1', 'filtered': 'note2'}
+        assert ts.dropna().history == [{'created': 'note1', 'filtered': 'note2'}]
+
+    def test_constructor_history_kwarg_is_normalised(self):
+        """The first place a history enters the system."""
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0, history='note')
+        assert ts.history == ['note']
+        assert baseTs(np.arange(5.0), np.arange(5) / 5.0, history=5).history == [5]
+
+
+class TestNanFreqIsNotLaundered:
+    """A NaN rate must not become a fabricated healthy number.
+
+    __init__ routes freq through _is_unset, which treats NaN as "not
+    supplied" and re-derives from the index, so forwarding one through
+    _create_new_with_data invented a rate the guards then accepted.
+    """
+
+    @staticmethod
+    def _nan_freq():
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
+        ts.freq = np.nan
+        return ts
+
+    def test_derivation_paths_agree(self):
+        ts = self._nan_freq()
+        assert np.isnan(ts.zscale().freq)
+        assert np.isnan(ts.iloc[:100].freq)
+
+    def test_guard_still_fires_after_derivation(self):
+        with pytest.raises(ValueError, match="Invalid sampling frequency"):
+            self._nan_freq().zscale().get_frequency_content()
+
+    def test_explicit_freq_still_honoured(self):
+        """A real declared rate must survive an index-preserving transform."""
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0, freq=999.0)
+        assert ts.zscale().freq == 999.0
+
+
+class TestInfoToleratesOddHistory:
+    """info() must render fully whatever history holds.
+
+    `self.history or []` adds a truthiness test that raises on an ndarray
+    after the header is already printed, leaving a half-rendered report.
+    """
+
+    @pytest.mark.parametrize("value", [None, np.array(['a', 'b']), np.array([]), [], ['x']])
+    def test_basets_info(self, value, capsys):
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.history = value
+        ts.info()
+        assert "History:" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("value", [None, np.array(['a', 'b']), np.array([]), [], ['x']])
+    def test_timeseriesdata_info(self, value, capsys):
+        from baseTs.series import TimeSeriesData
+
+        tsd = TimeSeriesData(np.arange(10.0), index=np.arange(10) / 10.0)
+        tsd.history = value
+        tsd.info()
+        assert capsys.readouterr().out  # rendered without raising

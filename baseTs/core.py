@@ -23,8 +23,8 @@ from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
 from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
-                    BandPowerResult)
-from .series import TimeSeriesData, _detach_shared_metadata
+                    BandPowerResult, validate_sampling_freq)
+from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -231,9 +231,13 @@ class baseTs(TimeSeriesData):
         if history is None:
             self.history = [f"Created baseTs object with {len(self)} samples"]
         else:
-            # list(), not the caller's own object: two series built from one
-            # list would otherwise cross-contaminate each other's history.
-            self.history = list(history)
+            # normalise_history, not a bare list(): this is the first place a
+            # history enters the system, and list('note') would explode a str
+            # into four single-character entries that then persist through
+            # every derivation. Also returns a new list rather than the
+            # caller's own object, so two series built from one list do not
+            # cross-contaminate each other's history.
+            self.history = normalise_history(history)
         
         # Calculate frequency if not provided
         if _is_unset(freq):
@@ -310,10 +314,9 @@ class baseTs(TimeSeriesData):
             setattr(self, attr, val)
             
 
-    def _update_history_and_process(self, hist_msg: str, last_process: str):
-        """Helper method to update history and last_process."""
-        self.history.append(hist_msg)
-        self.last_process = last_process
+    # _update_history_and_process is inherited from TimeSeriesData. The
+    # override that used to sit here was byte-for-byte identical to it once
+    # both grew the same None guard, so it is gone rather than left to drift.
 
     def _update_flags(self, **flags):
         """Helper method to update object flags."""
@@ -347,12 +350,26 @@ class baseTs(TimeSeriesData):
         # self.times by the assignment above) or a genuinely different array,
         # so the O(n) fallback only runs when it can actually change the
         # answer.
-        if new_times is self.times or np.array_equal(new_times, self.times):
+        index_unchanged = (
+            new_times is self.times or np.array_equal(new_times, self.times)
+        )
+        if index_unchanged:
             new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
         
         new_obj = baseTs(new_data, new_times, **new_kwargs)
-        
+
+        # Re-assert the rate after construction when the index did not change.
+        # Passing it as a kwarg is not enough: __init__ routes freq through
+        # _is_unset, which treats NaN as "not supplied" and re-derives from
+        # the index - so a NaN rate was laundered into a fabricated healthy
+        # number. h.freq = nan correctly raised on h.get_frequency_content()
+        # but h.zscale().get_frequency_content() returned a full spectrum at
+        # an invented 10.0 Hz, while h.iloc[:100] kept the NaN. Same series,
+        # opposite behaviour depending only on the derivation path taken.
+        if index_unchanged and 'freq' not in kwargs:
+            new_obj.freq = self.freq
+
         if preserve_metadata:
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
@@ -364,8 +381,12 @@ class baseTs(TimeSeriesData):
                 if hasattr(self, attr):
                     setattr(new_obj, attr, getattr(self, attr))
             
-            # Copy history (make a copy to avoid reference issues)
-            new_obj.history = self.history.copy()
+            # Copy history (make a copy to avoid reference issues). Shares one
+            # normaliser with __finalize__: every non-inplace method routes
+            # through here, so a history that arrived as None would otherwise
+            # die on .copy() before reaching any of the guarded append paths,
+            # and a bare list() would explode a str into characters.
+            new_obj.history = normalise_history(self.history)
         
         return new_obj
 
@@ -706,8 +727,7 @@ class baseTs(TimeSeriesData):
             newTs.times = new_grid
             newTs.is_uniform_grid = True
             hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz"
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
+            newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_interpolated = True
             newTs.is_uniform_grid = True
             return newTs
@@ -716,8 +736,7 @@ class baseTs(TimeSeriesData):
             self.times = new_grid
             self.is_uniform_grid = True
             hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz"
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             self.is_interpolated = True
             self.is_uniform_grid = True
             return self
@@ -928,15 +947,13 @@ class baseTs(TimeSeriesData):
         if inplace is True:
             self.data = filt
             self.is_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             return self
         else:
             newTs = self.copy()
             newTs.data = filt
             newTs.is_filtered = True
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process   
+            newTs._update_history_and_process(hist_msg, last_process)   
             return newTs
         
     def set_outlier_filter(self, 
@@ -1077,8 +1094,7 @@ class baseTs(TimeSeriesData):
         last_process = "_outfilt_params"
         
         self.is_outlier_filtered = True
-        self.history.append(hist_msg)
-        self.last_process = last_process
+        self._update_history_and_process(hist_msg, last_process)
     
         return self
 
@@ -1131,8 +1147,7 @@ class baseTs(TimeSeriesData):
             self.times = filt.times
             self.freq = filt.freq
             self.is_outlier_filtered = True
-            self.history.append(hist_msg)
-            self.last_process = last_process
+            self._update_history_and_process(hist_msg, last_process)
             self.lowess_fit = lowess_fit
             self.outlier_indices = idx
             result = self 
@@ -1141,8 +1156,7 @@ class baseTs(TimeSeriesData):
             newTs.data = filt.data
             newTs.times = filt.times
             newTs.freq = filt.freq
-            newTs.history.append(hist_msg)
-            newTs.last_process = last_process
+            newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_outlier_filtered = True
             newTs.lowess_fit = lowess_fit
             newTs.outlier_indices = idx
@@ -1779,9 +1793,17 @@ class baseTs(TimeSeriesData):
             
         Returns:
             Tuple of (frequencies, power_spectrum)
+
+        Raises:
+            ValueError: If the sampling frequency is not usable (NaN, zero, or
+                negative), or if the window function is unknown
         """
         from scipy import signal
-        
+
+        # This method builds its own FFT rather than routing through
+        # compute_fft_power, so it needs the guard in its own right.
+        validate_sampling_freq(self.freq)
+
         data = self.values.copy()
         
         # Apply window function if specified
@@ -2144,7 +2166,11 @@ class baseTs(TimeSeriesData):
                     if isinstance(value, (list, dict, np.ndarray)):
                         value = copy.deepcopy(value)
                     setattr(new_obj, attr, value)
-            
+
+            # deepcopy(None) is None, so without this the default copy path
+            # was the one derivation that could still hand back a history
+            # that is not a list.
+            _detach_shared_metadata(new_obj)
             return new_obj
         else:
             # Shallow copy using pandas Series copy
@@ -2218,8 +2244,12 @@ class baseTs(TimeSeriesData):
         for key, value in outlier_filter_params.items():
             print(f"  {key}: {value}")
         
+        # normalise_history, not a truthiness test: `self.history or []`
+        # raises on an ndarray ("truth value ... is ambiguous") after the
+        # header is already on stdout, and a bare loop over a str prints one
+        # line per character. Kept identical to TimeSeriesData.info().
         print("\nHistory:")
-        for entry in self.history:
+        for entry in normalise_history(getattr(self, 'history', None)):
             print(f"  {entry}")
             
     def set_timestamp_offset(self, ts_offset: float):
@@ -2228,8 +2258,9 @@ class baseTs(TimeSeriesData):
         """
         self.ts_offset = ts_offset
         self.times = self.times + ts_offset
-        self.history.append(f"Set timestamp offset to {ts_offset}")
-        self.last_process = "_tso" + str(ts_offset)
+        self._update_history_and_process(
+            f"Set timestamp offset to {ts_offset}", "_tso" + str(ts_offset)
+        )
         self.has_timestamp_offset = True
 
     def to_dataframe(self, set_index: bool = False) -> pd.DataFrame:

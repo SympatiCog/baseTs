@@ -26,10 +26,49 @@ def _detach_shared_metadata(obj):
     set_outlier_filter rebinds the filter rather than mutating it, so sharing
     one is safe by construction. `lowess_fit` and `outlier_indices` are left
     shared, unchanged from before - see #20.
+
+    A history that is not a list is normalised rather than left alone. pandas
+    propagates metadata from whichever operand carries it, so an operand
+    without a history hands None to the derived object; normalising here makes
+    "history is always a list" hold for every consumer, instead of asking each
+    of the nine call sites that touch it to guard for itself.
+
+    Any non-list history is coerced, not just None: a str, tuple or ndarray is
+    just as fatal to .append(). See normalise_history for the coercion rules.
     """
-    if isinstance(getattr(obj, 'history', None), list):
-        object.__setattr__(obj, 'history', list(obj.history))
+    object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
     return obj
+
+
+def normalise_history(history: Any) -> list:
+    """Coerce any history value to a fresh list.
+
+    The single definition of the "history is always a list" invariant, so the
+    __finalize__ path, _create_new_with_data, the constructor kwarg and
+    _update_history_and_process cannot drift apart. Always returns a new list,
+    never the caller's own object: two series built from one list would
+    otherwise cross-contaminate each other's history.
+
+    Only genuine sequences are iterated. Anything else is wrapped as a single
+    entry, because iterating it loses data silently where the old
+    AttributeError was at least loud:
+
+      - str/bytes: list('note') gives four single-character entries
+      - Mapping:   list({'a': 'x'}) gives ['a'] and drops every value
+      - set:       order varies with PYTHONHASHSEED
+      - iterator:  consumed by the first derivation, empty for every later one
+
+    Wrapping preserves the value so nothing is lost, and the result is still a
+    list, so .append() works and the invariant holds.
+    """
+    if history is None:
+        return []
+    if isinstance(history, list):
+        return list(history)
+    if isinstance(history, (tuple, np.ndarray, pd.Series, pd.Index)):
+        return list(history)
+    # Deliberately not a bare `list(history)` fallback - see the docstring.
+    return [history]
 
 
 class _FinalizingWindow:
@@ -295,13 +334,15 @@ class TimeSeriesData(pd.Series):
                     value = copy_module.deepcopy(value)
                 setattr(copied, attr, value)
 
-        if not deep:
-            # The loop above re-assigns history by reference, undoing what
-            # __finalize__ already detached. pandas reaches here internally
-            # (sort_values calls copy(deep=False)), so a "shallow" copy must
-            # still not hand back a shared history list. The deep branch
-            # deep-copies it in the loop above.
-            _detach_shared_metadata(copied)
+        # Unconditionally, not just when shallow. The loop above re-assigns
+        # history by reference, undoing what __finalize__ already detached,
+        # and pandas reaches here internally (sort_values calls
+        # copy(deep=False)), so a "shallow" copy must not hand back a shared
+        # list. The deep branch already deep-copies a list history, but
+        # deepcopy(None) is None, so copy(deep=True) was the one derivation
+        # path that let a malformed history through - the normalisation has
+        # to run on both.
+        _detach_shared_metadata(copied)
         return copied
 
     def duration(self) -> float:
@@ -325,9 +366,17 @@ class TimeSeriesData(pd.Series):
         return len(self)
 
     def _update_history_and_process(self, hist_msg: str, last_process: str):
-        """Helper method to update history and last_process."""
-        if not hasattr(self, 'history'):
-            self.history = []
+        """Helper method to update history and last_process.
+
+        Normalises rather than testing `is None`. _detach_shared_metadata only
+        runs on *derivation* - copy(), iloc, _create_new_with_data - so it
+        never touches the object an in-place method mutates. A str, tuple or
+        dict history set on an object and then passed to set_timestamp_offset,
+        set_outlier_filter or any inplace=True filter reached .append()
+        untouched and raised the very AttributeError this guard exists to
+        prevent.
+        """
+        self.history = normalise_history(getattr(self, 'history', None))
         self.history.append(hist_msg)
         self.last_process = last_process
 
@@ -396,9 +445,13 @@ class TimeSeriesData(pd.Series):
         for key, value in times_info.items():
             print(f"  {key}: {value}")
         
-        if hasattr(self, 'history') and self.history:
-            print("\nHistory:")
-            for entry in self.history:
+        # normalise_history, not a truthiness test: `and self.history` raises
+        # on an ndarray and len() raises on a generator, and a bare loop over
+        # a str prints one line per character. Kept identical to baseTs.info(),
+        # which prints the header unconditionally - the two used to disagree
+        # on an empty history.
+        print("\nHistory:")
+        for entry in normalise_history(getattr(self, 'history', None)):
                 print(f"  {entry}")
 
     def __repr__(self) -> str:
