@@ -68,3 +68,6 @@ graphify-out/*
 
 # Superpowers SDD scratch workspace (ledgers, briefs, review packages)
 .superpowers/
+
+# Local Claude Octopus tooling state
+.claude-octopus/
