@@ -230,11 +230,13 @@ class TestIndexMutationsWithNoHookAtAll:
         filtered.loc[88.0] = 1.0
         assert len(filtered) == 201
         assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
 
     def test_at_enlargement_drops_both(self, filtered):
         filtered.at[77.0] = 1.0
         assert len(filtered) == 201
         assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
 
     def test_pop_drops_both(self, filtered):
         filtered.pop(filtered.index[0])
@@ -246,6 +248,7 @@ class TestIndexMutationsWithNoHookAtAll:
         del filtered[filtered.index[0]]
         assert len(filtered) == 199
         assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
 
     def test_interpolate_gaps_time_inplace_drops_both(self):
         """The third `pd.Series.__init__` site, and the one an explicit audit
@@ -270,6 +273,84 @@ class TestIndexMutationsWithNoHookAtAll:
         assert len(ts) == 200, "and needs the length to stay the same"
         assert ts.lowess_fit is None
         assert ts.outlier_indices is None
+
+
+class TestReadIsPureAndDerivationReleases:
+    """Two halves of one contract, neither depending on who read what.
+
+    Reading is a pure function of (stored pair, live index): what a read
+    returns never depends on whether an earlier read happened. Clearing on a
+    stale read was tried and is worse - release becomes per-attribute and
+    observation-dependent, so reading `lowess_fit` while stale drops it and
+    leaves `outlier_indices` recoverable, and a later revert brings back
+    exactly the one nobody looked at.
+
+    Derivation is the one place a value is destroyed, because a derived object
+    whose index never matched never had one.
+    """
+
+    def _shifted_away(self, filtered):
+        original = filtered.index.copy()
+        filtered.times = np.asarray(original) + 100.0
+        return original
+
+    def test_both_attributes_read_none_while_the_index_differs(self, filtered):
+        self._shifted_away(filtered)
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_reading_one_attribute_does_not_change_the_other(self, filtered):
+        """The asymmetry that clearing-on-read introduced."""
+        original = self._shifted_away(filtered)
+        assert filtered.lowess_fit is None          # read only one of the two
+        filtered.times = np.asarray(original)
+
+        assert (filtered.lowess_fit is None) == (filtered.outlier_indices is None), (
+            "both must answer the same way; a read must not privilege one"
+        )
+
+    def test_restoring_the_index_makes_the_fit_readable_again(self, filtered):
+        """Specified, not accidental.
+
+        Within this property's scope - do the samples still sit where the fit
+        says - a restored index is genuinely valid again. It is misleading only
+        if the data changed meanwhile, which is #40.
+        """
+        expected = np.asarray(filtered.lowess_fit).copy()
+        original = self._shifted_away(filtered)
+        assert filtered.lowess_fit is None
+
+        filtered.times = np.asarray(original)
+
+        assert filtered.index.equals(original), "the revert must actually match"
+        assert np.array_equal(filtered.lowess_fit, expected)
+
+    def test_a_derived_object_never_regains_what_it_never_had(self, filtered):
+        """The other half: derivation destroys, so a revert cannot undo it."""
+        original = self._shifted_away(filtered)
+        child = filtered.copy()
+        assert child._lowess_fit is None, "derivation must release outright"
+
+        child.times = np.asarray(original)
+
+        assert child.lowess_fit is None
+        assert child.outlier_indices is None
+
+    def test_a_stale_slot_is_released_on_derivation(self, filtered):
+        """Memory: a slice must not pin the parent's full-length array."""
+        assert filtered.iloc[:50]._lowess_fit is None
+
+    def test_a_valid_read_restamps_so_later_reads_are_cheap(self, filtered):
+        """Every derived object gets a new Index, so a first read is O(n).
+
+        Re-stamping with the index just proved equal changes no answer and
+        lets later reads take Index.equals' identity fast path.
+        """
+        derived = filtered.sg_filter()
+        assert derived.index is not filtered.index, "test needs a distinct Index"
+
+        assert derived.lowess_fit is not None
+        assert derived._lowess_fit[1] is derived.index
 
 
 class TestTheStampIsNotLaunderable:
@@ -320,13 +401,18 @@ class TestTheStampIsNotLaunderable:
         """
         assert filtered.iloc[:50]._lowess_fit is None
 
-    def test_a_stale_fit_stays_stale_after_a_further_derivation(self, filtered):
-        """Re-deriving from an already-stale object must not revive the fit."""
-        filtered.times = np.linspace(0, 20, 200)
-        assert filtered.lowess_fit is None
-        assert filtered.sg_filter().lowess_fit is None
-        assert (filtered * 2.0).lowess_fit is None
-        assert filtered.copy().lowess_fit is None
+    def test_a_derivation_off_a_valid_fit_onto_a_new_index_reads_none(self, filtered):
+        """The behavioural form of the laundering check.
+
+        Starting from a *valid* fit is what makes this discriminating: the
+        derived object has a different index, so a copy that went through the
+        public name would re-stamp and hand back a fit that looks valid. A
+        source that is already stale cannot detect that, because copying None
+        onto the target is indistinguishable from doing the right thing.
+        """
+        assert filtered.lowess_fit is not None, "the source must start valid"
+        assert filtered.remove_outliers(method="zscore", threshold=2.0).lowess_fit is None
+        assert filtered.shift_time(periods=5).lowess_fit is None
 
 
 class TestInvalidationThroughCreateNewWithData:

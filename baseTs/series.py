@@ -52,16 +52,31 @@ def _positional_property(public: str, private: str, what: str) -> property:
     leaves it untouched while moving every sample these two describe, so the
     check is full `Index.equals`.
 
-    The stored index is a reference, not a copy: `pd.Index` is immutable, and
-    assignment rebinds rather than mutates, so there is nothing to copy and the
-    common read compares an index object with itself - `Index.equals` takes its
-    identity fast path and costs O(1).
+    The stored index is a reference, not a copy: `pd.Index` is immutable and
+    assignment rebinds rather than mutates, so there is nothing to copy.
 
-    A stale slot reads as None but is *not* cleared here. The getter stays a
-    pure function of (stored value, current index) so that a read never changes
-    what a later read returns; freeing the memory is left to
-    _detach_shared_metadata, which runs on derivation regardless of whether
-    anyone reads.
+    **Reading never destroys.** The getter is a pure function of the stored
+    pair and the live index, so what one read returns does not depend on
+    whether an earlier read happened. Clearing on a mismatch was tried and is
+    worse: release then becomes per-attribute and observation-dependent -
+    reading `lowess_fit` while stale would drop it while leaving
+    `outlier_indices` recoverable, so an index reverted afterwards would bring
+    back exactly the one nobody had looked at.
+
+    A consequence worth stating: on *this* object, restoring an index the fit
+    was computed against makes it readable again. Within the scope of this
+    property that is correct - the samples are back at the positions the fit
+    describes. It is only misleading if the *data* changed while the index was
+    elsewhere, which is the separate defect tracked as #40; fixing that by
+    stamping the data as well removes this wrinkle with it.
+
+    Reading does re-stamp with the index it just proved equal. That changes no
+    answer - equality is transitive - and buys two things: later reads take
+    `Index.equals`' identity fast path instead of an O(n) comparison, and the
+    index the value arrived with is released. Both matter because every derived
+    object gets a *new* `Index` instance, even from `copy(deep=False)`, so a
+    derived object never hits the identity fast path on its first read however
+    unchanged its index is.
     """
 
     def getter(self):
@@ -74,7 +89,11 @@ def _positional_property(public: str, private: str, what: str) -> property:
         except AttributeError:
             # Before the block manager exists there is no index to describe.
             return None
-        return value if current.equals(described_index) else None
+        if not current.equals(described_index):
+            return None
+        if current is not described_index:
+            object.__setattr__(self, private, (value, current))
+        return value
 
     def setter(self, value):
         if value is None:
@@ -94,19 +113,24 @@ def _drop_stale_positional_metadata(obj):
     """
     Release a positional slot whose index no longer matches.
 
-    Purely a memory measure, and deliberately incapable of changing behaviour:
-    it clears only slots the getter already reports as None. Without it, every
-    slice of a filtered series would keep the parent's full-length fit alive
-    for as long as the slice lived.
+    Runs on derivation only, from _detach_shared_metadata. Without it every
+    slice of a filtered series would pin the parent's full-length fit for as
+    long as the slice lived, whether or not anyone ever read it.
 
-    It is not the correctness mechanism - _positional_property is - so it runs
-    only where it is cheap and certain: on derivation, from
-    _detach_shared_metadata. Deleting it leaves every *behavioural* assertion
-    in the suite passing; the one test that fails,
-    test_a_stale_slot_is_released_on_derivation, reaches into the private slot
-    on purpose to pin the optimisation itself. That relationship is the
-    intended one, and it is what tells you this function can never be the
-    reason a fit reads as None.
+    It *is* observable, and the rule it enforces is deliberate: a derived
+    object whose index never matched is born without the value, so restoring
+    an index later cannot hand it one it never had. That differs from the same
+    revert on the object that owned the fit, where the value does come back -
+    see _positional_property. The two halves are each defensible on their own
+    terms, and neither depends on whether anyone read anything.
+
+    The limitation this leaves: an object mutated *in place* to a different
+    index keeps the old value in its slot, unread, until it is overwritten or
+    the object is collected. Closing that would need a hook at every point an
+    index can change, which is the design this replaced.
+
+    _positional_property remains the correctness mechanism: this only decides
+    when an unreadable value is released, never whether a readable one is.
     """
     for _public, private in _POSITION_INDEXED_SLOTS:
         stored = getattr(obj, private, None)

@@ -131,6 +131,20 @@ Six breaking changes fall out:
    the parent's metadata. **Migrate:** none, unless you were relying on the
    write-through.
 
+Two consequences of checking on read rather than destroying on write, neither
+of which depends on whether anyone read anything:
+
+- **Restoring an index makes the value readable again on the object that owned
+  it.** `ts.times = other; ts.times = original` gives the fit back — correct
+  within this property's scope, since the samples are back at the positions the
+  fit describes, and misleading only if the *data* changed meanwhile, which is
+  tracked separately as #40. A *derived* object never regains a value it never
+  had: derivation releases outright.
+- **An object mutated in place to a different index keeps the old value in its
+  slot** until overwritten or collected. Derivation releases eagerly, which is
+  the case that matters — it is what stops a slice pinning the parent's
+  full-length array.
+
 6. **`TimeSeriesData._metadata` no longer contains `'lowess_fit'` or
    `'outlier_indices'`.** The slots it names are now `'_lowess_fit'` and
    `'_outlier_indices'`, each holding `(value, index_it_describes)`. This

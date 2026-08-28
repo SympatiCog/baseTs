@@ -454,6 +454,25 @@ object's index and launders a stale fit into a valid-looking one.
 `_create_new_with_data` had exactly that shape and names the private slots for
 this reason, as it already did for `_freq_declaration`.
 
+Two consequences of checking on read rather than destroying on write:
+
+- **Restoring an index makes the value readable again, on the object that owned
+  it.** Within this property's scope — do the samples still sit where the fit
+  says — that is correct: the positions are back. It is misleading only if the
+  *data* changed while the index was elsewhere, which is the separate defect
+  [#40](https://github.com/SympatiCog/baseTs/issues/40); stamping the data as
+  well would remove this wrinkle with it. A *derived* object behaves
+  differently and deliberately: derivation releases a value that never
+  described it, so no later revert can hand it one it never had. Reading never
+  destroys, so which of the two you get never depends on whether anyone looked
+  first.
+- **An object mutated in place to a different index keeps the old value in its
+  slot**, unread, until it is overwritten or the object is collected. Only
+  derivation releases eagerly — which is the case that matters, since it is
+  what stops a slice pinning the parent's full-length array. Closing the
+  in-place case too would need a hook at every point an index can change, which
+  is the design this replaced.
+
 ### Constructor
 
 #### `TimeSeriesData.__init__(data, index=None, **metadata)`
