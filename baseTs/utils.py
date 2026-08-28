@@ -25,10 +25,14 @@ def validate_sampling_freq(freq: Any) -> float:
     duration. Passing that into np.fft.fftfreq(n, d=1/freq) yields NaN
     frequency bins instead of an error, so the caller gets silent nonsense.
 
-    Note this validates at the point of *consumption*. Nothing validates a
-    rate where it is produced - `freq=` reaches TimeSeriesData.__init__
-    unchecked, and __finalize__ copies it between objects verbatim - so a bad
-    rate is still reported some distance from the mistake that made it.
+    This is now also called from the `freq` property setter - the production
+    door, where TimeSeriesData.__init__ and every explicit `ts.freq = ...`
+    assignment route through it, so a bad rate is refused at the point it
+    enters the object rather than surfacing later from whatever consumes it.
+    The consumption-site calls below stay in place as defence in depth: a
+    caller that bypasses the setter - writing `ts._freq_declaration` directly,
+    or a duck-typed metadata copy - can still land a bad rate on the object,
+    and these are what catch it if one does.
 
     Args:
         freq: The sampling rate to validate, in Hz

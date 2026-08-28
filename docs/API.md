@@ -43,14 +43,20 @@ Create a new baseTs object.
 - `data` (array-like): The signal values (y-axis data)
 - `times` (array-like): The time points (x-axis data) 
 - `signal_name` (str, optional): Name for the signal
-- `freq` (float, optional): Sampling frequency in Hz
+- `freq` (float, optional): Sampling frequency in Hz. Declares an explicit
+  rate rather than deriving one from `times`; see the [`freq`](#freq)
+  property for how long the declaration is honoured. Defaults to `np.nan`,
+  the sentinel meaning "not supplied" — `np.nan` is accepted here without
+  raising, but assigning `ts.freq = np.nan` after construction does raise.
 - `ts_offset` (float, optional): Time offset in seconds
 
 **Returns:**
 - `baseTs`: New baseTs instance
 
 **Raises:**
-- `ValueError`: If data and times have different lengths
+- `ValueError`: If data and times have different lengths, or if `freq` is
+  explicitly given a non-positive, non-finite (other than `NaN`), or
+  non-numeric value — e.g. `freq=0.0` or `freq=-1.0`
 - `TypeError`: If data or times are not array-like
 
 **Examples:**
@@ -83,7 +89,9 @@ Create baseTs object from pandas DataFrame.
 - `time_col` (str): Column name for time values. Default: 'time'
 - `data_col` (str): Column name for data values. Default: 'value'
 - `signal_name` (str, optional): Signal name
-- `freq` (float, optional): Sampling frequency
+- `freq` (float, optional): Sampling frequency. Passed through to the
+  constructor; see [`freq`](#freq) above for how an explicit rate is
+  validated and how long it is honoured.
 - `ts_offset` (float, optional): Time offset
 
 **Returns:**
@@ -136,9 +144,17 @@ def signal_name(self) -> Optional[str]:
 #### `freq`
 ```python
 @property
-def freq(self) -> Optional[float]:
-    """Sampling frequency in Hz."""
+def freq(self) -> float:
+    """Sampling rate in Hz."""
 ```
+
+Derived from the time index unless you set one explicitly. An explicitly
+set rate is honoured only while the index still matches the one it was set
+against; any operation that changes the index (`iloc`, `sort_values`,
+`resample`, `dropna`) re-derives. Setting a non-positive, non-finite or
+non-numeric rate raises `ValueError`. Reads as `NaN` when the index cannot
+support a rate — fewer than two samples, a zero or negative span, or a
+non-numeric index such as a `DatetimeIndex`.
 
 #### `is_filtered`
 ```python
@@ -501,6 +517,29 @@ wrong = ts.resample('1s').max()
 
 # Upsample to 100 Hz
 ts_100hz = ts.resample('10ms')
+```
+
+### `interpto_hz(new_freq, kind='linear', inplace=False)`
+
+Resample onto a grid with exactly `1/new_freq` spacing, starting at the
+source's first timestamp. The final sample may fall short of the source's
+last timestamp rather than landing on it.
+
+**Parameters:**
+- `new_freq` (float): The desired sampling rate in Hz. Must be positive and finite.
+- `kind` (str, optional): Interpolation type passed to `scipy.interpolate.interp1d`. Default: `'linear'`
+- `inplace` (bool, optional): If True, modifies existing object. Otherwise returns new object
+
+**Returns:**
+- `baseTs`: Interpolated data on an exact `new_freq` grid
+
+**Raises:**
+- `ValueError`: If `new_freq` is not a positive finite rate, if the source
+  time base is degenerate, or if the requested rate yields fewer than two samples
+
+**Example:**
+```python
+ts_200hz = ts.interpto_hz(200)   # a 10.0 s series returns 2001 samples, not 2000
 ```
 
 ---

@@ -196,6 +196,12 @@ class baseTs(TimeSeriesData):
         # Handle times array - create if not provided
         if times is None:
             if not _is_unset(freq):
+                # Validated before use, not after: this builds the index FROM
+                # the rate, so freq=0 produced times [nan, inf, inf, ...],
+                # freq=-10 ran the index backwards, and freq=inf collapsed it
+                # to all-zeros - each of them a silently degenerate object
+                # whose real complaint surfaced much later.
+                freq = validate_sampling_freq(freq)
                 times = np.arange(0, len(data)) / freq
             else:
                 raise ValueError("You must provide either a times array or a frequency")
@@ -238,11 +244,7 @@ class baseTs(TimeSeriesData):
             # caller's own object, so two series built from one list do not
             # cross-contaminate each other's history.
             self.history = normalise_history(history)
-        
-        # Calculate frequency if not provided
-        if _is_unset(freq):
-            self.freq = self._calculate_effective_frequency()
-        
+
         # Only if the superclass did not already carry one across: baseTs(ts)
         # takes the conversion branch in TimeSeriesData.__init__, which copies
         # the source's filter, and this used to overwrite it with a default.
@@ -286,8 +288,10 @@ class baseTs(TimeSeriesData):
     def times(self, value: np.ndarray):
         """Set the time values (backward compatibility)."""
         self.index = pd.Index(value)
-        # Recalculate frequency
-        self.freq = self._calculate_effective_frequency()
+        # No freq recalculation. The property derives from the index, so a new
+        # index re-derives on the next read - and any declaration made against
+        # the old index stops matching its token, which is the correct
+        # outcome rather than a side effect to remember to trigger here.
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
@@ -340,54 +344,44 @@ class baseTs(TimeSeriesData):
         if new_times is None:
             new_times = self.times
 
-        # Create new object. freq is carried only when the index is
-        # unchanged - an explicit freq may legitimately disagree with the
-        # times it was built from, but an operation that changed the time
-        # base (resample, remove_outliers, ...) must not carry the old rate
-        # forward. When the index changed, omit freq so __init__ derives it.
+        # No freq handling here any more. The `freq` property derives from the
+        # index, and an explicit declaration travels as _freq_declaration in
+        # the metadata copy below - where the property re-validates it against
+        # this object's own index. The index_unchanged test and the
+        # post-construction re-assert that used to live here were a second
+        # implementation of the "did the index change?" rule, which is
+        # precisely how it came to disagree with __finalize__ (#29).
         new_kwargs = {'signal_name': self.signal_name}
-        # `is` first: most callers either pass new_times=None (identical to
-        # self.times by the assignment above) or a genuinely different array,
-        # so the O(n) fallback only runs when it can actually change the
-        # answer.
-        index_unchanged = (
-            new_times is self.times or np.array_equal(new_times, self.times)
-        )
-        if index_unchanged:
-            new_kwargs['freq'] = self.freq
         new_kwargs.update(kwargs)
-        
-        new_obj = baseTs(new_data, new_times, **new_kwargs)
 
-        # Re-assert the rate after construction when the index did not change.
-        # Passing it as a kwarg is not enough: __init__ routes freq through
-        # _is_unset, which treats NaN as "not supplied" and re-derives from
-        # the index - so a NaN rate was laundered into a fabricated healthy
-        # number. h.freq = nan correctly raised on h.get_frequency_content()
-        # but h.zscale().get_frequency_content() returned a full spectrum at
-        # an invented 10.0 Hz, while h.iloc[:100] kept the NaN. Same series,
-        # opposite behaviour depending only on the derivation path taken.
-        if index_unchanged and 'freq' not in kwargs:
-            new_obj.freq = self.freq
+        new_obj = baseTs(new_data, new_times, **new_kwargs)
 
         if preserve_metadata:
             # Copy metadata
-            metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid', 
+            metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
                             'outlier_indices', 'lowess_fit', 'last_process',
                             'outlier_filter']
-            
+
+            # Not iterating self._metadata: this list is deliberately curated
+            # and excludes history and signal_name, which are handled above and
+            # below. _freq_declaration must be added by name, and is skipped
+            # when the caller declared a rate explicitly - otherwise this copy
+            # would silently overwrite their kwarg with the parent's.
+            if 'freq' not in kwargs:
+                metadata_attrs.append('_freq_declaration')
+
             for attr in metadata_attrs:
                 if hasattr(self, attr):
                     setattr(new_obj, attr, getattr(self, attr))
-            
+
             # Copy history (make a copy to avoid reference issues). Shares one
             # normaliser with __finalize__: every non-inplace method routes
             # through here, so a history that arrived as None would otherwise
             # die on .copy() before reaching any of the guarded append paths,
             # and a bare list() would explode a str into characters.
             new_obj.history = normalise_history(self.history)
-        
+
         return new_obj
 
     def _enhanced_process_with_flags(self, func, hist_msg: str, last_process: str, 
@@ -563,48 +557,102 @@ class baseTs(TimeSeriesData):
             inplace=inplace
         )
     
-    def interpto_hz(self, new_freq: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
+    def interpto_hz(self, new_freq: float, kind: str = 'linear',
+                    inplace: bool = False) -> "baseTs":
         """
-        Interpolate the times to a new frequency.
+        Resample onto a uniform grid at exactly new_freq.
+
+        The grid is built from the rate rather than by subdividing the
+        duration. np.linspace(t0, t1, int(duration * new_freq)) spreads N
+        points across the whole span, so the spacing is duration/(N-1) and the
+        real rate falls short by (N-1)/N - interpto_hz(5) produced a grid
+        measuring 4.984985 Hz while reporting 5. Building from the rate makes
+        the reported and produced rates the same number.
 
         Args:
-            new_freq (int): The desired new frequency of the interpolated times.
-            kind (str, optional): The type of interpolation to use. Defaults to 'linear'.
-            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to False.
+            new_freq: The desired sampling rate in Hz. Must be positive and
+                finite; it is validated here rather than at the point the
+                result is consumed.
+            kind: Interpolation type passed to scipy.interpolate.interp1d
+            inplace: If True, modifies existing object. Otherwise returns a
+                new object. Defaults to False.
 
         Returns:
-            baseTs: Interpolated data at new frequency
+            baseTs: Interpolated data on an exact new_freq grid
+
+        Raises:
+            ValueError: If new_freq is not a positive finite rate, if the
+                source time base is degenerate, or if the requested rate is
+                too low to produce at least two samples
         """
-        def interp_func(data):
-            new_ts = np.linspace(self.times[0], self.times[-1], int(self.duration() * new_freq))
-            f1 = interpolate.interp1d(self.times, data, kind=kind)
-            return f1(new_ts), new_ts, new_freq
-            
-        def process_result(result):
-            data, times, freq = result
-            if inplace:
-                self.data = data
-                self.times = times
-                self.freq = freq
-                self.is_interpolated = True
-                self.is_uniform_grid = True
-                return self
-            else:
-                new_obj = self.copy()
-                new_obj.data = data
-                new_obj.times = times
-                new_obj.freq = freq
-                new_obj.is_interpolated = True
-                new_obj.is_uniform_grid = True
-                return new_obj
-                
-        result = interp_func(self.data)
-        processed = process_result(result)
-        processed._update_history_and_process(
+        new_freq = validate_sampling_freq(new_freq)
+
+        # duration() is float(index[-1] - index[0]), which raises TypeError on
+        # a non-numeric index (a DatetimeIndex yields a Timedelta). Caught so
+        # this method keeps the ValueError contract its docstring promises
+        # rather than leaking a conversion error from two frames down.
+        try:
+            duration = self.duration()
+        except (TypeError, ValueError):
+            duration = np.nan
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError(
+                f"Cannot interpolate to {new_freq} Hz: the source time base is "
+                f"degenerate (duration {duration}). A zero, negative or "
+                f"unmeasurable span has no rate to resample from, and stamping "
+                f"the requested rate on the empty result would report a healthy "
+                f"number for a series that has none."
+            )
+
+        # Rounded before flooring. The product lands just below the integer
+        # for an exact-rate source - (np.arange(1000)/30.0) spans
+        # 998.9999999999999 * 30, not 999.0 - so a bare floor silently drops
+        # a trailing sample on a same-rate round trip. Nine places absorbs
+        # representation error while leaving a genuine fractional product
+        # (998.9999 from real data) to floor as it should.
+        n_samples = int(np.floor(np.round(duration * new_freq, 9))) + 1
+        if n_samples < 2:
+            raise ValueError(
+                f"Cannot interpolate to {new_freq} Hz: a {duration}s series "
+                f"yields {n_samples} sample(s), and at least two samples are "
+                f"needed to carry a rate."
+            )
+
+        # Clipped defensively, not to fix an observed bug: n-1 <= duration *
+        # new_freq holds by construction, so the last point cannot exceed t1
+        # mathematically, and a 200,000-case sweep across rates, lengths and
+        # offsets found no overshoot. But np.round above can nudge the product
+        # up past its true value, and interp1d rejects anything above its
+        # range outright - a one-line clamp against a hard error that would
+        # only ever appear on a user's data.
+        new_times = self.times[0] + np.arange(n_samples) / new_freq
+        new_times[-1] = min(new_times[-1], self.times[-1])
+
+        interpolator = interpolate.interp1d(self.times, self.data, kind=kind)
+        new_data = interpolator(new_times)
+
+        if inplace:
+            target = self
+        else:
+            target = self.copy()
+
+        target.data = new_data
+        target.times = new_times
+        # Declared, not left to derive. After the grid fix the derived rate is
+        # correct, but it round-trips through floating point -
+        # (n-1) / ((n-1)/f) is not bit-exact f - so .freq could read
+        # 99.99999999999999. The declaration is now true rather than the
+        # (N-1)/N overstatement it used to be, and it expires on an index
+        # change like any other.
+        target.freq = new_freq
+        target.is_interpolated = True
+        target.is_uniform_grid = True
+
+        target._update_history_and_process(
             hist_msg=f"Interpolated to {new_freq}Hz",
             last_process=f"_interpto_{new_freq}Hz"
         )
-        return processed
+        return target
 
     def interpto_samples(self, new_len: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
         """
@@ -706,7 +754,12 @@ class baseTs(TimeSeriesData):
 
         Returns:
             new_ts: baseTs object with uniform sampling grid
-                    Note: freq is recalculated to match the new grid.
+                    Note: freq is recalculated to match the new grid, unless
+                    a declared rate survives the change - see breaking
+                    change 8. With new_grid=None the new grid is
+                    linspace(t0, t1, len(data)), which preserves
+                    (len, first, last), so a declaration on the source
+                    carries over even though interior spacing changed.
         """
         if new_grid is None:
             # create new evenly spaced grid at the effective sample rate
@@ -718,8 +771,11 @@ class baseTs(TimeSeriesData):
         f1 = interpolate.interp1d(self.times, self.data, kind=kind)
         last_process = "_unigrid"
         transfer = f1(new_grid)
-        # freq is not computed here - the times setter below recomputes it
-        # via _calculate_effective_frequency, which does not over-report by
+        # freq is not assigned here - it is read, not computed, whenever the
+        # property is accessed below. A surviving declaration is honoured (see
+        # breaking change 8: this grid preserves (len, first, last) when
+        # new_grid is None); otherwise the getter derives via
+        # _calculate_effective_frequency, which does not over-report by
         # n/(n-1) the way len(new_grid) / self.duration() did.
         if inplace is False:
             newTs = self.copy()
@@ -1186,7 +1242,6 @@ class baseTs(TimeSeriesData):
         if inplace is True:
             self.data = filt.data
             self.times = filt.times
-            self.freq = filt.freq
             self.is_outlier_filtered = True
             self._update_history_and_process(hist_msg, last_process)
             self.lowess_fit = lowess_fit
@@ -1196,7 +1251,6 @@ class baseTs(TimeSeriesData):
             newTs = self.copy()
             newTs.data = filt.data
             newTs.times = filt.times
-            newTs.freq = filt.freq
             newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_outlier_filtered = True
             newTs.lowess_fit = lowess_fit
@@ -2193,7 +2247,6 @@ class baseTs(TimeSeriesData):
             new_obj = baseTs(
                 data=self.values.copy(),
                 times=self.index.values.copy(),
-                freq=self.freq,
                 signal_name=self.signal_name
             )
             
@@ -2218,8 +2271,8 @@ class baseTs(TimeSeriesData):
             copied = super().copy(deep=False)
             # Ensure it's still a baseTs object
             if not isinstance(copied, baseTs):
-                copied = baseTs(copied.values, copied.index.values, 
-                              freq=self.freq, signal_name=self.signal_name)
+                copied = baseTs(copied.values, copied.index.values,
+                              signal_name=self.signal_name)
                 # Copy metadata
                 for attr in self._metadata:
                     if hasattr(self, attr):

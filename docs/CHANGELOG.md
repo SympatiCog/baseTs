@@ -54,6 +54,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `freq` becomes a derived property (#29, #31, #23)
+
+### Behavior change — `freq` is now a property, not a stored attribute
+
+`freq` used to be a plain attribute: whatever value was last assigned —by
+the constructor, by a filter, by pandas' own metadata propagation— stayed
+put even after the time index it described had since changed underneath it.
+It is now a property. By default it derives from the time index; setting it
+explicitly records a *declaration*, honoured only while the index still
+matches the one it was set against, and the declaration expires the moment
+an operation changes that index. The setter validates, so a bad rate now
+raises immediately instead of surfacing much later as a NaN FFT bin or a
+wrong filter cutoff. `interpto_hz` was also rebuilt so the grid it produces
+actually measures the rate it reports.
+
+Nine breaking changes fall out of these two fixes:
+
+1. **A declared rate expires when the index changes.**
+   `baseTs(..., freq=999).iloc[:50].freq` now returns the rate derived from
+   the sliced index, not `999`. **Migrate:** re-declare `.freq` after any
+   operation that changes the index if you need the old rate to stick, or
+   rely on the derived rate instead.
+
+2. **Assigning an invalid rate raises.** `ts.freq = 0`, `ts.freq = np.nan`
+   and `ts.freq = '30'` used to be stored silently; they now raise
+   `ValueError`. **Migrate:** validate the rate before assigning, or catch
+   `ValueError` around the assignment.
+
+3. **`interpto_hz` returns a different grid** — one more sample, spacing of
+   exactly `1/new_freq`, and a final timestamp that may fall short of the
+   source's last timestamp rather than landing on it. `ts.interpto_hz(200)`
+   on a 10.0 s series now returns 2001 samples, not 2000. **Migrate:**
+   update any code or test that asserts a specific `interpto_hz` sample
+   count or a specific final timestamp.
+
+4. **`interpto_hz` raises on a degenerate source** — a zero, negative, or
+   unmeasurable time span — instead of returning an empty series stamped
+   with the requested rate. **Migrate:** wrap the call in
+   `try`/`except ValueError` if you were relying on an empty result rather
+   than an exception.
+
+5. **`TimeSeriesData._metadata` no longer contains `'freq'`.** The
+   internal slot it used to name is now `'_freq_declaration'`. **Migrate:**
+   code that introspects or iterates `_metadata` looking for `'freq'` needs
+   to look for `'_freq_declaration'` instead — or, better, just read and
+   write the public `freq` property directly and leave `_metadata` alone.
+
+6. **`baseTs(data, times, freq=0.0)` and `freq=-1.0` now raise at
+   construction.** They were accepted before, deliberately, because
+   `interpto_hz(0)` used to mint exactly such objects; this release stops
+   `interpto_hz` from doing that, so the constructor no longer has to
+   tolerate them either. **Migrate:** pass a positive, finite rate, or omit
+   `freq` and let it derive from `times`. Note the asymmetry:
+   `baseTs(..., freq=np.nan)` still means "not supplied" and does **not**
+   raise — `np.nan` is the constructor's own sentinel for that — but
+   `ts.freq = np.nan` on an existing object does raise, because there the
+   only meaning of assigning `np.nan` is a bad declaration.
+
+7. **A `DatetimeIndex`-backed series now constructs successfully** where it
+   used to raise `TypeError`; `.freq` reads `NaN` instead, since a
+   `DatetimeIndex` cannot support a numeric rate. **Migrate:** if you were
+   catching `TypeError` to detect a `DatetimeIndex` input, check
+   `np.isnan(ts.freq)` instead, or resample to a numeric index first.
+
+8. **Any operation whose result index has the same `(len, first, last)` now
+   preserves a declared rate**, where it previously re-derived or
+   overwrote it. This is general — not specific to arithmetic — because the
+   token the property compares against is exactly those three values.
+   Three instances are known on this branch:
+   - **Arithmetic.** Found during implementation, not design: a series
+     declaring 10.0 Hz over a time base measuring 9.9 Hz reported
+     `a.freq == 10.0` but `(a + b).freq == 9.9` — the same object answering
+     differently for an operation that never touched its index.
+   - **`filter_outliers`.** `baseTs(d, t, freq=999.0).filter_outliers().freq`
+     is now `999.0`. On `main`, a `newTs.freq = filt.freq` assignment (this
+     branch deleted it) overwrote the declaration with the filter's derived
+     rate; deleting it was a behaviour change, not the redundant tidying the
+     design's deletion table described it as.
+   - **`interp_to_uniform_grid(inplace=False)`.** Same series → `999.0`.
+     With `new_grid=None` the grid is `linspace(t0, t1, len(data))`, which
+     preserves length and both endpoints, so the token survives even though
+     interior spacing changed.
+
+   **Migrate:** code that relied on any index-preserving operation always
+   re-deriving `freq` will now see the operand's declared rate instead. See
+   `docs/superpowers/specs/2026-08-27-derived-freq-design.md` (Consequences,
+   item 8) for the full reasoning.
+
+9. **A pickle written by an older version can fail to load.** If its
+   `_metadata` contained `'freq'` set to a non-positive or NaN value —
+   plausible, since `main` stored NaN for any degenerate index and
+   `interpto_hz(0)` minted `freq=0` objects — unpickling now raises
+   `ValueError`. pandas' `__setstate__` restores attributes with
+   `object.__setattr__`, which honours the `freq` data descriptor and so
+   runs the validating setter on every old pickle, not just new ones.
+   **Migrate:** don't unpickle old objects that carried a degenerate rate;
+   re-create them from their underlying data and times instead.
+
 ## [Unreleased] — bounded gap handling in filter_outliers
 
 ### Fixed — filter_outliers no longer invents data in pre-existing gaps

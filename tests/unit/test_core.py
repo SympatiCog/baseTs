@@ -86,8 +86,10 @@ class TestBaseTsTransformations:
         new_freq = 200  # 200 Hz
         ts_interp = simple_baseTsObj.interpto_hz(new_freq)
         
-        # Duration is 10 seconds, so 200 Hz should give 2000 points
-        assert len(ts_interp.data) == 2000
+        # Duration is 10 seconds at exactly 200 Hz: 2000 intervals, 2001 samples.
+        # Was 2000 before the grid fix, when the points were spread across the
+        # span and the real rate was 199.9 Hz.
+        assert len(ts_interp.data) == 2001
         assert ts_interp.freq == new_freq
         assert ts_interp.is_interpolated is True
         
@@ -712,16 +714,15 @@ class TestHistoryInvariantHoldsEverywhere:
 class TestNanFreqIsNotLaundered:
     """A NaN rate must not become a fabricated healthy number.
 
-    __init__ routes freq through _is_unset, which treats NaN as "not
-    supplied" and re-derives from the index, so forwarding one through
-    _create_new_with_data invented a rate the guards then accepted.
+    Reaches a NaN rate through a degenerate time base rather than by
+    assigning one. Assignment is no longer a route: the freq setter validates,
+    so a NaN can only enter by being derived. A zero-duration index is the
+    only remaining way in, which makes it the honest subject for this test.
     """
 
     @staticmethod
     def _nan_freq():
-        ts = baseTs(np.sin(np.arange(200) / 10.0), np.arange(200) / 10.0)
-        ts.freq = np.nan
-        return ts
+        return baseTs(np.sin(np.arange(200) / 10.0), np.zeros(200))
 
     def test_derivation_paths_agree(self):
         ts = self._nan_freq()
