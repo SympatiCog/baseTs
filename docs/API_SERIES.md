@@ -160,6 +160,10 @@ Get frequency domain representation using pandas-optimized FFT.
 
 **Returns:** Tuple of (frequencies, power_spectrum)
 
+**Raises:** `ValueError` on an unusable sampling frequency, an unknown window function, or NaN/Inf
+in the data. An FFT over data containing NaN returns an all-NaN spectrum, so fill gaps first with
+`interpolate_gaps()`.
+
 **Examples:**
 ```python
 # Basic FFT
@@ -302,7 +306,9 @@ ts = baseTs(data, times, freq=100.0, signal_name="example")
 
 # Apply traditional processing
 ts_filtered = ts.bandpass_at(hp_hz=0.1, lp_hz=2.0)
-ts_clean = ts_filtered.filter_outliers()
+# interpolate_gaps because filter_outliers leaves pre-existing gaps as NaN,
+# and get_frequency_content below rejects NaN input.
+ts_clean = ts_filtered.filter_outliers().interpolate_gaps()
 
 # Apply new enhanced processing  
 ts_smooth = ts_clean.rolling_mean(window=50)

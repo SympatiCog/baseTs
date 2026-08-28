@@ -382,6 +382,135 @@ def test_relative_band_power_rejects_nan_freq():
         relative_band_power(ts, 0.01, 0.1)
 
 
+# ---------------------------------------------------------------------------
+# Non-finite *data* guards (issue #28)
+#
+# The guards above reject a bad time base. These reject bad samples. An FFT
+# over data containing NaN returns an all-NaN spectrum, and find_peaks over an
+# all-NaN array still returns indices - so get_peak_freq reported a confident
+# wrong number rather than failing. That is the more dangerous half of the NaN
+# story: the sampling-rate NaN of #24 at least produced visible NaN output.
+# ---------------------------------------------------------------------------
+
+def _gappy_ts(bad=np.nan, n_bad=1):
+    """A 0.16 Hz sine over 500 samples with `n_bad` samples replaced by `bad`."""
+    data = np.sin(np.arange(500) / 10.0)
+    data[100:100 + n_bad] = bad
+    return baseTs(data, np.arange(500) / 10.0)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_get_frequency_content_rejects_nonfinite_data(bad):
+    """The production site raises instead of returning an all-NaN spectrum.
+
+    get_frequency_content builds its own FFT and was the only spectral entry
+    point without this check, so every consumer of it inherited the defect.
+    """
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        _gappy_ts(bad).get_frequency_content()
+
+
+def test_get_peak_freq_rejects_nonfinite_data():
+    """The headline defect: no confident wrong answer on gappy data.
+
+    Pins behaviour, not a particular guard - get_peak_freq has no check of its
+    own and deliberately so, since get_frequency_content raises first. The
+    value it used to return (4.98 Hz, against a true peak of 0.16 Hz) was an
+    artifact of find_peaks indexing an all-NaN array, and was insensitive to
+    how many samples were bad, which is what confirmed it was meaningless
+    rather than merely degraded.
+    """
+    ts = _gappy_ts()
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        ts.get_peak_freq()
+
+    # Windowing does not launder it either - the window multiplies the NaN
+    # through rather than removing it.
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        ts.get_peak_freq(window='hann')
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        ts.get_peak_freq(num_pks=3)
+
+
+def test_nonfinite_data_message_names_the_remedy_everywhere():
+    """All four spectral entry points give the same actionable error.
+
+    They drifted before: compute_fft_power and relative_band_power each
+    carried their own copy of the check with different wording, and
+    get_frequency_content carried none. The shared helper is what stops a
+    fifth entry point being added without one.
+    """
+    ts = _gappy_ts()
+
+    for call in (
+        lambda: ts.get_frequency_content(),
+        lambda: ts.get_peak_freq(),
+        lambda: relative_band_power(ts, 0.01, 0.1),
+        lambda: compute_fft_power(ts),
+    ):
+        with pytest.raises(ValueError, match="interpolate_gaps"):
+            call()
+
+
+@pytest.mark.parametrize("good", [
+    np.arange(8),                          # int - cannot hold NaN, early return
+    np.array([True, False, True]),         # bool - likewise
+    np.array([1.0, 2.0], dtype=object),    # object, but of real numbers
+    np.array([1 + 2j, 3 + 4j]),            # complex, both parts finite
+])
+def test_validate_finite_data_accepts_usable_dtypes(good):
+    """The guard rejects bad values, not unfamiliar dtypes.
+
+    Complex is the load-bearing case: np.isfinite handles it, so it is left
+    unconverted. A float cast would reject it outright, which would be a
+    behaviour change rather than the guard this function exists to add.
+    """
+    from baseTs.utils import validate_finite_data
+
+    assert validate_finite_data(good) is None
+
+
+@pytest.mark.parametrize("bad", [
+    np.array([1.0, np.nan], dtype=object),
+    np.array([1 + 2j, complex(np.nan, 0)]),
+])
+def test_validate_finite_data_looks_inside_unconverted_dtypes(bad):
+    """Object and complex arrays are checked, not waved through.
+
+    np.isfinite raises TypeError on object arrays, so the object case only
+    works because it is converted first.
+    """
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(bad)
+
+
+def test_validate_finite_data_reports_non_numeric_as_valueerror():
+    """Non-numeric data gets the documented ValueError, not a numpy TypeError.
+
+    Before the shared guard, a string series reached np.fft.fft (or np.isnan)
+    and died with "ufunc not supported for the input types", which names an
+    internal ufunc rather than the caller's data.
+    """
+    from baseTs.utils import validate_finite_data
+
+    for bad in (np.array(['a', 'b'], dtype=object), np.array(['a', 'b'])):
+        with pytest.raises(ValueError, match="not numeric"):
+            validate_finite_data(bad)
+
+
+def test_interpolating_the_gaps_recovers_the_true_peak():
+    """The remedy the error message names actually resolves it.
+
+    Without this, the guard could name a method that does not in fact make the
+    call succeed. 0.16 Hz is the peak of the same series with no NaN in it.
+    """
+    recovered = _gappy_ts().interpolate_gaps().get_peak_freq()
+    assert np.isclose(recovered, 0.16), recovered
+
+
 def test_validate_sampling_freq_rejects_non_real_scalars():
     """The documented ValueError holds for non-numeric input too.
 

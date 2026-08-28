@@ -717,6 +717,16 @@ Get frequency domain representation using enhanced FFT with optional windowing.
 **Returns:**
 - `Tuple[NDArray, NDArray]`: Tuple of (frequencies, power_spectrum)
 
+**Raises:**
+- `ValueError`: Unusable sampling frequency, unknown window function, or NaN/Inf in the data
+
+**Preconditions:**
+- **The data must be gap-free.** An FFT over data containing NaN returns an *all-NaN* spectrum, not
+  a degraded one, so this raises rather than handing back nonsense. Fill gaps first with
+  `interpolate_gaps()`. Note that `filter_outliers()` deliberately leaves pre-existing gaps as NaN,
+  so a `filter_outliers()` → `get_frequency_content()` chain needs an `interpolate_gaps()` between
+  them.
+
 **Example:**
 ```python
 # Basic FFT
@@ -742,10 +752,20 @@ Get the top peak frequencies using enhanced frequency analysis with windowing.
 **Returns:**
 - `float` or `List[float]`: Single peak frequency if num_pks=1, otherwise list of peak frequencies
 
+**Raises:**
+- `ValueError`: Unusable sampling frequency, or NaN/Inf in the data
+
+Both come from `get_frequency_content()`, which this calls. The data check matters here in
+particular: `find_peaks` returns indices over an all-NaN spectrum quite happily, so before this
+guard existed a single NaN produced a confident, entirely meaningless frequency.
+
 **Example:**
 ```python
 # Basic peak frequency (excludes DC component by default)
 peak = ts.get_peak_freq()  # Returns: 25.3
+
+# Gappy data must be filled first - this raises otherwise
+peak = ts.interpolate_gaps().get_peak_freq()
 
 # Top 3 peaks with Hanning window
 peaks = ts.get_peak_freq(num_pks=3, window='hann')  # Returns: [25.3, 10.1, 45.7]

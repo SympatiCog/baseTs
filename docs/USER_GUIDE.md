@@ -433,8 +433,10 @@ def process_physiological_signal(raw_data, sampling_rate):
     outliers = filtered.detect_outliers(method='modified_zscore', threshold=3.5)
     print(f"Detected {np.sum(outliers)} artifact samples ({100*np.sum(outliers)/len(filtered):.1f}%)")
     
-    # 4. Clean using traditional LOWESS filter
-    cleaned = filtered.filter_outliers()
+    # 4. Clean using traditional LOWESS filter, then fill acquisition gaps.
+    # filter_outliers deliberately leaves pre-existing gaps as NaN, and the
+    # frequency analysis in step 7 rejects NaN input.
+    cleaned = filtered.filter_outliers().interpolate_gaps()
     
     # 5. Smooth with rolling mean
     smoothed = cleaned.rolling_mean(window=int(sampling_rate * 0.1))  # 100ms window

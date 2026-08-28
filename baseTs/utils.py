@@ -92,6 +92,66 @@ def validate_sampling_freq(freq: Any) -> float:
         raise ValueError(f"Invalid sampling frequency: {freq} Hz.{hint}")
     return value
 
+def validate_finite_data(data: Any) -> None:
+    """Reject sample values an FFT cannot produce a meaningful spectrum from.
+
+    The companion to validate_sampling_freq: that one rejects a bad time base,
+    this one rejects bad samples. A single NaN anywhere in the input makes
+    np.fft.fft return an all-NaN spectrum - not a degraded one, an entirely
+    meaningless one - and scipy's find_peaks still returns indices over an
+    all-NaN array. get_peak_freq therefore reported a confident wrong number
+    that was insensitive to how much of the data was bad (issue #28).
+
+    Raising rather than dropping the bad samples is deliberate. Dropping would
+    change the sample spacing, so the resulting bins would no longer be the
+    frequencies they are labelled with, and the caller would not be told. The
+    error names interpolate_gaps() because filling the gaps is the decision
+    the caller has to make, and it is theirs to make explicitly.
+
+    This lives in one place because the four spectral entry points had already
+    drifted: compute_fft_power and relative_band_power each carried their own
+    copy with different wording, and get_frequency_content carried none.
+
+    Args:
+        data: The sample values to check, as any array-like
+
+    Raises:
+        ValueError: If the data contains NaN or Inf, or is not numeric
+    """
+    arr = np.asarray(data)
+
+    # Integer and boolean dtypes cannot represent NaN or Inf at all, so they
+    # are accepted without inspection. Purely to avoid copying the whole array
+    # to float64 on every call - the accept/reject set is identical either
+    # way, since a cast integer is still finite.
+    if arr.dtype.kind in "bui":
+        return
+
+    # Anything not already numeric (object arrays, most often) is converted so
+    # np.isfinite has a dtype it can loop over - it raises TypeError on object
+    # arrays. Complex is left alone deliberately: np.isfinite handles it, and
+    # a float cast would reject it outright, which would be a behaviour change
+    # rather than the guard this function exists to add.
+    if arr.dtype.kind not in "fc":
+        try:
+            arr = np.asarray(arr, dtype=float)
+        except (TypeError, ValueError) as exc:
+            # TypeError translated to ValueError to keep the promise this
+            # docstring makes, the same way validate_sampling_freq does.
+            # arr is unchanged here - the failed assignment above leaves the
+            # original bound, so this reports the caller's dtype, not float.
+            raise ValueError(
+                f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
+                f"be interpreted as real numbers."
+            ) from exc
+
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(
+            "Time series data contains NaN or Inf values. Fill gaps first, "
+            "e.g. with interpolate_gaps()."
+        )
+
+
 def round_values(x: Any, decimals: int = 4) -> Any:
     """Round a float to a specified number of decimal places,
     or return the value unchanged if not a float."""
@@ -203,7 +263,8 @@ def compute_fft_power(
         Tuple of (frequencies, power_spectrum)
 
     Raises:
-        ValueError: If the time series is empty or has invalid frequency
+        ValueError: If the time series is empty, has an invalid frequency, or
+            contains NaN or Inf values
     """
     # Input validation
     if len(ts.data) == 0:
@@ -211,11 +272,9 @@ def compute_fft_power(
     validate_sampling_freq(ts.freq)
 
     data = ts.data.copy()
-    
-    # Validate data doesn't contain NaN or Inf
-    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
-        raise ValueError("Time series data contains NaN or Inf values")
-    
+
+    validate_finite_data(data)
+
     if demean:
         data_mean = data.mean()
         if not np.isfinite(data_mean):
@@ -285,7 +344,12 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
 
     Returns:
         Single peak frequency (float) if num_pks=1, otherwise list of peak frequencies
-        
+
+    Raises:
+        ValueError: If the sampling frequency is not usable, or if the data
+            contains NaN or Inf. Both are raised by get_frequency_content
+            below, so this function carries no guard of its own.
+
     Examples:
         # Basic peak frequency (returns float, excludes DC)
         peak = get_peak_freq(ts)  # 25.3
@@ -420,11 +484,14 @@ def relative_band_power(
             f"({high_freq} Hz)"
         )
 
-    # ts.get_frequency_content() below validates the rate and raises the same
-    # ValueError, so this function needs no guard of its own. The Nyquist
-    # comparison that follows is NaN-blind (`high_freq > nan` is False), but
-    # that only means it declines to reject - the error still arrives, with
-    # the same message, from the call at the end of this function.
+    # ts.get_frequency_content() below validates both the rate and the data,
+    # raising the same ValueErrors, so this function needs no guard of its
+    # own. Two of the checks that follow are NaN-blind - `high_freq > nan` is
+    # False, and np.std of data containing NaN is NaN, so `< 1e-15` is False
+    # too - but that only means they decline to reject; the error still
+    # arrives, with the same message, from the call at the end of this
+    # function. A local copy of either guard is what let the four spectral
+    # entry points drift apart in the first place (issue #28).
     nyquist = ts.freq / 2
     if high_freq > nyquist:
         raise ValueError(
@@ -433,11 +500,6 @@ def relative_band_power(
         )
 
     data = np.asarray(ts.values, dtype=float)
-    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
-        raise ValueError(
-            "Time series data contains NaN or Inf values. Fill gaps first, "
-            "e.g. with interpolate_gaps()."
-        )
 
     # Effectively constant data has no oscillatory content, so any ratio would
     # be pure floating-point roundoff. Same threshold used by compute_fft_power.

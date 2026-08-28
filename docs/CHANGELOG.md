@@ -54,6 +54,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the spectral family rejects non-finite *data* (#28)
+
+### Fixed — `get_peak_freq` no longer returns a confident wrong answer on gappy data
+
+`get_frequency_content` built its own FFT and, unlike every sibling in the
+spectral family, carried no NaN/Inf check on the data. A single NaN anywhere in
+the input makes `np.fft.fft` return an **all-NaN** spectrum, and scipy's
+`find_peaks` still returns indices over an all-NaN array — so `get_peak_freq`
+reported a plausible-looking frequency with nothing behind it. No warning, and
+no NaN in the output to signal the problem.
+
+On a 500-sample 0.16 Hz sine, one injected NaN produced `4.98`. So did five,
+and so did fifty; windowing did not change it either. That insensitivity to how
+much of the data was bad is what confirms the number was meaningless rather
+than merely degraded. This is the more dangerous half of the NaN story fixed in
+#24 — that one at least produced visible NaN output.
+
+The root cause was a guard lost in a refactor: `get_peak_freq` was moved off
+`compute_fft_power` (which has the check) onto the "enhanced"
+`get_frequency_content` (which did not), silently dropping the validation along
+with it.
+
+All spectral entry points now share `utils.validate_finite_data`, the companion
+to `validate_sampling_freq`. `compute_fft_power` and `relative_band_power` each
+carried their own copy of the check with different wording; those copies are
+gone, and `relative_band_power` now has no local data guard at all — it calls
+`get_frequency_content`, whose guard raises the same error. Local copies at
+consumption sites are exactly what let the four drift apart.
+
+**Behaviour change:** `get_frequency_content`, `get_peak_freq` and
+`plot_fft_power` now raise `ValueError` on data containing NaN or Inf, where
+they previously returned or plotted an all-NaN spectrum. The message names the
+remedy: *"Fill gaps first, e.g. with `interpolate_gaps()`."* This is reachable
+in normal use — since #36, `filter_outliers` deliberately returns a series
+containing NaN, so `ts.filter_outliers().get_peak_freq()` now raises and needs
+an `interpolate_gaps()` between them.
+
+Raising rather than dropping the bad samples is deliberate: dropping would
+change the sample spacing, so the resulting bins would no longer be the
+frequencies they are labelled with, and the caller would not be told. It also
+matches what the guarded siblings already did.
+
+**Secondary behaviour change:** non-numeric data (a string or object-dtype
+series) now raises `ValueError` naming the data, where both `compute_fft_power`
+and `get_frequency_content` previously raised `TypeError: ufunc 'isnan'/'fft'
+not supported for the input types`. Integer and boolean series skip the check
+entirely — those dtypes cannot represent NaN or Inf — and complex data is
+checked without a float cast, so it is not newly rejected.
+
+`plot_fft_power` renders the new error as on-plot text rather than propagating
+it, because of its bare `except Exception` (issue #34, unchanged here).
+
 ## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
 
 ### Behavior change — positional metadata is validated on read
