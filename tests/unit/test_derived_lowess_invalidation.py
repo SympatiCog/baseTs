@@ -154,9 +154,9 @@ class TestInheritedPandasInplaceMethods:
 
     pandas routes these through NDFrame._update_inplace, which finalizes only
     the *returned* object - the one it then throws away - and never assigns
-    `.index`. So none of the baseTs-side hooks see it: not __finalize__, not
-    the index descriptor, not the data/times setters. These are ordinary,
-    unoverridden pandas methods, so this is the widest surface of all.
+    `.index`. None of them is overridden in this repo, so nothing baseTs writes
+    is on the path at all; the read-time check catches them because each one
+    leaves `self.index` different from the one the fit was stamped against.
     """
 
     def test_dropna_inplace_drops_both(self, filtered):
@@ -208,12 +208,133 @@ class TestInheritedPandasInplaceMethods:
         assert filtered.outlier_indices is not None
 
 
-class TestInvalidationThroughCreateNewWithData:
-    """_create_new_with_data copies both attributes by name, outside __finalize__.
+class TestIndexMutationsWithNoHookAtAll:
+    """The doors that defeated the write-side design.
 
-    Every non-inplace baseTs method routes through it, so it needs the same
-    index rule - a second implementation is how _create_new_with_data and
-    __finalize__ came to disagree about `freq` in #29.
+    These reach past `__finalize__`, `_update_inplace` and index assignment
+    alike - pandas swaps the block manager directly. No write-side hook saw
+    them, and no audit of baseTs' own methods could have: `pop` and `del` are
+    not overridden here, and enlargement happens inside pandas' indexer.
+
+    Checking on read closes them for free, because each one changes
+    `self.index` and the property reads `self.index`.
+    """
+
+    def test_setitem_enlargement_drops_both(self, filtered):
+        filtered[99.0] = 1.0
+        assert len(filtered) == 201
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_loc_enlargement_drops_both(self, filtered):
+        filtered.loc[88.0] = 1.0
+        assert len(filtered) == 201
+        assert filtered.lowess_fit is None
+
+    def test_at_enlargement_drops_both(self, filtered):
+        filtered.at[77.0] = 1.0
+        assert len(filtered) == 201
+        assert filtered.lowess_fit is None
+
+    def test_pop_drops_both(self, filtered):
+        filtered.pop(filtered.index[0])
+        assert len(filtered) == 199
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_del_drops_both(self, filtered):
+        del filtered[filtered.index[0]]
+        assert len(filtered) == 199
+        assert filtered.lowess_fit is None
+
+    def test_interpolate_gaps_time_inplace_drops_both(self):
+        """The third `pd.Series.__init__` site, and the one an explicit audit
+        for that exact pattern still missed.
+
+        `method='time'` round-trips the float index through a nanosecond
+        Timedelta, which is not bit-exact. The drift is sub-microsecond, so the
+        length is unchanged and nothing raises - the silent failure mode.
+        """
+        rng = np.random.default_rng(0)
+        t = 1_700_000_000.0 + np.sort(rng.uniform(0, 200, 200))
+        d = np.sin(np.linspace(0, 10, 200))
+        d[123] += 6.0
+        ts = baseTs(d, t)
+        ts.set_outlier_filter(frac=0.2)
+        ts.filter_outliers(inplace=True)
+        before = ts.index.copy()
+
+        ts.interpolate_gaps(method="time", inplace=True)
+
+        assert not ts.index.equals(before), "this test needs the index to drift"
+        assert len(ts) == 200, "and needs the length to stay the same"
+        assert ts.lowess_fit is None
+        assert ts.outlier_indices is None
+
+
+class TestTheStampIsNotLaunderable:
+    """A copy must move the (value, index) pair, never re-stamp it.
+
+    Any path that copies metadata through the *public* names runs the property
+    setter, which stamps with the receiving object's index - turning a stale
+    fit into a fresh-looking one. `_create_new_with_data` had exactly that
+    shape and had to be switched to the private slots, the same way
+    `_freq_declaration` already was. These pin the invariant so a future
+    metadata-copying loop cannot quietly reintroduce it.
+    """
+
+    def test_metadata_declares_the_private_slots(self):
+        from baseTs.series import TimeSeriesData
+
+        assert "_lowess_fit" in TimeSeriesData._metadata
+        assert "_outlier_indices" in TimeSeriesData._metadata
+        assert "lowess_fit" not in TimeSeriesData._metadata, (
+            "declaring the public name makes __finalize__ run the stamping "
+            "setter, which re-stamps the parent's fit with the child's index"
+        )
+        assert "outlier_indices" not in TimeSeriesData._metadata
+
+    def test_a_derived_object_carries_the_parents_stamp_verbatim(self, filtered):
+        """The discriminating case for laundering.
+
+        sg_filter routes through _create_new_with_data, which builds a *new*
+        Index object for the result. If the copy went through the public name,
+        the setter would stamp with that new index and the fit would look valid
+        by construction. Carrying the parent's own index object is the proof it
+        did not.
+        """
+        parent_stamp = filtered._lowess_fit[1]
+        smoothed = filtered.sg_filter()
+
+        assert smoothed.index is not filtered.index, (
+            "this test is only meaningful while the result has its own Index"
+        )
+        assert smoothed._lowess_fit[1] is parent_stamp
+        assert smoothed.lowess_fit is not None, "and the fit is still valid here"
+
+    def test_a_stale_slot_is_released_on_derivation(self, filtered):
+        """Memory, not correctness: the getter already reads a slice as None.
+
+        Without this the parent's full-length fit would stay alive for as long
+        as any slice of it did.
+        """
+        assert filtered.iloc[:50]._lowess_fit is None
+
+    def test_a_stale_fit_stays_stale_after_a_further_derivation(self, filtered):
+        """Re-deriving from an already-stale object must not revive the fit."""
+        filtered.times = np.linspace(0, 20, 200)
+        assert filtered.lowess_fit is None
+        assert filtered.sg_filter().lowess_fit is None
+        assert (filtered * 2.0).lowess_fit is None
+        assert filtered.copy().lowess_fit is None
+
+
+class TestInvalidationThroughCreateNewWithData:
+    """_create_new_with_data copies the metadata slots outside pandas' machinery.
+
+    Every non-inplace baseTs method routes through it. It needs no rule of its
+    own any more - only the discipline of copying the private slots rather than
+    assigning through the properties, which TestTheStampIsNotLaunderable pins.
     """
 
     def test_remove_outliers_drops_both(self, filtered):

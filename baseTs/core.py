@@ -24,8 +24,7 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq)
-from .series import (TimeSeriesData, _detach_shared_metadata,
-                     _invalidate_position_indexed_metadata, normalise_history)
+from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -294,17 +293,13 @@ class baseTs(TimeSeriesData):
         # the old index stops matching its token, which is the correct
         # outcome rather than a side effect to remember to trigger here.
         #
-        # No lowess_fit/outlier_indices handling either, deliberately. Those
-        # are positional and cannot be re-derived, but the assignment above
-        # goes through _InvalidatingIndex, which applies the rule for every
-        # caller - including anyone who reaches past `.times` for `.index`.
-        # Repeating it here would be a second implementation of "did the index
-        # change?", which is precisely how this setter and __finalize__ came to
-        # disagree about freq in #29.
+        # No lowess_fit/outlier_indices handling either, and for a stronger
+        # reason than freq's: they are checked against the live index when they
+        # are *read*, so there is no moment at which this setter, or any other
+        # writer, has to remember anything.
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
-        original_index = self.index
         if len(new_data) == len(self.index):
             # Same length, can preserve index
             old_index = self.index
@@ -326,13 +321,6 @@ class baseTs(TimeSeriesData):
         # Restore metadata
         for attr, val in old_metadata.items():
             setattr(self, attr, val)
-
-        # A length change above minted a fresh index, which the restore loop
-        # then re-decorated with the old object's positional metadata. The
-        # producers that legitimately pair a new length with a new fit
-        # (filter_outliers, lowess_detrend) assign it *after* writing .data,
-        # so they are unaffected.
-        _invalidate_position_indexed_metadata(self, original_index)
 
 
 
@@ -378,7 +366,7 @@ class baseTs(TimeSeriesData):
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
-                            'outlier_indices', 'lowess_fit', 'last_process',
+                            '_outlier_indices', '_lowess_fit', 'last_process',
                             'outlier_filter']
 
             # Not iterating self._metadata: this list is deliberately curated
@@ -400,11 +388,11 @@ class baseTs(TimeSeriesData):
             # and a bare list() would explode a str into characters.
             new_obj.history = normalise_history(self.history)
 
-            # The loop above copies lowess_fit and outlier_indices by name, so
-            # this path needs the same index rule __finalize__ applies - and
-            # for the same reason the freq handling was removed from here: one
-            # implementation of "did the index change?", not two that can drift.
-            _invalidate_position_indexed_metadata(new_obj, self.index)
+            # The private slots, not the public names. Assigning through the
+            # properties would run their stamping setter and re-stamp the
+            # parent's fit with the *new* object's index - laundering the very
+            # staleness the properties exist to catch. Same reason
+            # _freq_declaration is copied by its private name.
             _detach_shared_metadata(new_obj)
 
         return new_obj
@@ -1776,15 +1764,10 @@ class baseTs(TimeSeriesData):
         if inplace:
             # Update current object, removing NaN values
             valid_mask = ~shifted.isna()
-            original_index = self.index
             super(TimeSeriesData, self).__init__(
                 shifted[valid_mask].values,
                 index=shifted[valid_mask].index
             )
-            # Dropping the shifted-out NaNs changes the length, and this calls
-            # pd.Series.__init__ directly - past _update_series_data, past the
-            # times setter, past __finalize__. Nothing else here would notice.
-            _invalidate_position_indexed_metadata(self, original_index)
             self._update_history_and_process(
                 f"Shifted time by {periods} periods",
                 f"_shift_{periods}"

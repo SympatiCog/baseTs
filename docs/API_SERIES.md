@@ -425,16 +425,34 @@ which is why the check is full index equality rather than the cheaper
 `(len, first, last)` token: an interior permutation leaves that token intact
 while moving every sample they describe.
 
-The rule is applied at seven places, because no single pandas hook sees them
-all. `__finalize__` covers ordinary pandas derivations. `_create_new_with_data`
-and `_wrap_result_as_basets` (the arithmetic operator overrides) copy
-`_metadata` by name outside pandas' machinery. `_update_series_data` and
-`shift_time(inplace=True)` call `pd.Series.__init__` directly. Assignment to
-`.index` is intercepted by a descriptor, `_InvalidatingIndex`, so `.times` is
-not a privileged door. And `_update_inplace` covers `inplace=True` on every
-inherited pandas method — `dropna`, `sort_values`, `sort_index`, `drop` — which
-swaps the block manager without finalizing `self` or assigning `.index`, and is
-the widest surface of the seven because it needs no baseTs method at all.
+The rule is enforced **on read, in one place** — the properties themselves —
+rather than at every point an index can change. `_metadata` therefore carries
+the private slots `_lowess_fit` and `_outlier_indices`, each holding
+`(value, index_it_describes)`; pandas copies that pair verbatim like any other
+metadata entry, and the property getter re-checks it against the live index on
+every access. This is the same shape as `_freq_declaration`, with one
+difference: `freq` compares a `(len, first, last)` token because those are
+exactly the three inputs its derivation reads, while these two are positional,
+so an interior permutation must invalidate them and the check is full
+`Index.equals`.
+
+Read-time was not the first design. The write-side version needed a hook
+wherever an index could change, and that list would not close: it went from
+four to seven across three review rounds, and still missed `ts.loc[new] = v`,
+`ts.pop(label)`, `del ts[label]` — which swap the block manager inside pandas'
+own indexer, past `__finalize__`, `_update_inplace` and `.index` assignment
+alike — and `interpolate_gaps(inplace=True)`, one of three
+`pd.Series.__init__` call sites of which an explicit audit for that pattern
+still guarded only two. Every one of those doors changes `self.index`, and the
+getter reads `self.index`, so checking there closes all of them at once and
+cannot be bypassed by a path nobody thought of.
+
+**One invariant this depends on:** any code that copies metadata must copy the
+private slots, never the public names. Assigning through `lowess_fit` or
+`outlier_indices` runs the stamping setter, which re-stamps with the receiving
+object's index and launders a stale fit into a valid-looking one.
+`_create_new_with_data` had exactly that shape and names the private slots for
+this reason, as it already did for `_freq_declaration`.
 
 ### Constructor
 

@@ -16,62 +16,109 @@ from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
 
 
-#: Metadata that describes the samples by *position* rather than by index
-#: label, and is therefore meaningless against any other sample sequence.
-#: `lowess_fit` holds one value per sample; `outlier_indices` holds positions
-#: into that same sequence.
-_POSITION_INDEXED_METADATA = ('lowess_fit', 'outlier_indices')
+#: The private slots behind the positional properties, paired with the public
+#: names they back. Each holds either None or `(value, index_it_describes)`.
+_POSITION_INDEXED_SLOTS = (('lowess_fit', '_lowess_fit'),
+                           ('outlier_indices', '_outlier_indices'))
 
 
-def _invalidate_position_indexed_metadata(obj, reference_index):
+def _positional_property(public: str, private: str, what: str) -> property:
     """
-    Drop `lowess_fit` and `outlier_indices` unless `obj` still has the index
-    they were computed against.
+    Build a property that hands back `value` only while the index it was
+    computed against is still the object's index.
 
-    Neither can be resliced in general. A positional slice has an obvious
-    mapping, but resample, dropna and sort_values have none, so a reslicing
-    implementation would be correct on one path and silently wrong on every
-    other - drawing the parent's fit over the child's window, or reporting an
-    outlier at a position the child does not have. Invalidation is correct
-    everywhere and makes the `lowess_fit is not None` guard in plotting do the
-    right thing on its own.
+    `lowess_fit` holds one float per sample and `outlier_indices` holds
+    *positions* into that same sample sequence. Neither survives a change of
+    index, and neither can be resliced in general: a positional slice has an
+    obvious mapping, but resample, dropna and sort_values have none, so a
+    reslicing implementation would be right on one path and silently wrong on
+    every other.
 
-    The test is full index equality, deliberately stricter than the
-    `_freq_token` used for `freq`. That token is (len, first, last) and is
-    airtight for the rate because those are exactly the three inputs the
-    derivation reads; here an interior permutation leaves the token untouched
-    while moving every sample these two attributes describe.
+    **Checked on read, not on write.** The write-side version of this rule
+    needed a hook at every place an index can change, and there is no bounded
+    list of those. Three review rounds took it from four hooks to seven and a
+    fourth hole turned up immediately: `ts.loc[new] = v` and `ts.pop(label)`
+    reach past `__finalize__`, `_update_inplace` and index assignment alike to
+    swap the block manager directly, and `interpolate_gaps(inplace=True)` was
+    one of three `pd.Series.__init__` call sites of which an explicit audit
+    for that exact pattern still guarded only two. Reading `self.index` at
+    access time cannot be bypassed, because every one of those doors changes
+    `self.index` - which is the whole point of the redesign.
 
-    `reference_index=None` means "no known parent", and invalidates. The
-    failure modes are not symmetric: dropping a fit that was still valid costs
-    a missing trace on a plot, while keeping one that is not is the silent
-    wrong answer this whole issue is about, so the unknown case fails toward
-    dropping. Mutation testing found no observable difference either way on
-    pandas 2.3.3 or 3.0.5. The only path that reaches it is pandas 3.x's scalar
-    arithmetic: `ts * 2` finalizes an intermediate against the scalar `2`,
-    which has no index. That intermediate is then discarded by
-    _wrap_result_as_basets, which rebuilds the result from the left operand's
-    metadata and applies this rule itself against a real index.
+    This is the `freq` mechanism from #38 applied to a second kind of
+    metadata, with one deliberate difference: `freq` compares a
+    `(len, first, last)` token, because those are exactly the three inputs its
+    derivation reads. That token is not enough here. An interior permutation
+    leaves it untouched while moving every sample these two describe, so the
+    check is full `Index.equals`.
 
-    That discard used to be the bug rather than a curiosity - the rebuild
-    copied both attributes with no index check at all, so `+` between two
-    differently indexed operands returned a union-indexed object carrying the
-    left operand's fit, the exact crash this issue is about. It is fixed;
-    the note survives because the reachability of this branch is only benign
-    while that rebuild keeps applying the rule.
+    The stored index is a reference, not a copy: `pd.Index` is immutable, and
+    assignment rebinds rather than mutates, so there is nothing to copy and the
+    common read compares an index object with itself - `Index.equals` takes its
+    identity fast path and costs O(1).
 
-    Costs nothing on the overwhelmingly common path: when there is no fit and
-    no outlier record - which is every object that has not been through
-    filter_outliers or lowess_detrend - it returns before comparing indexes.
-    That early return is an optimisation only; removing it changes no
-    behaviour, so no test pins it.
+    A stale slot reads as None but is *not* cleared here. The getter stays a
+    pure function of (stored value, current index) so that a read never changes
+    what a later read returns; freeing the memory is left to
+    _detach_shared_metadata, which runs on derivation regardless of whether
+    anyone reads.
     """
-    if all(getattr(obj, name, None) is None for name in _POSITION_INDEXED_METADATA):
-        return obj
-    if reference_index is not None and obj.index.equals(reference_index):
-        return obj
-    for name in _POSITION_INDEXED_METADATA:
-        object.__setattr__(obj, name, None)
+
+    def getter(self):
+        stored = getattr(self, private, None)
+        if stored is None:
+            return None
+        value, described_index = stored
+        try:
+            current = self.index
+        except AttributeError:
+            # Before the block manager exists there is no index to describe.
+            return None
+        return value if current.equals(described_index) else None
+
+    def setter(self, value):
+        if value is None:
+            object.__setattr__(self, private, None)
+            return
+        object.__setattr__(self, private, (value, self.index))
+
+    getter.__name__ = public
+    setter.__name__ = public
+    return property(getter, setter, doc=f"{what} Valid only while the index "
+                                        f"it was computed against is still "
+                                        f"this object's index; reads as None "
+                                        f"otherwise (#20).")
+
+
+def _drop_stale_positional_metadata(obj):
+    """
+    Release a positional slot whose index no longer matches.
+
+    Purely a memory measure, and deliberately incapable of changing behaviour:
+    it clears only slots the getter already reports as None. Without it, every
+    slice of a filtered series would keep the parent's full-length fit alive
+    for as long as the slice lived.
+
+    It is not the correctness mechanism - _positional_property is - so it runs
+    only where it is cheap and certain: on derivation, from
+    _detach_shared_metadata. Deleting it leaves every *behavioural* assertion
+    in the suite passing; the one test that fails,
+    test_a_stale_slot_is_released_on_derivation, reaches into the private slot
+    on purpose to pin the optimisation itself. That relationship is the
+    intended one, and it is what tells you this function can never be the
+    reason a fit reads as None.
+    """
+    for _public, private in _POSITION_INDEXED_SLOTS:
+        stored = getattr(obj, private, None)
+        if stored is None:
+            continue
+        _value, described_index = stored
+        try:
+            current = obj.index
+        except AttributeError:
+            continue
+        if not current.equals(described_index):
+            object.__setattr__(obj, private, None)
     return obj
 
 
@@ -93,8 +140,8 @@ def _detach_shared_metadata(obj):
     derivation is cheap. `lowess_fit` is left shared: it is one float per
     sample, nothing in the library writes into it, and copying it here would
     turn an O(1) slice into an O(n) walk of the parent's metadata. Whether
-    either survives the derivation at all is decided by
-    _invalidate_position_indexed_metadata, not here.
+    either is still *readable* is decided by _positional_property on access,
+    not here; this only stops two objects sharing one mutable list.
 
     A history that is not a list is normalised rather than left alone. pandas
     propagates metadata from whichever operand carries it, so an operand
@@ -106,60 +153,10 @@ def _detach_shared_metadata(obj):
     just as fatal to .append(). See normalise_history for the coercion rules.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
-    indices = getattr(obj, 'outlier_indices', None)
-    if isinstance(indices, list):
-        object.__setattr__(obj, 'outlier_indices', list(indices))
-    return obj
-
-
-class _InvalidatingIndex:
-    """
-    pandas' own `index` descriptor, with the positional-metadata rule attached
-    to assignment.
-
-    `.index` is inherited public pandas API, so `ts.index = new_values` is a
-    second door into the same room as `ts.times = new_values` - and it was
-    unguarded, which is how a fit could end up drawn against a time axis it was
-    never computed on. Wrapping the descriptor puts the rule at the one place
-    an index can be *assigned*, rather than asking every caller to remember.
-
-    Delegation, not reimplementation: `pd.Series.index` is an AxisProperty tied
-    to the block manager, so this forwards both halves to it and only adds the
-    invalidation. Reading `.index` costs one extra Python-level call, ~60 ns,
-    which is 2.6x the bare descriptor. That ratio looks alarming and is not:
-    measured min-of-7 over a 20k-point series, `iloc`, arithmetic, `rolling`,
-    `dropna` and `copy` all land within noise of the same branch without this
-    descriptor - several of them nominally faster - because those operations
-    cost tens of microseconds, not tens of nanoseconds.
-
-    This does not cover `pd.Series.__init__` being called directly on an
-    existing object - that replaces the block manager without ever assigning
-    `.index`. `_update_series_data` and `shift_time(inplace=True)` do exactly
-    that, and apply the rule themselves.
-    """
-
-    def __init__(self, wrapped):
-        self._wrapped = wrapped
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        return self._wrapped.__get__(obj, objtype)
-
-    def __set__(self, obj, value):
-        try:
-            old_index = self._wrapped.__get__(obj, type(obj))
-        except AttributeError:
-            # The only exception this read raises: pandas' AxisProperty reaches
-            # for `_mgr`, which does not exist until the Series is constructed.
-            # There is no metadata to invalidate that early, and the helper
-            # treats an unknown parent as a reason to drop rather than keep.
-            # Deliberately not `except Exception`: anything else coming out of
-            # a plain attribute read is a real fault and should surface here
-            # rather than be silently recorded as "no previous index".
-            old_index = None
-        self._wrapped.__set__(obj, value)
-        _invalidate_position_indexed_metadata(obj, old_index)
+    stored = getattr(obj, '_outlier_indices', None)
+    if stored is not None and isinstance(stored[0], list):
+        object.__setattr__(obj, '_outlier_indices', (list(stored[0]), stored[1]))
+    return _drop_stale_positional_metadata(obj)
 
 
 def normalise_history(history: Any) -> list:
@@ -305,14 +302,25 @@ class TimeSeriesData(pd.Series):
     _metadata = [
         '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
-        'has_timestamp_offset', 'outlier_indices', 'lowess_fit',
+        'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
 
-    # Assignment to `.index` carries the same staleness as assignment to
-    # `.times`, and `.index` is the one pandas exposes. See _InvalidatingIndex.
-    index = _InvalidatingIndex(pd.Series.index)
-
+    # What propagates is the (value, index) pair, not the bare value - so
+    # pandas copying it verbatim is correct, because the child re-checks it
+    # against its own index on read. Listing the public names here instead
+    # would be actively wrong for the same reason it is wrong for `freq`:
+    # __finalize__ copies with object.__setattr__, which honours data
+    # descriptors, so every propagation would run the stamping setter and
+    # re-stamp the parent's fit with the child's index - laundering exactly
+    # the staleness this exists to catch.
+    lowess_fit = _positional_property(
+        'lowess_fit', '_lowess_fit',
+        "LOWESS fit produced by filter_outliers or lowess_detrend, one value "
+        "per sample.")
+    outlier_indices = _positional_property(
+        'outlier_indices', '_outlier_indices',
+        "Positions of the samples filter_outliers rejected.")
 
     def __init__(self, data=None, index=None, freq: Optional[float] = None, 
                  signal_name: str = "", **kwargs):
@@ -362,8 +370,8 @@ class TimeSeriesData(pd.Series):
         self.is_uniform_grid = False
         self.ts_offset = 0
         self.has_timestamp_offset = False
-        self.outlier_indices = None
-        self.lowess_fit = None
+        self._outlier_indices = None
+        self._lowess_fit = None
         self.last_process = ""
         self.history = []
         # _metadata declares these two; without them any derived object
@@ -486,16 +494,11 @@ class TimeSeriesData(pd.Series):
         and set_outlier_filter rebinds rather than mutates it, so a shared
         filter cannot carry a write from one object to another.
 
-        `lowess_fit` and `outlier_indices` describe the parent's samples by
-        position, so they survive only when the derived index is the parent's -
-        see _invalidate_position_indexed_metadata. The index compared against is
-        the object metadata was actually taken from, which on the concat
-        recovery path below is `source`, not `other`. No test pins that choice:
-        nlargest/nsmallest reach the concat step via an internal reset_index,
-        which has already invalidated both attributes by the time `source` is
-        read, so the two spellings agree on every path that exists today. It is
-        written this way because the index to judge by is the one the metadata
-        came from, and the loop below is what decides that.
+        `_lowess_fit` and `_outlier_indices` need nothing special here. They
+        carry the index they describe with them, so copying the pair verbatim
+        is correct however the derived index differs - the property re-checks
+        it on read. That is the point of moving the check to read time: this
+        method no longer has to be one of the places that knows the rule.
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
         an internal concat step where `other` is not an NDFrame (a
@@ -516,7 +519,6 @@ class TimeSeriesData(pd.Series):
         real merged index.
         """
         super().__finalize__(other, method=method, **kwargs)
-        source = other
         if method == 'concat':
             objs = getattr(other, 'objs', None)
             if objs:
@@ -526,37 +528,7 @@ class TimeSeriesData(pd.Series):
                     for name in self._metadata:
                         if hasattr(source, name):
                             object.__setattr__(self, name, getattr(source, name))
-        _invalidate_position_indexed_metadata(self, getattr(source, 'index', None))
         return _detach_shared_metadata(self)
-
-    def _update_inplace(self, result, *args, **kwargs):
-        """
-        Adopt an in-place result, dropping positional metadata it invalidates.
-
-        This is how pandas implements `inplace=True` on every inherited method
-        - dropna, sort_values, sort_index, drop and friends. It swaps the block
-          manager on `self` directly, so none of the other hooks fire:
-        `__finalize__` runs only on the *returned* object, which pandas then
-        discards; `.index` is never assigned, so the descriptor does not see
-        it; and neither the data nor the times setter is involved.
-
-        That made `ts.dropna(inplace=True)` reproduce the exact crash this
-        issue is about on an otherwise fixed object, and
-        `ts.sort_values(inplace=True)` the silent version of it - same length,
-        every position moved, both attributes still describing the old order.
-
-        The widest surface of the seven, because it needs no baseTs method at
-        all. Index-preserving in-place calls (fillna, clip, interpolate) reach
-        here too and correctly keep both.
-
-        `*args, **kwargs` rather than a named signature on purpose: pandas 2.x
-        takes `(result, verify_is_copy=True)` and pandas 3.x takes `(result)`.
-        Spelling out the 2.x parameter would break 3.x and vice versa, and this
-        project supports both (`pandas>=2.0.0`, CI on Python 3.9-3.11).
-        """
-        original_index = self.index
-        super()._update_inplace(result, *args, **kwargs)
-        _invalidate_position_indexed_metadata(self, original_index)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:
         """See _FinalizingWindow: rolling()/expanding()/ewm() never call __finalize__."""
@@ -862,15 +834,6 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr != 'signal_name':
                 setattr(new_basets, attr, getattr(self, attr))
-
-        # These operators do not route through __finalize__: pandas' own
-        # operator already produced a correctly finalized result, and the
-        # baseTs built above discards it and re-copies _metadata from the left
-        # operand. So the index rule has to be applied here by name, or `+`
-        # disagrees with `.add()` - two operands on different time bases
-        # produce a union index, against which the left operand's fit is the
-        # wrong length and its outlier positions point at other samples.
-        _invalidate_position_indexed_metadata(new_basets, self.index)
 
         # Before the history update, not after: the entry appended below would
         # otherwise land in the operand's own history list.
