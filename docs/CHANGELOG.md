@@ -123,12 +123,14 @@ Six breaking changes fall out:
    `ts.lowess_fit is not None` before asking `plot` for a lowess trace.
 
 5. **`outlier_indices` is no longer shared by reference.** Every derivation
-   gets its own list, so `derived.outlier_indices.append(...)` no longer
-   rewrites the parent's outlier record. It is a plain list whose length is the
-   number of outliers, so copying it costs nothing per sample. `lowess_fit` is
-   still shared where it survives — one float per sample, never written to, and
-   copying it on every derivation would turn an O(1) slice into an O(n) walk of
-   the parent's metadata. **Migrate:** none, unless you were relying on the
+   gets its own copy, so `derived.outlier_indices.append(...)` no longer
+   rewrites the parent's outlier record. Its length is the number of outliers,
+   not the number of samples, so copying it is cheap; both the list and ndarray
+   shapes are detached, since the constructor types the parameter as
+   `np.array`. `lowess_fit` is still shared on *derivation* — one float per
+   sample, never written to, and copying it there would turn an O(1) slice into
+   an O(n) walk of the parent's metadata — but `copy(deep=True)` deep-copies it
+   as it always did. **Migrate:** none, unless you were relying on the
    write-through.
 
 Two consequences of checking on read rather than destroying on write, neither

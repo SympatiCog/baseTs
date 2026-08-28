@@ -24,7 +24,8 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq)
-from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
+from .series import (TimeSeriesData, _detach_shared_metadata,
+                     deepcopy_metadata_value, normalise_history)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -321,8 +322,6 @@ class baseTs(TimeSeriesData):
         # Restore metadata
         for attr, val in old_metadata.items():
             setattr(self, attr, val)
-
-
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
@@ -2269,10 +2268,11 @@ class baseTs(TimeSeriesData):
             # _detach_shared_metadata.
             for attr in self._metadata:
                 if hasattr(self, attr):
-                    value = getattr(self, attr)
-                    if isinstance(value, (list, dict, np.ndarray)):
-                        value = copy.deepcopy(value)
-                    setattr(new_obj, attr, value)
+                    # Routed through the shared helper so the positional slots
+                    # get copied inside their (value, index) tuple, which a
+                    # bare isinstance check on the tuple silently skips.
+                    setattr(new_obj, attr,
+                            deepcopy_metadata_value(attr, getattr(self, attr)))
 
             # deepcopy(None) is None, so without this the default copy path
             # was the one derivation that could still hand back a history

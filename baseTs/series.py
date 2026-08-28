@@ -109,6 +109,36 @@ def _positional_property(public: str, private: str, what: str) -> property:
                                         f"otherwise (#20).")
 
 
+#: The private slot names alone, for callers that need to recognise them.
+_POSITION_INDEXED_PRIVATE = tuple(private for _public, private in _POSITION_INDEXED_SLOTS)
+
+
+def deepcopy_metadata_value(name: str, value: Any):
+    """
+    Deep-copy a `_metadata` entry, reaching inside a positional slot.
+
+    Both `copy()` implementations deep-copy an entry only when it is a list,
+    dict or ndarray. A positional slot is a `(value, index)` tuple, so that
+    test silently stopped matching when the slots moved behind the properties,
+    and `copy(deep=True)` began handing back the parent's own fit array - an
+    aliasing bug on the one path whose whole purpose is to prevent it.
+
+    The stamp is carried over by reference rather than copied: `pd.Index` is
+    immutable, so there is nothing to isolate, and copying it would throw away
+    the identity that lets a later read take the fast path. No test pins that -
+    a deep-copied index is still `equals`-true, so the choice is memory and
+    speed, not behaviour.
+    """
+    if name in _POSITION_INDEXED_PRIVATE:
+        if value is None:
+            return None
+        payload, described_index = value
+        return (copy_module.deepcopy(payload), described_index)
+    if isinstance(value, (list, dict, np.ndarray)):
+        return copy_module.deepcopy(value)
+    return value
+
+
 def _drop_stale_positional_metadata(obj):
     """
     Release a positional slot whose index no longer matches.
@@ -178,8 +208,13 @@ def _detach_shared_metadata(obj):
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
     stored = getattr(obj, '_outlier_indices', None)
-    if stored is not None and isinstance(stored[0], list):
-        object.__setattr__(obj, '_outlier_indices', (list(stored[0]), stored[1]))
+    if stored is not None and isinstance(stored[0], (list, np.ndarray)):
+        # ndarray as well as list: the constructor types this parameter as
+        # np.array, so a list-only check leaves the documented isolation
+        # depending on which shape a caller happened to supply. Either way the
+        # cost is the number of outliers, not the number of samples.
+        object.__setattr__(obj, '_outlier_indices',
+                           (copy_module.copy(stored[0]), stored[1]))
     return _drop_stale_positional_metadata(obj)
 
 
@@ -603,8 +638,12 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr):
                 value = getattr(self, attr)
-                if deep and isinstance(value, (list, dict, np.ndarray)):
-                    value = copy_module.deepcopy(value)
+                if deep:
+                    # See deepcopy_metadata_value: the positional slots hold a
+                    # (value, index) tuple, so an isinstance check against
+                    # list/dict/ndarray never matches them and a deep copy
+                    # would quietly share the parent's array.
+                    value = deepcopy_metadata_value(attr, value)
                 setattr(copied, attr, value)
 
         # Unconditionally, not just when shallow. The loop above re-assigns

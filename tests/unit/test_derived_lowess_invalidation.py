@@ -353,6 +353,45 @@ class TestReadIsPureAndDerivationReleases:
         assert derived._lowess_fit[1] is derived.index
 
 
+class TestDeepCopyIndependence:
+    """`copy(deep=True)` must hand back arrays the parent does not share.
+
+    Both copy implementations deep-copy a metadata entry only when it is a
+    list, dict or ndarray. Moving the slots into `(value, index)` tuples made
+    that test fail silently for these two, so a deep copy shared the parent's
+    fit - an aliasing bug on the one path whose entire purpose is to avoid it,
+    and a regression against the behaviour on main.
+    """
+
+    def test_deep_copy_gives_an_independent_lowess_fit(self, filtered):
+        copied = filtered.copy(deep=True)
+        assert copied.lowess_fit is not filtered.lowess_fit
+
+        copied.lowess_fit[0] = 999.0
+
+        assert filtered.lowess_fit[0] != 999.0
+
+    def test_deep_copy_gives_an_independent_outlier_record(self, filtered):
+        copied = filtered.copy(deep=True)
+        copied.outlier_indices.append(9999)
+        assert 9999 not in filtered.outlier_indices
+
+    def test_deep_copy_keeps_the_values_equal(self, filtered):
+        copied = filtered.copy(deep=True)
+        assert np.array_equal(copied.lowess_fit, filtered.lowess_fit)
+        assert copied.outlier_indices == filtered.outlier_indices
+
+    def test_an_array_valued_outlier_record_is_detached_too(self, filtered):
+        """The constructor types this as np.array, so a list check is not enough."""
+        filtered.outlier_indices = np.array([3, 4, 5])
+        derived = filtered * 2.0
+        assert derived.outlier_indices is not filtered.outlier_indices
+
+        derived.outlier_indices[0] = 999
+
+        assert filtered.outlier_indices[0] == 3
+
+
 class TestTheStampIsNotLaunderable:
     """A copy must move the (value, index) pair, never re-stamp it.
 
