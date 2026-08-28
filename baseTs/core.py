@@ -288,18 +288,19 @@ class baseTs(TimeSeriesData):
     @times.setter
     def times(self, value: np.ndarray):
         """Set the time values (backward compatibility)."""
-        old_index = self.index
         self.index = pd.Index(value)
         # No freq recalculation. The property derives from the index, so a new
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
         # outcome rather than a side effect to remember to trigger here.
         #
-        # lowess_fit and outlier_indices get no such second chance: they are
-        # positional, cannot be re-derived, and this setter changes the index
-        # in place, with no derivation for __finalize__ to intercept. It is a
-        # production site for the same staleness, so the same rule applies here.
-        _invalidate_position_indexed_metadata(self, old_index)
+        # No lowess_fit/outlier_indices handling either, deliberately. Those
+        # are positional and cannot be re-derived, but the assignment above
+        # goes through _InvalidatingIndex, which applies the rule for every
+        # caller - including anyone who reaches past `.times` for `.index`.
+        # Repeating it here would be a second implementation of "did the index
+        # change?", which is precisely how this setter and __finalize__ came to
+        # disagree about freq in #29.
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
@@ -1775,10 +1776,15 @@ class baseTs(TimeSeriesData):
         if inplace:
             # Update current object, removing NaN values
             valid_mask = ~shifted.isna()
+            original_index = self.index
             super(TimeSeriesData, self).__init__(
-                shifted[valid_mask].values, 
+                shifted[valid_mask].values,
                 index=shifted[valid_mask].index
             )
+            # Dropping the shifted-out NaNs changes the length, and this calls
+            # pd.Series.__init__ directly - past _update_series_data, past the
+            # times setter, past __finalize__. Nothing else here would notice.
+            _invalidate_position_indexed_metadata(self, original_index)
             self._update_history_and_process(
                 f"Shifted time by {periods} periods",
                 f"_shift_{periods}"

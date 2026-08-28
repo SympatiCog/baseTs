@@ -75,7 +75,7 @@ stricter than the `_freq_token` used for `freq`, because an interior
 permutation leaves that token untouched while moving every sample these two
 attributes describe.
 
-Four breaking changes fall out:
+Five breaking changes fall out:
 
 1. **A derived object with a different index has no fit and no outlier
    record.** `ts.filter_outliers(inplace=True); ts.iloc[:50].lowess_fit` is now
@@ -85,23 +85,36 @@ Four breaking changes fall out:
    leaves the length, first and last timestamps intact. **Migrate:** re-run
    `filter_outliers()` or `lowess_detrend()` on the derived object if you need
    a fit for it, or take the slice before filtering rather than after.
-   Operations that leave the index alone (arithmetic, `sg_filter`, `copy`,
-   `rolling`) still carry both.
+   Operations that leave the index alone (`sg_filter`, `copy`, `rolling`,
+   scalar arithmetic) still carry both.
 
-2. **Assigning a new time base clears both in place.** `ts.times = new_times`
-   and a length-changing `ts.data = shorter` now set `lowess_fit` and
+2. **Arithmetic between two differently indexed series clears both.**
+   `filtered + other` produces a union index, against which the left operand's
+   fit is the wrong length and its outlier positions point at other samples;
+   it used to be carried anyway, and `plot(result, lowess=True)` then raised a
+   matplotlib dimension error. The operators (`+ - * / **`) now agree with the
+   flex methods (`.add()`, `.mul()`, …), which already dropped it.
+   **Migrate:** none, unless you were reading `lowess_fit` off an arithmetic
+   result — it was the wrong array. Arithmetic against a scalar, or against a
+   series on the same index, still carries both.
+
+3. **Assigning a new time base clears both in place.** `ts.times = new_times`,
+   `ts.index = new_index`, a length-changing `ts.data = shorter`, and
+   `ts.shift_time(periods=n, inplace=True)` now set `lowess_fit` and
    `outlier_indices` to `None` on the object itself. These are production
-   sites for the same staleness with no derivation for pandas to intercept.
-   **Migrate:** read the fit out before reassigning the index if you need it.
+   sites for the same staleness with no derivation for pandas to intercept —
+   `.index` in particular is inherited pandas API and was a second, unguarded
+   door alongside `.times`. **Migrate:** read the fit out before reassigning
+   the index if you need it.
 
-3. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
+4. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
    `lowess_fit` and what to run to get one. It previously raised a
    dimension-mismatch `ValueError` from matplotlib, or drew the wrong data.
    `qc_plot` is unchanged: it already gated on `lowess_fit is not None`, and
    now simply omits the trace instead of raising. **Migrate:** guard on
    `ts.lowess_fit is not None` before asking `plot` for a lowess trace.
 
-4. **`outlier_indices` is no longer shared by reference.** Every derivation now
+5. **`outlier_indices` is no longer shared by reference.** Every derivation now
    gets its own list, so `derived.outlier_indices.append(...)` no longer
    rewrites the parent's outlier record. It is a plain list whose length is the
    number of outliers, so copying it costs nothing per sample. `lowess_fit`

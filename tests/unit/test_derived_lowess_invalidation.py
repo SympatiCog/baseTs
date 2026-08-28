@@ -118,6 +118,25 @@ class TestInvalidationOnInPlaceIndexChange:
         assert filtered.lowess_fit is not None
         assert filtered.outlier_indices is not None
 
+    def test_assigning_a_new_index_directly_drops_both(self, filtered):
+        """`.index` is pandas' own setter, and `.times` is not the only door."""
+        filtered.index = np.linspace(100, 200, len(filtered))
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_assigning_the_same_index_directly_keeps_both(self, filtered):
+        filtered.index = filtered.index.copy()
+        assert filtered.lowess_fit is not None
+        assert filtered.outlier_indices is not None
+
+    def test_shift_time_inplace_drops_both(self, filtered):
+        """The inplace branch calls pd.Series.__init__ directly, bypassing
+        _update_series_data, the times setter and __finalize__ alike."""
+        filtered.shift_time(periods=5, inplace=True)
+        assert len(filtered) < 200, "the shift must actually drop samples"
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
     def test_assigning_shorter_data_drops_both(self, filtered):
         """The data setter rebuilds the index when the length changes."""
         filtered.data = np.zeros(50)
@@ -156,6 +175,59 @@ class TestInvalidationThroughCreateNewWithData:
         assert smoothed.index.equals(filtered.index)
         assert smoothed.lowess_fit is not None
         assert smoothed.outlier_indices == filtered.outlier_indices
+
+
+class TestArithmeticOperators:
+    """The operator dunders do not route through __finalize__.
+
+    `__add__` and friends are overridden on TimeSeriesData: they call pandas'
+    operator, then throw the finalized result away and rebuild it through
+    _wrap_result_as_basets, which copies _metadata by name. So the operators
+    need the rule applied explicitly, exactly like _create_new_with_data - and
+    they must agree with the flex methods (`.add()`, `.mul()`), which do route
+    through __finalize__.
+    """
+
+    @pytest.fixture
+    def other(self):
+        return baseTs(np.cos(np.linspace(0, 10, 80)), np.linspace(0, 10, 80))
+
+    def test_adding_a_differently_indexed_series_drops_both(self, filtered, other):
+        result = filtered + other
+        assert len(result) > len(filtered), "the union index must actually differ"
+        assert result.lowess_fit is None
+        assert result.outlier_indices is None
+
+    def test_the_operator_agrees_with_the_flex_method(self, filtered, other):
+        assert (filtered + other).lowess_fit is (filtered.add(other)).lowess_fit
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            lambda a, b: a + b,
+            lambda a, b: a - b,
+            lambda a, b: a * b,
+            lambda a, b: a / b,
+            lambda a, b: a ** b,
+        ],
+        ids=["add", "sub", "mul", "truediv", "pow"],
+    )
+    def test_every_operator_drops_both(self, filtered, other, op):
+        result = op(filtered, other)
+        assert result.lowess_fit is None
+        assert result.outlier_indices is None
+
+    def test_a_scalar_operand_keeps_both(self, filtered):
+        """A scalar cannot change the index, so nothing should be dropped."""
+        result = filtered * 2.0
+        assert result.lowess_fit is not None
+        assert result.outlier_indices == filtered.outlier_indices
+
+    def test_an_operand_on_the_same_index_keeps_both(self, filtered):
+        twin = baseTs(np.zeros(len(filtered)), np.asarray(filtered.times))
+        result = filtered + twin
+        assert result.index.equals(filtered.index)
+        assert result.lowess_fit is not None
 
 
 class TestNoWriteThrough:

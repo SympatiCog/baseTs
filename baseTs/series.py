@@ -47,10 +47,18 @@ def _invalidate_position_indexed_metadata(obj, reference_index):
     a missing trace on a plot, while keeping one that is not is the silent
     wrong answer this whole issue is about, so the unknown case fails toward
     dropping. Mutation testing found no observable difference either way on
-    pandas 2.3.3 or 3.0.5 - the only path that reaches it is pandas 3.x's
-    scalar arithmetic (`ts * 2` finalizes a throwaway against the scalar `2`,
-    which has no index), whose result is discarded. It is a default for a case
-    that does not arise today, chosen so that if one ever does, it errs safe.
+    pandas 2.3.3 or 3.0.5. The only path that reaches it is pandas 3.x's scalar
+    arithmetic: `ts * 2` finalizes an intermediate against the scalar `2`,
+    which has no index. That intermediate is then discarded by
+    _wrap_result_as_basets, which rebuilds the result from the left operand's
+    metadata and applies this rule itself against a real index.
+
+    That discard used to be the bug rather than a curiosity - the rebuild
+    copied both attributes with no index check at all, so `+` between two
+    differently indexed operands returned a union-indexed object carrying the
+    left operand's fit, the exact crash this issue is about. It is fixed;
+    the note survives because the reachability of this branch is only benign
+    while that rebuild keeps applying the rule.
 
     Costs nothing on the overwhelmingly common path: when there is no fit and
     no outlier record - which is every object that has not been through
@@ -102,6 +110,52 @@ def _detach_shared_metadata(obj):
     if isinstance(indices, list):
         object.__setattr__(obj, 'outlier_indices', list(indices))
     return obj
+
+
+class _InvalidatingIndex:
+    """
+    pandas' own `index` descriptor, with the positional-metadata rule attached
+    to assignment.
+
+    `.index` is inherited public pandas API, so `ts.index = new_values` is a
+    second door into the same room as `ts.times = new_values` - and it was
+    unguarded, which is how a fit could end up drawn against a time axis it was
+    never computed on. Wrapping the descriptor puts the rule at the one place
+    an index can be *assigned*, rather than asking every caller to remember.
+
+    Delegation, not reimplementation: `pd.Series.index` is an AxisProperty tied
+    to the block manager, so this forwards both halves to it and only adds the
+    invalidation. Reading `.index` costs one extra Python-level call, ~60 ns,
+    which is 2.6x the bare descriptor. That ratio looks alarming and is not:
+    measured min-of-7 over a 20k-point series, `iloc`, arithmetic, `rolling`,
+    `dropna` and `copy` all land within noise of the same branch without this
+    descriptor - several of them nominally faster - because those operations
+    cost tens of microseconds, not tens of nanoseconds.
+
+    This does not cover `pd.Series.__init__` being called directly on an
+    existing object - that replaces the block manager without ever assigning
+    `.index`. `_update_series_data` and `shift_time(inplace=True)` do exactly
+    that, and apply the rule themselves.
+    """
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return self._wrapped.__get__(obj, objtype)
+
+    def __set__(self, obj, value):
+        try:
+            old_index = self._wrapped.__get__(obj, type(obj))
+        except Exception:
+            # Reachable during construction, before the block manager exists.
+            # There is no metadata to invalidate that early, and the helper
+            # treats an unknown parent as a reason to drop rather than keep.
+            old_index = None
+        self._wrapped.__set__(obj, value)
+        _invalidate_position_indexed_metadata(obj, old_index)
 
 
 def normalise_history(history: Any) -> list:
@@ -250,7 +304,12 @@ class TimeSeriesData(pd.Series):
         'has_timestamp_offset', 'outlier_indices', 'lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
-    
+
+    # Assignment to `.index` carries the same staleness as assignment to
+    # `.times`, and `.index` is the one pandas exposes. See _InvalidatingIndex.
+    index = _InvalidatingIndex(pd.Series.index)
+
+
     def __init__(self, data=None, index=None, freq: Optional[float] = None, 
                  signal_name: str = "", **kwargs):
         """
@@ -770,6 +829,15 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr != 'signal_name':
                 setattr(new_basets, attr, getattr(self, attr))
+
+        # These operators do not route through __finalize__: pandas' own
+        # operator already produced a correctly finalized result, and the
+        # baseTs built above discards it and re-copies _metadata from the left
+        # operand. So the index rule has to be applied here by name, or `+`
+        # disagrees with `.add()` - two operands on different time bases
+        # produce a union index, against which the left operand's fit is the
+        # wrong length and its outlier positions point at other samples.
+        _invalidate_position_indexed_metadata(new_basets, self.index)
 
         # Before the history update, not after: the entry appended below would
         # otherwise land in the operand's own history list.

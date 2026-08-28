@@ -414,14 +414,24 @@ decides whether it still applies.
 
 `outlier_indices` and `lowess_fit` are the two entries that do *not* simply
 travel. They describe the samples by position, so they are dropped to `None` on
-any object whose index is not the one they were computed against — a slice, a
-`dropna`, a `resample`, a `sort_values`, or an in-place `ts.times = ...` (#20).
-Operations that leave the index alone — arithmetic, `sg_filter`, `copy`,
-`rolling` — keep both, and `outlier_indices` is copied rather than shared so
-appending through a derived object cannot rewrite the parent's record. Unlike
-`freq` they cannot be re-derived on read, which is why the check is full index
-equality rather than the cheaper `(len, first, last)` token: an interior
-permutation leaves that token intact while moving every sample they describe.
+any object whose index is not the one they were computed against (#20) — a
+slice, a `dropna`, a `resample`, a `sort_values`, arithmetic against a series
+on a different index, or an in-place `ts.times = ...`, `ts.index = ...` or
+`shift_time(inplace=True)`. Operations that leave the index alone — scalar
+arithmetic, `sg_filter`, `copy`, `rolling` — keep both, and `outlier_indices`
+is copied rather than shared so appending through a derived object cannot
+rewrite the parent's record. Unlike `freq` they cannot be re-derived on read,
+which is why the check is full index equality rather than the cheaper
+`(len, first, last)` token: an interior permutation leaves that token intact
+while moving every sample they describe.
+
+The rule is applied wherever an index can change, because no single pandas hook
+sees them all: `__finalize__` covers ordinary pandas derivations, but
+`_create_new_with_data` and `_wrap_result_as_basets` (the arithmetic operator
+overrides) copy `_metadata` by name outside pandas' machinery, while
+`_update_series_data` and `shift_time(inplace=True)` call `pd.Series.__init__`
+directly. Assignment to `.index` itself is intercepted by a descriptor,
+`_InvalidatingIndex`, so `.times` is not a privileged door.
 
 ### Constructor
 
