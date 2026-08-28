@@ -397,8 +397,9 @@ _metadata = [
     'is_uniform_grid',        # Whether the data is on a uniform time grid
     'ts_offset',              # Timestamp offset in seconds
     'has_timestamp_offset',   # Whether a timestamp offset has been applied
-    'outlier_indices',        # Indices that were filtered/removed as outliers
-    'lowess_fit',             # LOWESS fit data (if applicable)
+    'outlier_indices',        # Positions of the samples filtered as outliers
+    'lowess_fit',             # LOWESS fit data (if applicable)  — one value
+                               # per sample; both are positional, see below
     'last_process',           # Last processing operation performed
     'is_outlier_filtered',    # Whether filter_outliers has been applied
     'outlier_filter',         # The LowessOutlierFilter instance used to filter outliers
@@ -410,6 +411,17 @@ above. `__finalize__`, `copy()` and arithmetic all just carry
 `_freq_declaration` along like any other metadata entry; it is the `freq`
 property getter that re-checks it against the live index on every read and
 decides whether it still applies.
+
+`outlier_indices` and `lowess_fit` are the two entries that do *not* simply
+travel. They describe the samples by position, so they are dropped to `None` on
+any object whose index is not the one they were computed against — a slice, a
+`dropna`, a `resample`, a `sort_values`, or an in-place `ts.times = ...` (#20).
+Operations that leave the index alone — arithmetic, `sg_filter`, `copy`,
+`rolling` — keep both, and `outlier_indices` is copied rather than shared so
+appending through a derived object cannot rewrite the parent's record. Unlike
+`freq` they cannot be re-derived on read, which is why the check is full index
+equality rather than the cheaper `(len, first, last)` token: an interior
+permutation leaves that token intact while moving every sample they describe.
 
 ### Constructor
 

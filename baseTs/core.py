@@ -24,7 +24,8 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq)
-from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
+from .series import (TimeSeriesData, _detach_shared_metadata,
+                     _invalidate_position_indexed_metadata, normalise_history)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -287,14 +288,22 @@ class baseTs(TimeSeriesData):
     @times.setter
     def times(self, value: np.ndarray):
         """Set the time values (backward compatibility)."""
+        old_index = self.index
         self.index = pd.Index(value)
         # No freq recalculation. The property derives from the index, so a new
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
         # outcome rather than a side effect to remember to trigger here.
+        #
+        # lowess_fit and outlier_indices get no such second chance: they are
+        # positional, cannot be re-derived, and this setter changes the index
+        # in place, with no derivation for __finalize__ to intercept. It is a
+        # production site for the same staleness, so the same rule applies here.
+        _invalidate_position_indexed_metadata(self, old_index)
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
+        original_index = self.index
         if len(new_data) == len(self.index):
             # Same length, can preserve index
             old_index = self.index
@@ -316,7 +325,15 @@ class baseTs(TimeSeriesData):
         # Restore metadata
         for attr, val in old_metadata.items():
             setattr(self, attr, val)
-            
+
+        # A length change above minted a fresh index, which the restore loop
+        # then re-decorated with the old object's positional metadata. The
+        # producers that legitimately pair a new length with a new fit
+        # (filter_outliers, lowess_detrend) assign it *after* writing .data,
+        # so they are unaffected.
+        _invalidate_position_indexed_metadata(self, original_index)
+
+
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
@@ -381,6 +398,13 @@ class baseTs(TimeSeriesData):
             # die on .copy() before reaching any of the guarded append paths,
             # and a bare list() would explode a str into characters.
             new_obj.history = normalise_history(self.history)
+
+            # The loop above copies lowess_fit and outlier_indices by name, so
+            # this path needs the same index rule __finalize__ applies - and
+            # for the same reason the freq handling was removed from here: one
+            # implementation of "did the index change?", not two that can drift.
+            _invalidate_position_indexed_metadata(new_obj, self.index)
+            _detach_shared_metadata(new_obj)
 
         return new_obj
 

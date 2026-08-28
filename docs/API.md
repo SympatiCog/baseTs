@@ -871,6 +871,12 @@ ts.plot.kde()
 Available pandas kinds: `line`, `bar`, `barh`, `hist`, `box`, `kde`, `density`,
 `area`, `pie`, `scatter`, `hexbin`.
 
+`lowess=True` requires a fit on *this* object and raises `ValueError` if there
+is none. A fit comes from `filter_outliers()` or `lowess_detrend()`, and does
+not survive an operation that changes the index — a slice of a filtered series
+has no fit of its own (#20). Run the filter on the slice, or slice after
+plotting.
+
 ### `plot_fft_power(max_rate=np.nan, min_rate=0.0, window=None, show=True, ax=None)`
 
 Plot FFT power spectrum with enhanced windowing and frequency range control.

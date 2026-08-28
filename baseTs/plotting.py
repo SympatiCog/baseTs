@@ -160,7 +160,17 @@ def plot(ts,
     ax.plot(ts.times[start_idx:end_idx], ts.data[start_idx:end_idx], 
             label=ts.signal_name + ts.last_process)
     if lowess:
-        ax.plot(ts.times[start_idx:end_idx], ts.lowess_fit[start_idx:end_idx], 
+        # Raise rather than skip, unlike qc_plot: there the fit is an optional
+        # extra on a plot that stands without it, here the caller asked for it
+        # by name. A derived object has no fit of its own - filter_outliers or
+        # lowess_detrend produce one, and it does not survive an index change.
+        if ts.lowess_fit is None:
+            raise ValueError(
+                "lowess=True but this object has no lowess_fit. Run "
+                "filter_outliers() or lowess_detrend() on it first; a fit does "
+                "not carry over to an object with a different index."
+            )
+        ax.plot(ts.times[start_idx:end_idx], ts.lowess_fit[start_idx:end_idx],
                 label='Lowess Fit')
         ax.legend()
         

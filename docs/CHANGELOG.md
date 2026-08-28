@@ -54,6 +54,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
+
+### Behavior change — positional metadata is invalidated, not carried
+
+`lowess_fit` holds one value per sample and `outlier_indices` holds *positions*
+into that same sample sequence. Both used to travel onto every derived object
+regardless of what that object's index looked like, so a 50-point slice of a
+filtered series claimed a 200-point fit and reported outliers at positions it
+did not have. `qc_plot` raised `ValueError: x and y must have same first
+dimension`; `plot(..., lowess=True)` did not raise, and silently drew the
+parent's fit over the child's window.
+
+Both attributes are now dropped whenever the index they were computed against
+is no longer the object's index. Reslicing was rejected as the fix: it is only
+definable for a positional slice, and `resample`, `dropna` and `sort_values`
+have no meaningful mapping, so it would have been correct on one path and
+silently wrong on the rest. The test is full index equality — deliberately
+stricter than the `_freq_token` used for `freq`, because an interior
+permutation leaves that token untouched while moving every sample these two
+attributes describe.
+
+Four breaking changes fall out:
+
+1. **A derived object with a different index has no fit and no outlier
+   record.** `ts.filter_outliers(inplace=True); ts.iloc[:50].lowess_fit` is now
+   `None` rather than the parent's 200-point array. This covers slicing,
+   `dropna`, `resample`, `sort_values`, `remove_outliers`, `shift_time` and
+   every other operation that changes the index — including a reordering that
+   leaves the length, first and last timestamps intact. **Migrate:** re-run
+   `filter_outliers()` or `lowess_detrend()` on the derived object if you need
+   a fit for it, or take the slice before filtering rather than after.
+   Operations that leave the index alone (arithmetic, `sg_filter`, `copy`,
+   `rolling`) still carry both.
+
+2. **Assigning a new time base clears both in place.** `ts.times = new_times`
+   and a length-changing `ts.data = shorter` now set `lowess_fit` and
+   `outlier_indices` to `None` on the object itself. These are production
+   sites for the same staleness with no derivation for pandas to intercept.
+   **Migrate:** read the fit out before reassigning the index if you need it.
+
+3. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
+   `lowess_fit` and what to run to get one. It previously raised a
+   dimension-mismatch `ValueError` from matplotlib, or drew the wrong data.
+   `qc_plot` is unchanged: it already gated on `lowess_fit is not None`, and
+   now simply omits the trace instead of raising. **Migrate:** guard on
+   `ts.lowess_fit is not None` before asking `plot` for a lowess trace.
+
+4. **`outlier_indices` is no longer shared by reference.** Every derivation now
+   gets its own list, so `derived.outlier_indices.append(...)` no longer
+   rewrites the parent's outlier record. It is a plain list whose length is the
+   number of outliers, so copying it costs nothing per sample. `lowess_fit`
+   is still shared where it survives — it is one float per sample, nothing in
+   the library writes into it, and copying it on every derivation would turn an
+   O(1) slice into an O(n) walk of the parent's metadata. **Migrate:** none,
+   unless you were relying on the write-through.
+
 ## [Unreleased] — `freq` becomes a derived property (#29, #31, #23)
 
 ### Behavior change — `freq` is now a property, not a stored attribute

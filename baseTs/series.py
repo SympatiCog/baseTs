@@ -16,17 +16,77 @@ from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
 
 
+#: Metadata that describes the samples by *position* rather than by index
+#: label, and is therefore meaningless against any other sample sequence.
+#: `lowess_fit` holds one value per sample; `outlier_indices` holds positions
+#: into that same sequence.
+_POSITION_INDEXED_METADATA = ('lowess_fit', 'outlier_indices')
+
+
+def _invalidate_position_indexed_metadata(obj, reference_index):
+    """
+    Drop `lowess_fit` and `outlier_indices` unless `obj` still has the index
+    they were computed against.
+
+    Neither can be resliced in general. A positional slice has an obvious
+    mapping, but resample, dropna and sort_values have none, so a reslicing
+    implementation would be correct on one path and silently wrong on every
+    other - drawing the parent's fit over the child's window, or reporting an
+    outlier at a position the child does not have. Invalidation is correct
+    everywhere and makes the `lowess_fit is not None` guard in plotting do the
+    right thing on its own.
+
+    The test is full index equality, deliberately stricter than the
+    `_freq_token` used for `freq`. That token is (len, first, last) and is
+    airtight for the rate because those are exactly the three inputs the
+    derivation reads; here an interior permutation leaves the token untouched
+    while moving every sample these two attributes describe.
+
+    `reference_index=None` means "no known parent", and invalidates. The
+    failure modes are not symmetric: dropping a fit that was still valid costs
+    a missing trace on a plot, while keeping one that is not is the silent
+    wrong answer this whole issue is about, so the unknown case fails toward
+    dropping. Mutation testing found no observable difference either way on
+    pandas 2.3.3 or 3.0.5 - the only path that reaches it is pandas 3.x's
+    scalar arithmetic (`ts * 2` finalizes a throwaway against the scalar `2`,
+    which has no index), whose result is discarded. It is a default for a case
+    that does not arise today, chosen so that if one ever does, it errs safe.
+
+    Costs nothing on the overwhelmingly common path: when there is no fit and
+    no outlier record - which is every object that has not been through
+    filter_outliers or lowess_detrend - it returns before comparing indexes.
+    That early return is an optimisation only; removing it changes no
+    behaviour, so no test pins it.
+    """
+    if all(getattr(obj, name, None) is None for name in _POSITION_INDEXED_METADATA):
+        return obj
+    if reference_index is not None and obj.index.equals(reference_index):
+        return obj
+    for name in _POSITION_INDEXED_METADATA:
+        object.__setattr__(obj, name, None)
+    return obj
+
+
 def _detach_shared_metadata(obj):
     """
-    Give `obj` its own `history` list.
+    Give `obj` its own `history` list and its own `outlier_indices` list.
 
     pandas' default __finalize__ assigns metadata by reference, so a derived
     object would append to the list it inherited - one history for two series.
 
     `outlier_filter` needs no copy: FilterConfig is frozen and
     set_outlier_filter rebinds the filter rather than mutating it, so sharing
-    one is safe by construction. `lowess_fit` and `outlier_indices` are left
-    shared, unchanged from before - see #20.
+    one is safe by construction.
+
+    `outlier_indices` gets a fresh list because it is neither frozen nor
+    rebound-only: it is a plain list, and appending or sorting through any
+    object that shares it rewrites the outlier record of every other. Its cost
+    is O(number of outliers), not O(number of samples), so copying it on every
+    derivation is cheap. `lowess_fit` is left shared: it is one float per
+    sample, nothing in the library writes into it, and copying it here would
+    turn an O(1) slice into an O(n) walk of the parent's metadata. Whether
+    either survives the derivation at all is decided by
+    _invalidate_position_indexed_metadata, not here.
 
     A history that is not a list is normalised rather than left alone. pandas
     propagates metadata from whichever operand carries it, so an operand
@@ -38,6 +98,9 @@ def _detach_shared_metadata(obj):
     just as fatal to .append(). See normalise_history for the coercion rules.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
+    indices = getattr(obj, 'outlier_indices', None)
+    if isinstance(indices, list):
+        object.__setattr__(obj, 'outlier_indices', list(indices))
     return obj
 
 
@@ -358,8 +421,18 @@ class TimeSeriesData(pd.Series):
 
         `outlier_filter` is deliberately left shared: FilterConfig is frozen
         and set_outlier_filter rebinds rather than mutates it, so a shared
-        filter cannot carry a write from one object to another. `lowess_fit`
-        and `outlier_indices` stay shared too - see _detach_shared_metadata.
+        filter cannot carry a write from one object to another.
+
+        `lowess_fit` and `outlier_indices` describe the parent's samples by
+        position, so they survive only when the derived index is the parent's -
+        see _invalidate_position_indexed_metadata. The index compared against is
+        the object metadata was actually taken from, which on the concat
+        recovery path below is `source`, not `other`. No test pins that choice:
+        nlargest/nsmallest reach the concat step via an internal reset_index,
+        which has already invalidated both attributes by the time `source` is
+        read, so the two spellings agree on every path that exists today. It is
+        written this way because the index to judge by is the one the metadata
+        came from, and the loop below is what decides that.
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
         an internal concat step where `other` is not an NDFrame (a
@@ -380,6 +453,7 @@ class TimeSeriesData(pd.Series):
         real merged index.
         """
         super().__finalize__(other, method=method, **kwargs)
+        source = other
         if method == 'concat':
             objs = getattr(other, 'objs', None)
             if objs:
@@ -389,6 +463,7 @@ class TimeSeriesData(pd.Series):
                     for name in self._metadata:
                         if hasattr(source, name):
                             object.__setattr__(self, name, getattr(source, name))
+        _invalidate_position_indexed_metadata(self, getattr(source, 'index', None))
         return _detach_shared_metadata(self)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:
