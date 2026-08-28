@@ -75,7 +75,7 @@ stricter than the `_freq_token` used for `freq`, because an interior
 permutation leaves that token untouched while moving every sample these two
 attributes describe.
 
-Five breaking changes fall out:
+Six breaking changes fall out:
 
 1. **A derived object with a different index has no fit and no outlier
    record.** `ts.filter_outliers(inplace=True); ts.iloc[:50].lowess_fit` is now
@@ -107,14 +107,28 @@ Five breaking changes fall out:
    door alongside `.times`. **Migrate:** read the fit out before reassigning
    the index if you need it.
 
-4. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
+4. **`inplace=True` on an inherited pandas method clears both.**
+   `ts.dropna(inplace=True)`, `ts.sort_values(inplace=True)`,
+   `ts.sort_index(inplace=True)` and `ts.drop(..., inplace=True)` change the
+   length or the order in place, and now drop both. This is the widest of the
+   changed surfaces because it needs no baseTs method at all: pandas routes
+   these through `NDFrame._update_inplace`, which finalizes only the object it
+   then discards. `dropna(inplace=True)` previously reproduced the original
+   `qc_plot` dimension crash; `sort_values(inplace=True)` was the silent form
+   — same length, every position moved, both attributes still describing the
+   old order. **Migrate:** none, unless you were reading either attribute
+   after such a call, in which case it was already wrong. In-place calls that
+   preserve the index (`fillna`, `clip`, `interpolate`, `rename`, `ts += x`)
+   still keep both.
+
+5. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
    `lowess_fit` and what to run to get one. It previously raised a
    dimension-mismatch `ValueError` from matplotlib, or drew the wrong data.
    `qc_plot` is unchanged: it already gated on `lowess_fit is not None`, and
    now simply omits the trace instead of raising. **Migrate:** guard on
    `ts.lowess_fit is not None` before asking `plot` for a lowess trace.
 
-5. **`outlier_indices` is no longer shared by reference.** Every derivation now
+6. **`outlier_indices` is no longer shared by reference.** Every derivation now
    gets its own list, so `derived.outlier_indices.append(...)` no longer
    rewrites the parent's outlier record. It is a plain list whose length is the
    number of outliers, so copying it costs nothing per sample. `lowess_fit`

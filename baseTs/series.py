@@ -149,10 +149,14 @@ class _InvalidatingIndex:
     def __set__(self, obj, value):
         try:
             old_index = self._wrapped.__get__(obj, type(obj))
-        except Exception:
-            # Reachable during construction, before the block manager exists.
+        except AttributeError:
+            # The only exception this read raises: pandas' AxisProperty reaches
+            # for `_mgr`, which does not exist until the Series is constructed.
             # There is no metadata to invalidate that early, and the helper
             # treats an unknown parent as a reason to drop rather than keep.
+            # Deliberately not `except Exception`: anything else coming out of
+            # a plain attribute read is a real fault and should surface here
+            # rather than be silently recorded as "no previous index".
             old_index = None
         self._wrapped.__set__(obj, value)
         _invalidate_position_indexed_metadata(obj, old_index)
@@ -524,6 +528,35 @@ class TimeSeriesData(pd.Series):
                             object.__setattr__(self, name, getattr(source, name))
         _invalidate_position_indexed_metadata(self, getattr(source, 'index', None))
         return _detach_shared_metadata(self)
+
+    def _update_inplace(self, result, *args, **kwargs):
+        """
+        Adopt an in-place result, dropping positional metadata it invalidates.
+
+        This is how pandas implements `inplace=True` on every inherited method
+        - dropna, sort_values, sort_index, drop and friends. It swaps the block
+          manager on `self` directly, so none of the other hooks fire:
+        `__finalize__` runs only on the *returned* object, which pandas then
+        discards; `.index` is never assigned, so the descriptor does not see
+        it; and neither the data nor the times setter is involved.
+
+        That made `ts.dropna(inplace=True)` reproduce the exact crash this
+        issue is about on an otherwise fixed object, and
+        `ts.sort_values(inplace=True)` the silent version of it - same length,
+        every position moved, both attributes still describing the old order.
+
+        The widest surface of the seven, because it needs no baseTs method at
+        all. Index-preserving in-place calls (fillna, clip, interpolate) reach
+        here too and correctly keep both.
+
+        `*args, **kwargs` rather than a named signature on purpose: pandas 2.x
+        takes `(result, verify_is_copy=True)` and pandas 3.x takes `(result)`.
+        Spelling out the 2.x parameter would break 3.x and vice versa, and this
+        project supports both (`pandas>=2.0.0`, CI on Python 3.9-3.11).
+        """
+        original_index = self.index
+        super()._update_inplace(result, *args, **kwargs)
+        _invalidate_position_indexed_metadata(self, original_index)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:
         """See _FinalizingWindow: rolling()/expanding()/ewm() never call __finalize__."""

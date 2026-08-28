@@ -425,13 +425,16 @@ which is why the check is full index equality rather than the cheaper
 `(len, first, last)` token: an interior permutation leaves that token intact
 while moving every sample they describe.
 
-The rule is applied wherever an index can change, because no single pandas hook
-sees them all: `__finalize__` covers ordinary pandas derivations, but
-`_create_new_with_data` and `_wrap_result_as_basets` (the arithmetic operator
-overrides) copy `_metadata` by name outside pandas' machinery, while
-`_update_series_data` and `shift_time(inplace=True)` call `pd.Series.__init__`
-directly. Assignment to `.index` itself is intercepted by a descriptor,
-`_InvalidatingIndex`, so `.times` is not a privileged door.
+The rule is applied at seven places, because no single pandas hook sees them
+all. `__finalize__` covers ordinary pandas derivations. `_create_new_with_data`
+and `_wrap_result_as_basets` (the arithmetic operator overrides) copy
+`_metadata` by name outside pandas' machinery. `_update_series_data` and
+`shift_time(inplace=True)` call `pd.Series.__init__` directly. Assignment to
+`.index` is intercepted by a descriptor, `_InvalidatingIndex`, so `.times` is
+not a privileged door. And `_update_inplace` covers `inplace=True` on every
+inherited pandas method — `dropna`, `sort_values`, `sort_index`, `drop` — which
+swaps the block manager without finalizing `self` or assigning `.index`, and is
+the widest surface of the seven because it needs no baseTs method at all.
 
 ### Constructor
 

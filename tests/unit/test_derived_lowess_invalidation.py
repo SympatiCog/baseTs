@@ -149,6 +149,65 @@ class TestInvalidationOnInPlaceIndexChange:
         assert filtered.outlier_indices is not None
 
 
+class TestInheritedPandasInplaceMethods:
+    """`inplace=True` on an inherited pandas method swaps the block manager.
+
+    pandas routes these through NDFrame._update_inplace, which finalizes only
+    the *returned* object - the one it then throws away - and never assigns
+    `.index`. So none of the baseTs-side hooks see it: not __finalize__, not
+    the index descriptor, not the data/times setters. These are ordinary,
+    unoverridden pandas methods, so this is the widest surface of all.
+    """
+
+    def test_dropna_inplace_drops_both(self, filtered):
+        """The reported crash, reachable without any baseTs method at all."""
+        filtered.iloc[5] = np.nan
+        filtered.dropna(inplace=True)
+        assert len(filtered) == 199
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_qc_plot_after_dropna_inplace_does_not_raise(self, filtered):
+        filtered.iloc[5] = np.nan
+        filtered.dropna(inplace=True)
+        _, ax = plt.subplots()
+        qc_plot(filtered, np.asarray(filtered.data, float), filtered.times, ax=ax)
+        assert "Lowess Fit" not in [line.get_label() for line in ax.get_lines()]
+
+    def test_sort_values_inplace_drops_both(self, filtered):
+        """The silent variant: same length, every position moved."""
+        filtered.sort_values(inplace=True)
+        assert len(filtered) == 200, "sorting must not change the length"
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_sort_index_inplace_drops_both(self, filtered):
+        filtered.sort_index(ascending=False, inplace=True)
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    def test_drop_inplace_drops_both(self, filtered):
+        filtered.drop(filtered.index[:10], inplace=True)
+        assert len(filtered) == 190
+        assert filtered.lowess_fit is None
+        assert filtered.outlier_indices is None
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda ts: ts.fillna(0.0, inplace=True),
+            lambda ts: ts.clip(-1.0, 1.0, inplace=True),
+        ],
+        ids=["fillna", "clip"],
+    )
+    def test_index_preserving_inplace_methods_keep_both(self, filtered, call):
+        """These change values, not positions, so the rule must not fire."""
+        call(filtered)
+        assert filtered.lowess_fit is not None
+        assert len(filtered.lowess_fit) == len(filtered)
+        assert filtered.outlier_indices is not None
+
+
 class TestInvalidationThroughCreateNewWithData:
     """_create_new_with_data copies both attributes by name, outside __finalize__.
 
@@ -222,6 +281,30 @@ class TestArithmeticOperators:
         result = filtered * 2.0
         assert result.lowess_fit is not None
         assert result.outlier_indices == filtered.outlier_indices
+
+    @pytest.mark.parametrize("rhs", ["scalar", "different_index", "same_index"])
+    def test_augmented_assignment_never_invalidates(self, filtered, other, rhs):
+        """`ts += x` cannot change ts's index, so it must not drop anything.
+
+        _inplace_arith reindex_like's the result back onto the original index
+        before adopting it, exactly as pandas' own _inplace_method does, so
+        even an operand on a different time base leaves the length and labels
+        alone. This pins that boundary: the rule keys on the index changing,
+        and here it provably cannot.
+        """
+        operand = {
+            "scalar": 1.0,
+            "different_index": other,
+            "same_index": baseTs(np.zeros(len(filtered)), np.asarray(filtered.times)),
+        }[rhs]
+        before_index = filtered.index.copy()
+
+        filtered += operand
+
+        assert filtered.index.equals(before_index)
+        assert filtered.lowess_fit is not None
+        assert len(filtered.lowess_fit) == len(filtered)
+        assert filtered.outlier_indices is not None
 
     def test_an_operand_on_the_same_index_keeps_both(self, filtered):
         twin = baseTs(np.zeros(len(filtered)), np.asarray(filtered.times))
