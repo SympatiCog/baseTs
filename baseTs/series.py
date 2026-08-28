@@ -16,17 +16,186 @@ from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
 
 
+#: The private slots behind the positional properties, paired with the public
+#: names they back. Each holds either None or `(value, index_it_describes)`.
+_POSITION_INDEXED_SLOTS = (('lowess_fit', '_lowess_fit'),
+                           ('outlier_indices', '_outlier_indices'))
+
+
+def _positional_property(public: str, private: str, what: str) -> property:
+    """
+    Build a property that hands back `value` only while the index it was
+    computed against is still the object's index.
+
+    `lowess_fit` holds one float per sample and `outlier_indices` holds
+    *positions* into that same sample sequence. Neither survives a change of
+    index, and neither can be resliced in general: a positional slice has an
+    obvious mapping, but resample, dropna and sort_values have none, so a
+    reslicing implementation would be right on one path and silently wrong on
+    every other.
+
+    **Checked on read, not on write.** The write-side version of this rule
+    needed a hook at every place an index can change, and there is no bounded
+    list of those. Three review rounds took it from four hooks to seven and a
+    fourth hole turned up immediately: `ts.loc[new] = v` and `ts.pop(label)`
+    reach past `__finalize__`, `_update_inplace` and index assignment alike to
+    swap the block manager directly, and `interpolate_gaps(inplace=True)` was
+    one of three `pd.Series.__init__` call sites of which an explicit audit
+    for that exact pattern still guarded only two. Reading `self.index` at
+    access time cannot be bypassed, because every one of those doors changes
+    `self.index` - which is the whole point of the redesign.
+
+    This is the `freq` mechanism from #38 applied to a second kind of
+    metadata, with one deliberate difference: `freq` compares a
+    `(len, first, last)` token, because those are exactly the three inputs its
+    derivation reads. That token is not enough here. An interior permutation
+    leaves it untouched while moving every sample these two describe, so the
+    check is full `Index.equals`.
+
+    The stored index is a reference, not a copy: `pd.Index` is immutable and
+    assignment rebinds rather than mutates, so there is nothing to copy.
+
+    **Reading never destroys.** The getter is a pure function of the stored
+    pair and the live index, so what one read returns does not depend on
+    whether an earlier read happened. Clearing on a mismatch was tried and is
+    worse: release then becomes per-attribute and observation-dependent -
+    reading `lowess_fit` while stale would drop it while leaving
+    `outlier_indices` recoverable, so an index reverted afterwards would bring
+    back exactly the one nobody had looked at.
+
+    A consequence worth stating: on *this* object, restoring an index the fit
+    was computed against makes it readable again. Within the scope of this
+    property that is correct - the samples are back at the positions the fit
+    describes. It is only misleading if the *data* changed while the index was
+    elsewhere, which is the separate defect tracked as #40; fixing that by
+    stamping the data as well removes this wrinkle with it.
+
+    Reading does re-stamp with the index it just proved equal. That changes no
+    answer - equality is transitive - and buys two things: later reads take
+    `Index.equals`' identity fast path instead of an O(n) comparison, and the
+    index the value arrived with is released. Both matter because every derived
+    object gets a *new* `Index` instance, even from `copy(deep=False)`, so a
+    derived object never hits the identity fast path on its first read however
+    unchanged its index is.
+    """
+
+    def getter(self):
+        stored = getattr(self, private, None)
+        if stored is None:
+            return None
+        value, described_index = stored
+        try:
+            current = self.index
+        except AttributeError:
+            # Before the block manager exists there is no index to describe.
+            return None
+        if not current.equals(described_index):
+            return None
+        if current is not described_index:
+            object.__setattr__(self, private, (value, current))
+        return value
+
+    def setter(self, value):
+        if value is None:
+            object.__setattr__(self, private, None)
+            return
+        object.__setattr__(self, private, (value, self.index))
+
+    getter.__name__ = public
+    setter.__name__ = public
+    return property(getter, setter, doc=f"{what} Valid only while the index "
+                                        f"it was computed against is still "
+                                        f"this object's index; reads as None "
+                                        f"otherwise (#20).")
+
+
+#: The private slot names alone, for callers that need to recognise them.
+_POSITION_INDEXED_PRIVATE = tuple(private for _public, private in _POSITION_INDEXED_SLOTS)
+
+
+def deepcopy_metadata_value(name: str, value: Any):
+    """
+    Deep-copy a `_metadata` entry, reaching inside a positional slot.
+
+    Both `copy()` implementations deep-copy an entry only when it is a list,
+    dict or ndarray. A positional slot is a `(value, index)` tuple, so that
+    test silently stopped matching when the slots moved behind the properties,
+    and `copy(deep=True)` began handing back the parent's own fit array - an
+    aliasing bug on the one path whose whole purpose is to prevent it.
+
+    The stamp is carried over by reference rather than copied: `pd.Index` is
+    immutable, so there is nothing to isolate, and copying it would throw away
+    the identity that lets a later read take the fast path. No test pins that -
+    a deep-copied index is still `equals`-true, so the choice is memory and
+    speed, not behaviour.
+    """
+    if name in _POSITION_INDEXED_PRIVATE:
+        if value is None:
+            return None
+        payload, described_index = value
+        return (copy_module.deepcopy(payload), described_index)
+    if isinstance(value, (list, dict, np.ndarray)):
+        return copy_module.deepcopy(value)
+    return value
+
+
+def _drop_stale_positional_metadata(obj):
+    """
+    Release a positional slot whose index no longer matches.
+
+    Runs on derivation only, from _detach_shared_metadata. Without it every
+    slice of a filtered series would pin the parent's full-length fit for as
+    long as the slice lived, whether or not anyone ever read it.
+
+    It *is* observable, and the rule it enforces is deliberate: a derived
+    object whose index never matched is born without the value, so restoring
+    an index later cannot hand it one it never had. That differs from the same
+    revert on the object that owned the fit, where the value does come back -
+    see _positional_property. The two halves are each defensible on their own
+    terms, and neither depends on whether anyone read anything.
+
+    The limitation this leaves: an object mutated *in place* to a different
+    index keeps the old value in its slot, unread, until it is overwritten or
+    the object is collected. Closing that would need a hook at every point an
+    index can change, which is the design this replaced.
+
+    _positional_property remains the correctness mechanism: this only decides
+    when an unreadable value is released, never whether a readable one is.
+    """
+    for _public, private in _POSITION_INDEXED_SLOTS:
+        stored = getattr(obj, private, None)
+        if stored is None:
+            continue
+        _value, described_index = stored
+        try:
+            current = obj.index
+        except AttributeError:
+            continue
+        if not current.equals(described_index):
+            object.__setattr__(obj, private, None)
+    return obj
+
+
 def _detach_shared_metadata(obj):
     """
-    Give `obj` its own `history` list.
+    Give `obj` its own `history` list and its own `outlier_indices` list.
 
     pandas' default __finalize__ assigns metadata by reference, so a derived
     object would append to the list it inherited - one history for two series.
 
     `outlier_filter` needs no copy: FilterConfig is frozen and
     set_outlier_filter rebinds the filter rather than mutating it, so sharing
-    one is safe by construction. `lowess_fit` and `outlier_indices` are left
-    shared, unchanged from before - see #20.
+    one is safe by construction.
+
+    `outlier_indices` gets a fresh list because it is neither frozen nor
+    rebound-only: it is a plain list, and appending or sorting through any
+    object that shares it rewrites the outlier record of every other. Its cost
+    is O(number of outliers), not O(number of samples), so copying it on every
+    derivation is cheap. `lowess_fit` is left shared: it is one float per
+    sample, nothing in the library writes into it, and copying it here would
+    turn an O(1) slice into an O(n) walk of the parent's metadata. Whether
+    either is still *readable* is decided by _positional_property on access,
+    not here; this only stops two objects sharing one mutable list.
 
     A history that is not a list is normalised rather than left alone. pandas
     propagates metadata from whichever operand carries it, so an operand
@@ -38,7 +207,15 @@ def _detach_shared_metadata(obj):
     just as fatal to .append(). See normalise_history for the coercion rules.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
-    return obj
+    stored = getattr(obj, '_outlier_indices', None)
+    if stored is not None and isinstance(stored[0], (list, np.ndarray)):
+        # ndarray as well as list: the constructor types this parameter as
+        # np.array, so a list-only check leaves the documented isolation
+        # depending on which shape a caller happened to supply. Either way the
+        # cost is the number of outliers, not the number of samples.
+        object.__setattr__(obj, '_outlier_indices',
+                           (copy_module.copy(stored[0]), stored[1]))
+    return _drop_stale_positional_metadata(obj)
 
 
 def normalise_history(history: Any) -> list:
@@ -184,10 +361,26 @@ class TimeSeriesData(pd.Series):
     _metadata = [
         '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
-        'has_timestamp_offset', 'outlier_indices', 'lowess_fit',
+        'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
-    
+
+    # What propagates is the (value, index) pair, not the bare value - so
+    # pandas copying it verbatim is correct, because the child re-checks it
+    # against its own index on read. Listing the public names here instead
+    # would be actively wrong for the same reason it is wrong for `freq`:
+    # __finalize__ copies with object.__setattr__, which honours data
+    # descriptors, so every propagation would run the stamping setter and
+    # re-stamp the parent's fit with the child's index - laundering exactly
+    # the staleness this exists to catch.
+    lowess_fit = _positional_property(
+        'lowess_fit', '_lowess_fit',
+        "LOWESS fit produced by filter_outliers or lowess_detrend, one value "
+        "per sample.")
+    outlier_indices = _positional_property(
+        'outlier_indices', '_outlier_indices',
+        "Positions of the samples filter_outliers rejected.")
+
     def __init__(self, data=None, index=None, freq: Optional[float] = None, 
                  signal_name: str = "", **kwargs):
         """
@@ -236,8 +429,8 @@ class TimeSeriesData(pd.Series):
         self.is_uniform_grid = False
         self.ts_offset = 0
         self.has_timestamp_offset = False
-        self.outlier_indices = None
-        self.lowess_fit = None
+        self._outlier_indices = None
+        self._lowess_fit = None
         self.last_process = ""
         self.history = []
         # _metadata declares these two; without them any derived object
@@ -358,8 +551,13 @@ class TimeSeriesData(pd.Series):
 
         `outlier_filter` is deliberately left shared: FilterConfig is frozen
         and set_outlier_filter rebinds rather than mutates it, so a shared
-        filter cannot carry a write from one object to another. `lowess_fit`
-        and `outlier_indices` stay shared too - see _detach_shared_metadata.
+        filter cannot carry a write from one object to another.
+
+        `_lowess_fit` and `_outlier_indices` need nothing special here. They
+        carry the index they describe with them, so copying the pair verbatim
+        is correct however the derived index differs - the property re-checks
+        it on read. That is the point of moving the check to read time: this
+        method no longer has to be one of the places that knows the rule.
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
         an internal concat step where `other` is not an NDFrame (a
@@ -440,8 +638,12 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr):
                 value = getattr(self, attr)
-                if deep and isinstance(value, (list, dict, np.ndarray)):
-                    value = copy_module.deepcopy(value)
+                if deep:
+                    # See deepcopy_metadata_value: the positional slots hold a
+                    # (value, index) tuple, so an isinstance check against
+                    # list/dict/ndarray never matches them and a deep copy
+                    # would quietly share the parent's array.
+                    value = deepcopy_metadata_value(attr, value)
                 setattr(copied, attr, value)
 
         # Unconditionally, not just when shallow. The loop above re-assigns

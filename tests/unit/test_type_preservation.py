@@ -69,13 +69,20 @@ class TestTypePreservation:
 
 class TestMetadataPropagation:
 
-    def test_outlier_indices_survives_slicing(self, ts):
+    def test_outlier_indices_is_reachable_after_slicing(self, ts):
         """
         outlier_indices was absent from _metadata, so this raised
-        AttributeError after any pandas operation.
+        AttributeError after any pandas operation. It is reachable now - and
+        None on a slice, because it holds positions into the parent's samples
+        and the slice does not have them (#20).
         """
-        ts.outlier_indices = np.array([3, 4, 5])
-        assert np.array_equal(ts.iloc[0:20].outlier_indices, np.array([3, 4, 5]))
+        ts.outlier_indices = [3, 4, 5]
+        assert ts.iloc[0:20].outlier_indices is None
+
+    def test_outlier_indices_survives_an_index_preserving_operation(self, ts):
+        """Invalidation is keyed on the index changing, not on deriving."""
+        ts.outlier_indices = [3, 4, 5]
+        assert (ts * 2.0).outlier_indices == [3, 4, 5]
 
     def test_declared_metadata_is_actually_reachable(self, ts):
         """Every name in _metadata must exist on a constructed object."""

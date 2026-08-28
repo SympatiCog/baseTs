@@ -54,6 +54,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
+
+### Behavior change — positional metadata is validated on read
+
+`lowess_fit` holds one value per sample and `outlier_indices` holds *positions*
+into that same sample sequence. Both used to travel onto every derived object
+regardless of what that object's index looked like, so a 50-point slice of a
+filtered series claimed a 200-point fit and reported outliers at positions it
+did not have. `qc_plot` raised `ValueError: x and y must have same first
+dimension`; `plot(..., lowess=True)` did not raise, and silently drew the
+parent's fit over the child's window.
+
+Both are now properties. Each stores the value together with the index it was
+computed against, and hands it back only while that is still the object's
+index; otherwise it reads as `None`. Reslicing was rejected as an alternative:
+it is only definable for a positional slice, and `resample`, `dropna` and
+`sort_values` have no meaningful mapping, so it would have been correct on one
+path and silently wrong on the rest.
+
+The check is full index equality — deliberately stricter than the `_freq_token`
+used for `freq`, because an interior permutation leaves that token untouched
+while moving every sample these two describe.
+
+**Why on read rather than on write.** The first implementation invalidated at
+each point an index could change, and that list would not close: it grew from
+four places to seven over three review rounds and still missed
+`ts.loc[new] = v`, `ts.pop(label)` and `del ts[label]` — which swap the block
+manager inside pandas' own indexer, past `__finalize__`, `_update_inplace` and
+`.index` assignment alike — as well as `interpolate_gaps(inplace=True)`, one of
+three `pd.Series.__init__` call sites of which an explicit audit for that exact
+pattern still guarded only two. Every one of those doors changes `self.index`,
+and the getter reads `self.index`, so checking there closes all of them at once
+and cannot be bypassed by a path nobody anticipated.
+
+Six breaking changes fall out:
+
+1. **An object whose index is not the one the fit was computed against reads
+   `None` for both.** `ts.filter_outliers(inplace=True); ts.iloc[:50].lowess_fit`
+   is now `None` rather than the parent's 200-point array. This covers every
+   way an index can change — slicing, `dropna`, `resample`, `sort_values`,
+   `remove_outliers`, `shift_time`, `inplace=True` on any inherited pandas
+   method, `ts.loc[new] = v`, `pop`, `del`, `interpolate_gaps(inplace=True)` —
+   including a reordering that leaves the length, first and last timestamps
+   intact. **Migrate:** re-run `filter_outliers()` or `lowess_detrend()` on the
+   object you want a fit for, or slice before filtering rather than after.
+   Operations that leave the index alone (`sg_filter`, `copy`, `rolling`,
+   scalar arithmetic, `fillna`/`clip`/`interpolate` in place, `ts += x`) still
+   carry both.
+
+2. **Arithmetic between two differently indexed series clears both.**
+   `filtered + other` produces a union index, against which the left operand's
+   fit is the wrong length and its outlier positions point at other samples;
+   it used to be carried anyway, and `plot(result, lowess=True)` then raised a
+   matplotlib dimension error. **Migrate:** none, unless you were reading
+   `lowess_fit` off an arithmetic result — it was the wrong array.
+
+3. **Assigning a new time base clears both.** `ts.times = new_times`,
+   `ts.index = new_index`, a length-changing `ts.data = shorter`, and any
+   in-place method that changes length or order. **Migrate:** read the fit out
+   before reassigning the index if you need it.
+
+4. **`plot(ts, lowess=True)` raises `ValueError` when there is no fit**, naming
+   `lowess_fit` and what to run to get one. It previously raised a
+   dimension-mismatch `ValueError` from matplotlib, or drew the wrong data.
+   `qc_plot` is unchanged: it already gated on `lowess_fit is not None`, and
+   now simply omits the trace instead of raising. **Migrate:** guard on
+   `ts.lowess_fit is not None` before asking `plot` for a lowess trace.
+
+5. **`outlier_indices` is no longer shared by reference.** Every derivation
+   gets its own copy, so `derived.outlier_indices.append(...)` no longer
+   rewrites the parent's outlier record. Its length is the number of outliers,
+   not the number of samples, so copying it is cheap; both the list and ndarray
+   shapes are detached, since the constructor types the parameter as
+   `np.array`. `lowess_fit` is still shared on *derivation* — one float per
+   sample, never written to, and copying it there would turn an O(1) slice into
+   an O(n) walk of the parent's metadata — but `copy(deep=True)` deep-copies it
+   as it always did. **Migrate:** none, unless you were relying on the
+   write-through.
+
+Two consequences of checking on read rather than destroying on write, neither
+of which depends on whether anyone read anything:
+
+- **Restoring an index makes the value readable again on the object that owned
+  it.** `ts.times = other; ts.times = original` gives the fit back — correct
+  within this property's scope, since the samples are back at the positions the
+  fit describes, and misleading only if the *data* changed meanwhile, which is
+  tracked separately as #40. A *derived* object never regains a value it never
+  had: derivation releases outright.
+- **An object mutated in place to a different index keeps the old value in its
+  slot** until overwritten or collected. Derivation releases eagerly, which is
+  the case that matters — it is what stops a slice pinning the parent's
+  full-length array.
+
+6. **`TimeSeriesData._metadata` no longer contains `'lowess_fit'` or
+   `'outlier_indices'`.** The slots it names are now `'_lowess_fit'` and
+   `'_outlier_indices'`, each holding `(value, index_it_describes)`. This
+   mirrors what `'freq'` → `'_freq_declaration'` did in the previous release,
+   and for the same reason: `__finalize__` copies with `object.__setattr__`,
+   which honours data descriptors, so declaring the public names would run the
+   stamping setter on every propagation and re-stamp a stale fit with the
+   receiving object's index. **Migrate:** code that introspects or iterates
+   `_metadata` looking for either name needs the underscored spelling — or,
+   better, should just read and write the public properties. Any code that
+   copies metadata between objects must copy the private slots, never assign
+   through the public names.
+
 ## [Unreleased] — `freq` becomes a derived property (#29, #31, #23)
 
 ### Behavior change — `freq` is now a property, not a stored attribute

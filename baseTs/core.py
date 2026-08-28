@@ -24,7 +24,8 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq)
-from .series import TimeSeriesData, _detach_shared_metadata, normalise_history
+from .series import (TimeSeriesData, _detach_shared_metadata,
+                     deepcopy_metadata_value, normalise_history)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -292,6 +293,11 @@ class baseTs(TimeSeriesData):
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
         # outcome rather than a side effect to remember to trigger here.
+        #
+        # No lowess_fit/outlier_indices handling either, and for a stronger
+        # reason than freq's: they are checked against the live index when they
+        # are *read*, so there is no moment at which this setter, or any other
+        # writer, has to remember anything.
     
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
@@ -316,7 +322,6 @@ class baseTs(TimeSeriesData):
         # Restore metadata
         for attr, val in old_metadata.items():
             setattr(self, attr, val)
-            
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
@@ -360,7 +365,7 @@ class baseTs(TimeSeriesData):
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
                             'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
-                            'outlier_indices', 'lowess_fit', 'last_process',
+                            '_outlier_indices', '_lowess_fit', 'last_process',
                             'outlier_filter']
 
             # Not iterating self._metadata: this list is deliberately curated
@@ -381,6 +386,13 @@ class baseTs(TimeSeriesData):
             # die on .copy() before reaching any of the guarded append paths,
             # and a bare list() would explode a str into characters.
             new_obj.history = normalise_history(self.history)
+
+            # The private slots, not the public names. Assigning through the
+            # properties would run their stamping setter and re-stamp the
+            # parent's fit with the *new* object's index - laundering the very
+            # staleness the properties exist to catch. Same reason
+            # _freq_declaration is copied by its private name.
+            _detach_shared_metadata(new_obj)
 
         return new_obj
 
@@ -1752,7 +1764,7 @@ class baseTs(TimeSeriesData):
             # Update current object, removing NaN values
             valid_mask = ~shifted.isna()
             super(TimeSeriesData, self).__init__(
-                shifted[valid_mask].values, 
+                shifted[valid_mask].values,
                 index=shifted[valid_mask].index
             )
             self._update_history_and_process(
@@ -2256,10 +2268,11 @@ class baseTs(TimeSeriesData):
             # _detach_shared_metadata.
             for attr in self._metadata:
                 if hasattr(self, attr):
-                    value = getattr(self, attr)
-                    if isinstance(value, (list, dict, np.ndarray)):
-                        value = copy.deepcopy(value)
-                    setattr(new_obj, attr, value)
+                    # Routed through the shared helper so the positional slots
+                    # get copied inside their (value, index) tuple, which a
+                    # bare isinstance check on the tuple silently skips.
+                    setattr(new_obj, attr,
+                            deepcopy_metadata_value(attr, getattr(self, attr)))
 
             # deepcopy(None) is None, so without this the default copy path
             # was the one derivation that could still hand back a history
