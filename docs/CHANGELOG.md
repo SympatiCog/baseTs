@@ -101,7 +101,17 @@ series) now raises `ValueError` naming the data, where both `compute_fft_power`
 and `get_frequency_content` previously raised `TypeError: ufunc 'isnan'/'fft'
 not supported for the input types`. Integer and boolean series skip the check
 entirely — those dtypes cannot represent NaN or Inf — and complex data is
-checked without a float cast, so it is not newly rejected.
+checked without a float cast, so it is not newly rejected. Pandas nullable
+dtypes (`Int64`, `Float64`) and pyarrow-backed columns are checked correctly:
+`pd.NA` becomes NaN under `np.asarray` and is caught.
+
+`datetime64` and `timedelta64` *data* is rejected up front, before that cast.
+The cast is the problem: it **succeeds** on those dtypes, and `NaT` is stored
+as the int64 sentinel `-2**63`, which converts to a large but perfectly finite
+float — so a `NaT` would otherwise pass the finiteness check and die later in
+`np.fft.fft` with a `DTypePromotionError` naming an internal promotion rule.
+This concerns *values* only; a series with a `DatetimeIndex` and numeric data
+is unaffected.
 
 `plot_fft_power` renders the new error as on-plot text rather than propagating
 it, because of its bare `except Exception` (issue #34, unchanged here).

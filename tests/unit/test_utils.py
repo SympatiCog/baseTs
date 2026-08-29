@@ -487,6 +487,39 @@ def test_validate_finite_data_looks_inside_unconverted_dtypes(bad):
         validate_finite_data(bad)
 
 
+@pytest.mark.parametrize("demean", [True, False])
+def test_compute_fft_power_rejects_nonfinite_data_either_way(demean):
+    """The guard is unconditional, not folded into the demean branch.
+
+    demean=False is the case that needs pinning. Moving the check inside
+    `if demean:` passes the entire suite otherwise, and reinstates issue #28's
+    exact failure mode - an all-NaN spectrum returned in silence - through a
+    documented public keyword.
+    """
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        compute_fft_power(_gappy_ts(), demean=demean)
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ns]", "timedelta64[ns]"])
+def test_validate_finite_data_rejects_datetime_dtypes(dtype):
+    """NaT must not slip through the float cast.
+
+    This is the one dtype family where converting to float is actively
+    misleading rather than merely unnecessary: NaT is the int64 sentinel
+    -2**63, so the cast succeeds and produces a large but finite float that
+    np.isfinite is perfectly happy with. Rejecting the dtype outright is what
+    stops that, so the check must sit *before* the conversion.
+    """
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array([1, 'NaT'], dtype=dtype))
+
+    # ...and without NaT too - these are timestamps, not sample values
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array([1, 2], dtype=dtype))
+
+
 def test_validate_finite_data_reports_non_numeric_as_valueerror():
     """Non-numeric data gets the documented ValueError, not a numpy TypeError.
 

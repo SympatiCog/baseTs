@@ -685,6 +685,9 @@ def analyze_physiological_signals(signal_data, channel_info, sampling_rate=1000)
         )
     
     analysis_results = {}
+    # Kept so the cross-channel section below analyses the cleaned signals
+    # rather than the raw ones - the raw objects may still contain gaps.
+    cleaned_objects = {}
     
     for channel, ts in signal_objects.items():
         channel_type = channel_info[channel]['type']
@@ -694,6 +697,7 @@ def analyze_physiological_signals(signal_data, channel_info, sampling_rate=1000)
         # NaN, and get_frequency_content below rejects NaN input.
         despiked = ts.set_outlier_filter(z_threshold=3.5).filter_outliers()
         cleaned = despiked.interpolate_gaps().detrend(method='linear')
+        cleaned_objects[channel] = cleaned
         
         if channel_type == 'ECG':
             # ECG-specific analysis
@@ -801,12 +805,14 @@ def analyze_physiological_signals(signal_data, channel_info, sampling_rate=1000)
     
     for c1, c2 in channel_pairs:
         # Cross-correlation
-        if len(signal_objects[c1].data) == len(signal_objects[c2].data):
-            cross_corr = np.corrcoef(signal_objects[c1].data, signal_objects[c2].data)[0, 1]
+        # Cleaned, not raw: get_frequency_content rejects NaN, and the raw
+        # objects may still hold acquisition gaps.
+        if len(cleaned_objects[c1].data) == len(cleaned_objects[c2].data):
+            cross_corr = np.corrcoef(cleaned_objects[c1].data, cleaned_objects[c2].data)[0, 1]
             
             # Coherence analysis (simplified)
-            freqs1, power1 = signal_objects[c1].get_frequency_content(window='hann')
-            freqs2, power2 = signal_objects[c2].get_frequency_content(window='hann')
+            freqs1, power1 = cleaned_objects[c1].get_frequency_content(window='hann')
+            freqs2, power2 = cleaned_objects[c2].get_frequency_content(window='hann')
             
             # Frequency alignment for coherence (simplified)
             if len(freqs1) == len(freqs2):

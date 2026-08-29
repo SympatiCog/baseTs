@@ -127,6 +127,19 @@ def validate_finite_data(data: Any) -> None:
     if arr.dtype.kind in "bui":
         return
 
+    # datetime64 and timedelta64 are rejected before the float cast below,
+    # because that cast SUCCEEDS on them and would wave NaT straight through:
+    # NaT is stored as the int64 sentinel -2**63, which converts to a large
+    # but perfectly finite float. np.isfinite then reports no problem, and the
+    # value reaches np.fft.fft to die there as a DTypePromotionError naming an
+    # internal promotion rule instead of the caller's data.
+    if arr.dtype.kind in "Mm":
+        raise ValueError(
+            f"Time series data is not numeric: dtype '{arr.dtype}' holds "
+            f"datetimes or durations, not sample values. Convert to a numeric "
+            f"dtype first, e.g. with .astype(float) on the underlying values."
+        )
+
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
     # arrays. Complex is left alone deliberately: np.isfinite handles it, and

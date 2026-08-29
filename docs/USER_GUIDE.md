@@ -602,7 +602,10 @@ def scientific_time_series_analysis(experimental_data, metadata):
     # Preprocessing pipeline
     if quality_score < 0.95:
         print(f"Data quality: {quality_score:.1%} - applying enhanced cleaning")
-        cleaned = ts.filter_outliers()
+        # interpolate_gaps because filter_outliers leaves pre-existing
+        # acquisition gaps as NaN, and the frequency analysis below rejects
+        # NaN input.
+        cleaned = ts.filter_outliers().interpolate_gaps()
     else:
         print(f"Data quality: {quality_score:.1%} - minimal preprocessing needed")
         cleaned = ts
