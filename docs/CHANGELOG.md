@@ -54,6 +54,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the spectral family rejects non-finite *data* (#28)
+
+### Fixed — `get_peak_freq` no longer returns a confident wrong answer on gappy data
+
+`get_frequency_content` built its own FFT and, unlike every sibling in the
+spectral family, carried no NaN/Inf check on the data. A single NaN anywhere in
+the input makes `np.fft.fft` return an **all-NaN** spectrum, and scipy's
+`find_peaks` still returns indices over an all-NaN array — so `get_peak_freq`
+reported a plausible-looking frequency with nothing behind it. No warning, and
+no NaN in the output to signal the problem.
+
+On a 500-sample 0.16 Hz sine, one injected NaN produced `4.98`. So did five,
+and so did fifty; windowing did not change it either. That insensitivity to how
+much of the data was bad is what confirms the number was meaningless rather
+than merely degraded. This is the more dangerous half of the NaN story fixed in
+#24 — that one at least produced visible NaN output.
+
+The root cause was a guard lost in a refactor: `get_peak_freq` was moved off
+`compute_fft_power` (which has the check) onto the "enhanced"
+`get_frequency_content` (which did not), silently dropping the validation along
+with it.
+
+All spectral entry points now share `utils.validate_finite_data`, the companion
+to `validate_sampling_freq`. `compute_fft_power` and `relative_band_power` each
+carried their own copy of the check with different wording; those copies are
+gone, and `relative_band_power` now has no local data guard at all — it calls
+`get_frequency_content`, whose guard raises the same error. Local copies at
+consumption sites are exactly what let the four drift apart.
+
+**Behaviour change:** `get_frequency_content` and `get_peak_freq` now raise
+`ValueError` on data containing NaN or Inf, where they previously returned an
+all-NaN spectrum. The message names the remedy: *"Fill gaps first, e.g. with
+`interpolate_gaps()`."* This is reachable in normal use — since #36,
+`filter_outliers` deliberately returns a series containing NaN, so
+`ts.filter_outliers().get_peak_freq()` now raises and needs an
+`interpolate_gaps()` between them.
+
+`plot_fft_power` is deliberately not in that list: it never raises. It renders
+the new error as on-plot text instead, because of its bare `except Exception`
+(issue #34, unchanged here) — so on gappy data it now draws the message where
+it previously drew a blank spectrum.
+
+Raising rather than dropping the bad samples is deliberate: dropping would
+change the sample spacing, so the resulting bins would no longer be the
+frequencies they are labelled with, and the caller would not be told. It also
+matches what the guarded siblings already did.
+
+**Secondary behaviour change:** non-numeric data (a string or object-dtype
+series) now raises `ValueError` naming the data at **all four** entry points.
+`compute_fft_power` and `get_frequency_content` previously raised `TypeError:
+ufunc 'isnan'/'fft' not supported for the input types`; `relative_band_power`
+and `falff` raised `TypeError: float() argument must be a string or a real
+number` from their own `np.asarray(..., dtype=float)` narrowing, which runs
+before they delegate. That narrowing is now preceded by the shared guard, so
+the uniform-`ValueError` contract holds for dtype as well as for NaN. Integer and boolean series skip the check
+entirely — those dtypes cannot represent NaN or Inf — and complex data is
+checked without a float cast, so it is not newly rejected. Pandas nullable
+dtypes (`Int64`, `Float64`) and pyarrow-backed columns are checked correctly:
+`pd.NA` becomes NaN under `np.asarray` and is caught.
+
+`datetime64` and `timedelta64` *data* is rejected up front, before that cast.
+The cast is the problem: it **succeeds** on those dtypes, and `NaT` is stored
+as the int64 sentinel `-2**63`, which converts to a large but perfectly finite
+float — so a `NaT` would otherwise pass the finiteness check and die later in
+`np.fft.fft` with a `DTypePromotionError` naming an internal promotion rule.
+This concerns *values* only; a series with a `DatetimeIndex` and numeric data
+is unaffected.
+
+That error deliberately does **not** suggest a cast through `float` or
+`int64`. It is the obvious remedy and it is wrong: it reinterprets the int64
+storage, so `NaT` comes back as `-9.22e18`, which the guard then accepts —
+reproducing the silent-nonsense failure one level up. Datetime arithmetic maps
+`NaT` to `NaN` instead, landing the caller on the gap-filling message.
+
+The message names a different remedy per dtype, because they are not
+interchangeable: `values / np.timedelta64(1, 's')` for durations, and
+`(values - values[0]) / np.timedelta64(1, 's')` for timestamps. Handing the
+duration form to a `datetime64` caller does not merely fail to help — it
+raises `UFuncTypeError`.
+
 ## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
 
 ### Behavior change — positional metadata is validated on read
