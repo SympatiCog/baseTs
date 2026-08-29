@@ -520,6 +520,41 @@ def test_validate_finite_data_rejects_datetime_dtypes(dtype):
         validate_finite_data(np.array([1, 2], dtype=dtype))
 
 
+def test_datetime_remedy_does_not_recreate_the_bug_it_reports():
+    """The remedy the message names must not launder NaT into a finite float.
+
+    `.astype(float)` is the obvious suggestion and is actively wrong: it
+    reinterprets the int64 storage, so NaT returns as -9.22e18, which this
+    guard accepts. Following that advice would move the silent-nonsense
+    failure one level up rather than fixing it, which is why the message
+    steers to a timedelta64 division instead - that maps NaT to NaN.
+
+    An earlier revision of the message did recommend `.astype(float)`, and no
+    test looked at the remedy text, only at "not numeric".
+    """
+    from baseTs.utils import validate_finite_data
+
+    gappy = np.array([1, 'NaT'], dtype='timedelta64[ns]')
+
+    # The wrong remedy: silently accepted, which is the failure mode.
+    assert validate_finite_data(gappy.astype(float)) is None
+    assert np.all(np.isfinite(gappy.astype(float)))
+
+    # The remedy the message actually names: NaT becomes NaN, so the caller
+    # lands on the gap-filling error rather than a wrong number.
+    with pytest.raises(ValueError, match="interpolate_gaps"):
+        validate_finite_data(gappy / np.timedelta64(1, 's'))
+
+    # ...and it accepts cleanly once there is no NaT.
+    clean = np.array([1, 2], dtype='timedelta64[ns]')
+    assert validate_finite_data(clean / np.timedelta64(1, 's')) is None
+
+    # Pin that the message does not send anyone down the wrong path.
+    with pytest.raises(ValueError) as exc:
+        validate_finite_data(gappy)
+    assert "np.timedelta64" in str(exc.value)
+
+
 def test_validate_finite_data_reports_non_numeric_as_valueerror():
     """Non-numeric data gets the documented ValueError, not a numpy TypeError.
 

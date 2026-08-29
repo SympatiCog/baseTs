@@ -134,10 +134,19 @@ def validate_finite_data(data: Any) -> None:
     # value reaches np.fft.fft to die there as a DTypePromotionError naming an
     # internal promotion rule instead of the caller's data.
     if arr.dtype.kind in "Mm":
+        # The remedy deliberately does NOT say .astype(float). That is the
+        # obvious suggestion and it is actively wrong: it reinterprets the
+        # int64 storage, so NaT comes back as -9.22e18 - a large finite number
+        # this guard would then accept, reproducing one level up the exact
+        # silent-nonsense failure it exists to prevent. Dividing by a
+        # timedelta64 unit goes through duration semantics instead and maps
+        # NaT to NaN, which lands the caller on the gap-filling message above.
         raise ValueError(
             f"Time series data is not numeric: dtype '{arr.dtype}' holds "
-            f"datetimes or durations, not sample values. Convert to a numeric "
-            f"dtype first, e.g. with .astype(float) on the underlying values."
+            f"datetimes or durations, not sample values. Convert durations to "
+            f"a number of seconds first, e.g. `values / np.timedelta64(1, 's')` "
+            f"- note that `.astype(float)` will not do, since it exposes NaT's "
+            f"integer sentinel as a large finite number rather than NaN."
         )
 
     # Anything not already numeric (object arrays, most often) is converted so

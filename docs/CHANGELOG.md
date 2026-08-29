@@ -83,13 +83,18 @@ gone, and `relative_band_power` now has no local data guard at all — it calls
 `get_frequency_content`, whose guard raises the same error. Local copies at
 consumption sites are exactly what let the four drift apart.
 
-**Behaviour change:** `get_frequency_content`, `get_peak_freq` and
-`plot_fft_power` now raise `ValueError` on data containing NaN or Inf, where
-they previously returned or plotted an all-NaN spectrum. The message names the
-remedy: *"Fill gaps first, e.g. with `interpolate_gaps()`."* This is reachable
-in normal use — since #36, `filter_outliers` deliberately returns a series
-containing NaN, so `ts.filter_outliers().get_peak_freq()` now raises and needs
-an `interpolate_gaps()` between them.
+**Behaviour change:** `get_frequency_content` and `get_peak_freq` now raise
+`ValueError` on data containing NaN or Inf, where they previously returned an
+all-NaN spectrum. The message names the remedy: *"Fill gaps first, e.g. with
+`interpolate_gaps()`."* This is reachable in normal use — since #36,
+`filter_outliers` deliberately returns a series containing NaN, so
+`ts.filter_outliers().get_peak_freq()` now raises and needs an
+`interpolate_gaps()` between them.
+
+`plot_fft_power` is deliberately not in that list: it never raises. It renders
+the new error as on-plot text instead, because of its bare `except Exception`
+(issue #34, unchanged here) — so on gappy data it now draws the message where
+it previously drew a blank spectrum.
 
 Raising rather than dropping the bad samples is deliberate: dropping would
 change the sample spacing, so the resulting bins would no longer be the
@@ -113,8 +118,12 @@ float — so a `NaT` would otherwise pass the finiteness check and die later in
 This concerns *values* only; a series with a `DatetimeIndex` and numeric data
 is unaffected.
 
-`plot_fft_power` renders the new error as on-plot text rather than propagating
-it, because of its bare `except Exception` (issue #34, unchanged here).
+That error deliberately does **not** suggest `.astype(float)`. It is the
+obvious remedy and it is wrong: it reinterprets the int64 storage, so `NaT`
+comes back as `-9.22e18`, which the guard then accepts — reproducing the
+silent-nonsense failure one level up. `values / np.timedelta64(1, 's')` goes
+through duration semantics and maps `NaT` to `NaN`, landing the caller on the
+gap-filling message instead.
 
 ## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
 
