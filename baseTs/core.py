@@ -1014,8 +1014,10 @@ class baseTs(TimeSeriesData):
             This delegated body replaces one that passed keyword arguments
             filters.bandpass_filter does not accept, so every call raised
             TypeError (#27). History therefore records the bandpass_at entry:
-            no caller can have observed the old "_btrp_" token, and the
-            sibling bandpass_filter alias already records itself this way.
+            calling the shipped method could not reach the old "_btrp_" token,
+            and the sibling bandpass_filter alias already records itself this
+            way. See docs/CHANGELOG.md for the one contrived way the old token
+            was reachable.
         """
         return self.bandpass_at(hp_hz=hp_freq, lp_hz=lp_freq, inplace=inplace)
 
