@@ -817,7 +817,12 @@ class TestButterpassAt:
         """The band kept must be [hp_freq, lp_freq], not its mirror image.
 
         A positional signature this easy to swap needs the orientation pinned
-        against the signal rather than against the call.
+        against the signal rather than against the call. Note a transposition
+        fails here by raising rather than by tripping these assertions:
+        scipy.signal.butter rejects a descending Wn pair, so the call dies
+        before the amplitudes are measured. The measurements are still what
+        pin the caller-facing meaning, and they would catch a swap that some
+        future implementation sorted into range instead of rejecting.
         """
         ts = self._two_tone()
         before_low = self._amplitude_at(ts, self.LOW_HZ)

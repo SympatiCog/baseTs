@@ -78,11 +78,16 @@ which already delegates the same way. That deletes fourteen lines of hand-rolled
 `validate_filter_params`, so a degenerate sampling rate now raises
 `InvalidParameterError` here as it does for every sibling filter (#24).
 
-**Not a breaking change, with one visible consequence:** history now records
-the `bandpass_at` entry (`"Bandpass filtered at ..."` / `_bp_{lp}:{hp}Hz`)
-rather than the old `"Butterworth pass filtered ..."` / `_btrp_{lp}:{hp}Hz`.
-No caller can have observed the old token, because the method raised several
-lines before writing it.
+**Not a breaking change for any caller of the public API, with one visible
+consequence:** history now records the `bandpass_at` entry (`"Bandpass filtered
+at ..."` / `_bp_{lp}:{hp}Hz`) rather than the old `"Butterworth pass
+filtered ..."` / `_btrp_{lp}:{hp}Hz`. Calling the shipped method could not
+reach the old token — it raised several lines before writing it. The one way
+to have observed it was to monkeypatch `baseTs.core.bandpass_filter` (the
+import-time binding; patching `baseTs.filters.bandpass_filter` has no effect)
+with a replacement shaped to accept `highpass_freq`/`lowpass_freq`/
+`sampling_freq` — parameter names that only ever existed as an artifact of this
+bug.
 
 ## [Unreleased] — the spectral family rejects non-finite *data* (#28)
 
