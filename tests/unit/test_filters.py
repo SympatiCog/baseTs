@@ -1,6 +1,7 @@
 """
 Unit tests for baseTs.filters parameter validation.
 """
+import numbers
 import re
 
 import numpy as np
@@ -12,6 +13,17 @@ from baseTs.filters import (
     bandpass_filter,
     validate_band_params,
 )
+
+
+@numbers.Real.register
+class _UnconvertibleReal:
+    """Registers as a Real but cannot become one.
+
+    numbers.Real is a registrable ABC, so membership does not imply a working
+    __float__. This class has none at all, which makes float() raise TypeError
+    - one of the conversion errors an `except OverflowError` alone let escape
+    the InvalidParameterError contract.
+    """
 
 
 class TestBandEdgeValidation:
@@ -355,68 +367,99 @@ class TestTheInvalidParameterContractIsComplete:
     def _data(cls):
         return np.sin(np.arange(500) / 10.0)
 
-    #: (label, kwargs, message fragment, changed by this fix)
+    #: The census is BUILT, not hand-listed.
     #:
-    #: The fourth field is what makes this a census rather than a list. An
-    #: earlier revision asserted only that each case raises, which stays green
-    #: however the breaking-change enumeration drifts - it could not tell a
-    #: case this fix changed from one that already behaved. The `main` column
-    #: is frozen history (main = pre-#30), so recording it as data is a fact,
-    #: not a cached value that can go stale.
+    #: Three revisions of this table got the count wrong, and the last miss was
+    #: the tell: `window_step=NaN` had a row and `overlap=NaN` did not, though
+    #: `max(1, window_step - overlap)` is order-dependent on NaN for either
+    #: operand. A hand-maintained list of a symmetric family will keep losing
+    #: one half of it. So the symmetric families are generated as products and
+    #: only the genuinely one-off cases are written out.
     #:
-    #: The fragment is what makes each case pin its own check. Type-only
-    #: assertions cannot tell the intended guard firing from some other guard
-    #: that also raises InvalidParameterError.
-    BAD_INPUTS = [
-        ("lower: negative", dict(hp_hz=-1.0, lp_hz=0.4), "Band edge hp_hz", True),
-        ("lower: zero", dict(hp_hz=0.0, lp_hz=0.4), "Band edge hp_hz", True),
-        # Already InvalidParameterError before this fix: max(nan, 0.4) returns
-        # nan, which the pre-existing NaN-safe cutoff check caught.
-        ("lower: NaN", dict(hp_hz=np.nan, lp_hz=0.4), "Band edge hp_hz", False),
-        ("lower: non-scalar", dict(hp_hz=np.array([0.1, 0.2]), lp_hz=0.4),
-         "Band edge hp_hz", True),
-        ("upper: negative", dict(hp_hz=0.1, lp_hz=-0.4), "Cutoff frequency", True),
-        ("upper: zero", dict(hp_hz=0.1, lp_hz=0.0), "Cutoff frequency", True),
-        ("upper: NaN", dict(hp_hz=0.1, lp_hz=np.nan), "Cutoff frequency", True),
-        ("upper: non-scalar", dict(hp_hz=0.1, lp_hz=np.array([0.4, 0.5])),
-         "Band edge lp_hz", True),
+    #: Each row carries the fragment its own guard produces - specific enough
+    #: to pin which check fired, not merely which parameter was at fault - and
+    #: a flag for whether this change altered the behaviour. `main` is frozen
+    #: history (main = pre-#30), so recording it as data is a fact rather than
+    #: a cached value that can go stale.
+
+    #: value -> per-edge (fragment, changed-by-this-fix)
+    EDGE_CASES = {
+        'negative': (-1.0, {
+            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", True),
+            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+        'zero': (0.0, {
+            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", True),
+            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+        # A NaN *lower* edge already raised InvalidParameterError before this
+        # change: max(nan, 0.4) returns nan, which the pre-existing NaN-safe
+        # cutoff check caught. A NaN *upper* edge did not - max(0.1, nan)
+        # returns 0.1. That asymmetry is the whole bug.
+        'NaN': (np.nan, {
+            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", False),
+            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+        'non-scalar': (np.array([0.1, 0.2]), {
+            'hp_hz': (r"Band edge hp_hz=.*must be a real number", True),
+            'lp_hz': (r"Band edge lp_hz=.*must be a real number", True)}),
+    }
+
+    #: value -> (fragment template, changed-by-this-fix)
+    WINDOW_CASES = {
+        'NaN': (np.nan, r"{p} must be a real number and finite", True),
+        'non-numeric': (None, r"{p} must be a real number, got", True),
+        'too large': (10 ** 400, r"{p} is too large", True),
+        'unconvertible': (_UnconvertibleReal(), r"{p} could not be converted", True),
+    }
+
+    #: Genuinely one-off - no symmetric partner to lose.
+    ONE_OFF = [
         ("edges transposed", dict(hp_hz=0.4, lp_hz=0.1),
-         "Band edges out of order", True),
+         r"Band edges out of order", True),
         ("edges equal", dict(hp_hz=0.2, lp_hz=0.2),
-         "Band edges out of order", True),
-        ("upper past effective Nyquist", dict(hp_hz=0.5, lp_hz=4.0, window_step=4),
-         "Cutoff frequency", True),
-        ("window_step NaN", dict(hp_hz=0.1, lp_hz=0.4, window_step=np.nan),
-         "window_step must be a real number", True),
-        ("window_step non-numeric", dict(hp_hz=0.1, lp_hz=0.4, window_step="1"),
-         "window_step must be a real number", True),
-        ("overlap non-numeric", dict(hp_hz=0.1, lp_hz=0.4, overlap=None),
-         "overlap must be a real number", True),
-        ("overlap too large", dict(hp_hz=0.1, lp_hz=0.4, overlap=10 ** 400),
-         "overlap is too large", True),
-        ("window_step too large", dict(hp_hz=0.1, lp_hz=0.4, window_step=10 ** 400),
-         "window_step is too large", True),
-        # Already InvalidParameterError before this fix, via the pre-existing
-        # rate guard from #24.
+         r"Band edges out of order", True),
+        ("upper past effective Nyquist",
+         dict(hp_hz=0.5, lp_hz=4.0, window_step=4),
+         r"Cutoff frequency must be positive", True),
+        # Guarded since #24, so unchanged by this fix.
         ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan),
-         "Invalid sampling frequency", False),
+         r"Invalid sampling frequency", False),
     ]
 
+    @staticmethod
+    def _build_census():
+        cls = TestTheInvalidParameterContractIsComplete
+        rows = []
+        for case, (value, per_edge) in cls.EDGE_CASES.items():
+            for edge, (fragment, changed) in per_edge.items():
+                other = 'lp_hz' if edge == 'hp_hz' else 'hp_hz'
+                kwargs = {edge: value, other: 0.4 if edge == 'hp_hz' else 0.1}
+                rows.append((f"{edge} {case}", kwargs, fragment, changed))
+        for param in ('window_step', 'overlap'):
+            for case, (value, template, changed) in cls.WINDOW_CASES.items():
+                rows.append((f"{param} {case}",
+                             dict(hp_hz=0.1, lp_hz=0.4, **{param: value}),
+                             template.format(p=param), changed))
+        return rows + cls.ONE_OFF
+
     #: The count quoted in the CHANGELOG entry for #30, asserted below.
-    BEHAVIOUR_CHANGES_CLAIMED = 15
+    BEHAVIOUR_CHANGES_CLAIMED = 18
 
-    @pytest.mark.parametrize(
-        "label,kwargs,fragment,changed",
-        BAD_INPUTS,
-        ids=[c[0] for c in BAD_INPUTS],
-    )
-    def test_the_contract_holds_for_every_known_bad_input(
-        self, label, kwargs, fragment, changed
-    ):
-        kwargs = {'sample_Hz': self.FS, **kwargs}
+    def test_the_contract_holds_for_every_known_bad_input(self):
+        """Every known bad input raises, with the message its own guard makes."""
+        failures = []
+        for label, kwargs, fragment, _changed in self._build_census():
+            kwargs = {'sample_Hz': self.FS, **kwargs}
+            try:
+                bandpass_filter(self._data(), **kwargs)
+                failures.append(f"{label}: no exception")
+            except InvalidParameterError as exc:
+                if not re.search(fragment, str(exc)):
+                    failures.append(
+                        f"{label}: {str(exc)!r} does not match {fragment!r}")
+            except Exception as exc:  # noqa: BLE001 - the point of the test
+                failures.append(
+                    f"{label}: {type(exc).__name__} escaped the contract: {exc}")
 
-        with pytest.raises(InvalidParameterError, match=fragment):
-            bandpass_filter(self._data(), **kwargs)
+        assert not failures, "\n".join(failures)
 
     def test_the_breaking_change_count_matches_the_changelog(self):
         """The number in the prose is asserted against the table.
@@ -424,11 +467,39 @@ class TestTheInvalidParameterContractIsComplete:
         Adding a case without classifying it, or reclassifying one, now fails
         here instead of quietly making a CHANGELOG paragraph wrong.
         """
-        changed = [c for c in self.BAD_INPUTS if c[3]]
-        unchanged = [c for c in self.BAD_INPUTS if not c[3]]
+        census = self._build_census()
+        changed = [c for c in census if c[3]]
+        unchanged = [c for c in census if not c[3]]
 
         assert len(changed) == self.BEHAVIOUR_CHANGES_CLAIMED
-        assert [c[0] for c in unchanged] == ["lower: NaN", "degenerate rate"]
+        assert sorted(c[0] for c in unchanged) == ["degenerate rate", "hp_hz NaN"]
+
+    def test_every_fragment_pins_its_own_case(self):
+        """A fragment true of another case's message pins nothing.
+
+        Three fragments were previously too loose - a bare "real number"
+        matched the non-scalar *edge* messages as well as the windowing ones.
+        Cross-matching every fragment against every message is what found
+        that; reading them did not.
+        """
+        messages = {}
+        for label, kwargs, fragment, _ in self._build_census():
+            try:
+                bandpass_filter(self._data(), **{'sample_Hz': self.FS, **kwargs})
+                messages[label] = ("", fragment)
+            except InvalidParameterError as exc:
+                messages[label] = (str(exc), fragment)
+
+        collisions = {
+            label: [other for other, (msg, _) in messages.items()
+                    if other != label
+                    and messages[other][1] != fragment
+                    and re.search(fragment, msg)]
+            for label, (_, fragment) in messages.items()
+        }
+        collisions = {k: v for k, v in collisions.items() if v}
+
+        assert not collisions, f"fragments reaching foreign cases: {collisions}"
 
 
 class TestEveryBandpassEntryPointRejectsABadLowerEdge:

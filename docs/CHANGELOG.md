@@ -126,8 +126,8 @@ both messages carry the offending value and the applicable Nyquist. Tests take
 the limit back out of the message and check that a band under it is accepted —
 the remedy is executed, not asserted (#28).
 
-**Breaking — fifteen behaviour changes**, enumerated by running each case
-against `main` and against this branch rather than from recall:
+**Breaking — eighteen behaviour changes**, enumerated by replaying every case
+against a `main` worktree and against this branch, not from recall:
 
 *Ten move from a bare `ValueError` to `InvalidParameterError`* — negative,
 zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
@@ -136,33 +136,36 @@ declared Nyquist but not against the effective one at `window_step > 1`. Code
 catching `ValueError` around a bandpass call will stop catching these:
 `InvalidParameterError` inherits from `FilterError`, not from `ValueError`.
 
-*Two move from a bare `TypeError`* — a non-numeric `window_step` or `overlap`,
-which used to die on the subtraction before any validation ran.
+*Four move from a bare `TypeError`* — a `window_step` or `overlap` that is
+non-numeric, or that registers as `numbers.Real` without a usable `__float__`.
+Both used to die on the subtraction before any validation ran.
 
 *One moves from a bare `OverflowError`* — a `window_step` too large to convert
 to a float, which used to die on `sample_Hz / window_step`.
 
-*Two move from no error at all* — a NaN `window_step` or `overlap`, clamped to
-1 by `max()` and filtered at a rate the caller never asked for; and an
+*Three move from no error at all* — a NaN `window_step` or `overlap`, clamped
+to 1 by `max()` and filtered at a rate the caller never asked for; and an
 oversized integer `overlap`, which `max(1, window_step - overlap)` evaluated
-happily in unbounded integer arithmetic. These are the only two of the fifteen
-that turn a *succeeding* call into a failing one, and both successes were
+happily in unbounded integer arithmetic. These three are the only ones that
+turn a *succeeding* call into a failing one, and all three successes were
 returning wrong numbers.
 
-Two cases that look like they belong on that list are deliberately absent,
-because both already raised `InvalidParameterError` before this change: a
-**NaN lower** edge (`max(nan, 0.4)` returns `nan`, which the pre-existing
-NaN-safe cutoff check caught) and a **degenerate sampling rate** (guarded since
-#24).
+Two cases that look like they belong are deliberately absent, because both
+already raised `InvalidParameterError` before this change: a **NaN lower** edge
+(`max(nan, 0.4)` returns `nan`, which the pre-existing NaN-safe cutoff check
+caught) and a **degenerate sampling rate** (guarded since #24).
 
-An earlier draft of this entry listed the NaN lower edge as breaking, omitted
-several cases that genuinely are, and gave a count matching neither; a first
-correction then said "eight" while enumerating ten. The list and its count are
-now asserted by `TestTheInvalidParameterContractIsComplete` — each case carries
-the message fragment its own guard produces and a flag for whether this change
-altered it, and a separate test checks the total against the number written
-here. Adding a case without classifying it fails a test rather than quietly
-making this paragraph wrong.
+This count was wrong three times before it was right — first thirteen including
+a case that was never breaking, then "eight" while enumerating ten, then fifteen
+with `overlap=NaN` missing while `window_step=NaN` was present. The last miss is
+the instructive one: a hand-written list of a symmetric family keeps losing one
+half of it. So the enumeration is now *generated* as a product over both band
+edges and both windowing parameters, with only genuinely one-off cases written
+out, and `TestTheInvalidParameterContractIsComplete` asserts the total against
+the number printed here. Each case also carries the message fragment its own
+guard produces, and a further test cross-matches every fragment against every
+message so that a fragment satisfied by a different guard fails rather than
+passing quietly.
 
 A bad *upper* edge still reports the generic cutoff message rather than a
 band-specific one, since the delegated check runs first. The message carries

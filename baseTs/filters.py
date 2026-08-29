@@ -132,11 +132,22 @@ def _require_finite_real(label: str, value) -> float:
     # OverflowError. Unwrapped, that escapes the contract exactly as the bare
     # TypeError this helper exists to prevent - the same class of hole, one
     # step further in.
+    #
+    # All three conversion errors are caught, matching validate_sampling_freq,
+    # which wraps the identical float() call in
+    # `except (TypeError, ValueError, OverflowError)`. numbers.Real is a
+    # registrable ABC, so a virtual subclass can carry a __float__ that raises
+    # anything - or no __float__ at all, which makes float() raise TypeError.
+    # An earlier revision caught only OverflowError and was narrower than the
+    # sibling guard it was modelled on.
     try:
         number = float(value)
     except OverflowError as exc:
         raise InvalidParameterError(
             f"{label} is too large to convert to a float, got {value!r}") from exc
+    except (TypeError, ValueError) as exc:
+        raise InvalidParameterError(
+            f"{label} could not be converted to a float, got {value!r}") from exc
 
     if not np.isfinite(number):
         raise InvalidParameterError(
@@ -195,11 +206,14 @@ def validate_band_params(data: ArrayLike,
         limit at all - a caller retrying just under the quoted figure failed
         again.
 
-        The upper edge is therefore checked twice, once by the delegated call
-        and once below, against the same effective Nyquist both times. One
-        visible consequence remains: a `lp_hz` out of range is reported by the
-        delegated call with its generic cutoff message rather than a
-        band-specific one naming the edge. The message carries the offending
+        The delegated call is what range-checks `lp_hz`, so the loop below
+        covers `hp_hz` only. An earlier revision looped over both edges; that
+        second `lp_hz` iteration was unreachable, since the delegated call
+        evaluates the identical predicate on the identical value against the
+        identical Nyquist and always raises first. Dead code implying a check
+        that never runs is worse than the asymmetry it was hiding: a `lp_hz`
+        out of range is reported with the generic cutoff message rather than a
+        band-specific one naming the edge. That message carries the offending
         value and the real limit, so it is complete; only its wording differs.
 
         Edges are checked before their ordering, so a band that is both
@@ -228,12 +242,13 @@ def validate_band_params(data: ArrayLike,
     effective_freq = validate_filter_params(data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
 
-    # `not (edge > 0)` rather than `edge <= 0`, which is False for NaN.
-    for name, edge in (('hp_hz', hp_hz), ('lp_hz', lp_hz)):
-        if not (edge > 0) or edge >= nyquist:
-            raise InvalidParameterError(
-                f"Band edge {name}={edge!r} must be positive and less than "
-                f"the Nyquist frequency ({nyquist} Hz)")
+    # `not (hp_hz > 0)` rather than `hp_hz <= 0`, which is False for NaN.
+    # Only the lower edge: the delegated call above already range-checked
+    # lp_hz against this same nyquist.
+    if not (hp_hz > 0) or hp_hz >= nyquist:
+        raise InvalidParameterError(
+            f"Band edge hp_hz={hp_hz!r} must be positive and less than "
+            f"the Nyquist frequency ({nyquist} Hz)")
 
     if not (hp_hz < lp_hz):
         raise InvalidParameterError(
