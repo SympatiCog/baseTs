@@ -1,11 +1,17 @@
 """
 Unit tests for baseTs.filters parameter validation.
 """
+import re
+
 import numpy as np
 import pytest
 
 from baseTs import baseTs
-from baseTs.filters import InvalidParameterError, bandpass_filter
+from baseTs.filters import (
+    InvalidParameterError,
+    bandpass_filter,
+    validate_band_params,
+)
 
 
 class TestBandEdgeValidation:
@@ -136,6 +142,219 @@ class TestBandEdgeValidation:
         """Check order: a degenerate time base is the more useful complaint."""
         with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
             bandpass_filter(self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan)
+
+
+class TestWindowingParamsAreGuardedLikeTheBandEdges:
+    """`max(1, window_step - overlap)` is the same defect one line down (#30).
+
+    The first version of this fix replaced `max(hp_hz, lp_hz)` while leaving
+    `max(1, window_step - overlap)` directly beneath it — and `max()` is
+    order-dependent on NaN there for exactly the same reason. A NaN window
+    step compared False against 1 and was silently clamped to 1, so the filter
+    ran on a rate the caller never asked for. A string or None died on the
+    subtraction with a bare TypeError before any validation ran at all.
+
+    Fixing one and shipping the other, in a commit whose message is about this
+    defect class, is not a defensible place to stop.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    BAD_WINDOWING = [
+        ("NaN window_step", dict(window_step=np.nan)),
+        ("NaN overlap", dict(overlap=np.nan)),
+        ("string window_step", dict(window_step="1")),
+        ("None window_step", dict(window_step=None)),
+        ("string overlap", dict(overlap="0")),
+        ("None overlap", dict(overlap=None)),
+    ]
+
+    @pytest.mark.parametrize(
+        "label,kwargs", BAD_WINDOWING, ids=[c[0] for c in BAD_WINDOWING]
+    )
+    def test_bad_windowing_param_raises_invalid_parameter_error(self, label, kwargs):
+        with pytest.raises(InvalidParameterError, match="must be a real number"):
+            bandpass_filter(
+                self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS, **kwargs
+            )
+
+    def test_a_nan_window_step_no_longer_runs_silently(self):
+        """The worst of them: it produced output rather than an error."""
+        with pytest.raises(InvalidParameterError):
+            bandpass_filter(
+                self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS,
+                window_step=np.nan,
+            )
+
+    def test_window_step_below_one_is_rejected_when_called_directly(self):
+        """validate_band_params is public, so it cannot rely on its caller.
+
+        `bandpass_filter` clamps with max(1, ...) before calling in, but a
+        direct caller has no such floor, and a sub-1 step would inflate the
+        effective rate above the real one.
+        """
+        for bad in (0, -1, 0.5):
+            with pytest.raises(InvalidParameterError, match="[Ww]indow step"):
+                validate_band_params(self._data(), self.FS, 0.1, 0.4, 3,
+                                     window_step=bad)
+
+
+class TestNonScalarBandEdgesKeepTheContract:
+    """An array edge escaped with numpy's ambiguity error, on main and after.
+
+    `if not (edge > 0)` on an array raises "The truth value of an array with
+    more than one element is ambiguous" — a bare ValueError, so the
+    InvalidParameterError contract had a hole left in it by a fix whose whole
+    subject is that contract.
+
+    Membership is tested with numbers.Real rather than float(), deliberately:
+    `float(np.array([0.1]))` returns 0.1 on numpy 1.x and raises on 2.x, so a
+    float()-based guard would accept a one-element array on one CI leg and
+    reject it on another, with the suite green either way.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @pytest.mark.parametrize("edge", [
+        np.array([0.1, 0.2]),
+        np.array([0.1]),
+        [0.1],
+        None,
+        "0.1",
+    ], ids=["2-element array", "1-element array", "list", "None", "string"])
+    def test_non_scalar_lower_edge(self, edge):
+        with pytest.raises(InvalidParameterError, match="Band edge hp_hz"):
+            bandpass_filter(self._data(), hp_hz=edge, lp_hz=0.4, sample_Hz=self.FS)
+
+    @pytest.mark.parametrize("edge", [
+        np.array([0.4, 0.5]),
+        np.array([0.4]),
+        [0.4],
+        None,
+        "0.4",
+    ], ids=["2-element array", "1-element array", "list", "None", "string"])
+    def test_non_scalar_upper_edge(self, edge):
+        with pytest.raises(InvalidParameterError, match="Band edge lp_hz"):
+            bandpass_filter(self._data(), hp_hz=0.1, lp_hz=edge, sample_Hz=self.FS)
+
+    def test_a_numpy_scalar_edge_is_still_accepted(self):
+        """The guard must not reject the numeric types callers really pass."""
+        out = bandpass_filter(
+            self._data(), hp_hz=np.float64(0.1), lp_hz=np.float32(0.4),
+            sample_Hz=self.FS,
+        )
+
+        assert np.all(np.isfinite(out))
+
+
+class TestRejectionMessagesNameTheRealLimit:
+    """A message that states no number sends the caller round the loop twice.
+
+    At sample_Hz=10 and window_step=4 the effective Nyquist is 1.25 Hz. The
+    first version of this fix reported an out-of-range lp_hz with a message
+    carrying no number at all, and checked it against the *declared* Nyquist
+    of 5.0 — so a caller who reasonably retried at 2.0 failed again, against
+    a limit nothing had mentioned.
+
+    This is the #28 lesson generalised: an error message that names a remedy
+    is code, so the remedy has to be executed rather than asserted. These
+    tests take the limit out of the message and check that a band under it is
+    actually accepted.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @staticmethod
+    def _limit_from(message):
+        """Pull the Nyquist figure the message quotes."""
+        found = re.findall(r"([0-9]*\.?[0-9]+)\s*Hz", message)
+        assert found, f"message quotes no limit in Hz: {message!r}"
+        return float(found[-1])
+
+    def test_message_quotes_the_effective_limit_not_the_declared_one(self):
+        with pytest.raises(InvalidParameterError) as excinfo:
+            bandpass_filter(self._data(), hp_hz=0.5, lp_hz=6.0,
+                            sample_Hz=self.FS, window_step=4)
+
+        assert self._limit_from(str(excinfo.value)) == pytest.approx(1.25)
+
+    def test_following_the_message_actually_works(self):
+        """Execute the remedy rather than asserting the string."""
+        with pytest.raises(InvalidParameterError) as excinfo:
+            bandpass_filter(self._data(), hp_hz=0.5, lp_hz=6.0,
+                            sample_Hz=self.FS, window_step=4)
+        limit = self._limit_from(str(excinfo.value))
+
+        out = bandpass_filter(self._data(), hp_hz=0.1, lp_hz=limit * 0.9,
+                              sample_Hz=self.FS, window_step=4)
+
+        assert np.all(np.isfinite(out))
+
+    def test_the_band_edge_message_quotes_its_limit_too(self):
+        with pytest.raises(InvalidParameterError) as excinfo:
+            bandpass_filter(self._data(), hp_hz=6.0, lp_hz=4.0, sample_Hz=self.FS)
+
+        assert self._limit_from(str(excinfo.value)) == pytest.approx(5.0)
+
+
+class TestTheInvalidParameterContractIsComplete:
+    """Every known bad input raises InvalidParameterError, enumerated.
+
+    The CHANGELOG entry for #30 quotes this list. An earlier draft of it named
+    a case that was never breaking, omitted three that were, and gave a count
+    matching neither - written from recall rather than from measurement, which
+    is the failure #27 ended by asserting its census instead of describing it.
+    The same move here: the enumeration lives in the suite, so a case that
+    stops holding the contract fails a test rather than quietly making a
+    paragraph wrong.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    BAD_INPUTS = [
+        ("lower: negative", dict(hp_hz=-1.0, lp_hz=0.4)),
+        ("lower: zero", dict(hp_hz=0.0, lp_hz=0.4)),
+        ("lower: NaN", dict(hp_hz=np.nan, lp_hz=0.4)),
+        ("lower: non-scalar", dict(hp_hz=np.array([0.1, 0.2]), lp_hz=0.4)),
+        ("upper: negative", dict(hp_hz=0.1, lp_hz=-0.4)),
+        ("upper: zero", dict(hp_hz=0.1, lp_hz=0.0)),
+        ("upper: NaN", dict(hp_hz=0.1, lp_hz=np.nan)),
+        ("upper: non-scalar", dict(hp_hz=0.1, lp_hz=np.array([0.4, 0.5]))),
+        ("edges transposed", dict(hp_hz=0.4, lp_hz=0.1)),
+        ("edges equal", dict(hp_hz=0.2, lp_hz=0.2)),
+        ("upper past effective Nyquist",
+         dict(hp_hz=0.5, lp_hz=4.0, window_step=4)),
+        ("window_step NaN", dict(hp_hz=0.1, lp_hz=0.4, window_step=np.nan)),
+        ("window_step non-numeric",
+         dict(hp_hz=0.1, lp_hz=0.4, window_step="1")),
+        ("overlap non-numeric", dict(hp_hz=0.1, lp_hz=0.4, overlap=None)),
+        ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan)),
+    ]
+
+    @pytest.mark.parametrize(
+        "label,kwargs", BAD_INPUTS, ids=[c[0] for c in BAD_INPUTS]
+    )
+    def test_the_contract_holds_for_every_known_bad_input(self, label, kwargs):
+        kwargs = {'sample_Hz': self.FS, **kwargs}
+
+        with pytest.raises(InvalidParameterError):
+            bandpass_filter(self._data(), **kwargs)
 
 
 class TestEveryBandpassEntryPointRejectsABadLowerEdge:

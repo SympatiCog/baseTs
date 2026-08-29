@@ -6,6 +6,7 @@ Created on Oct 19 2024
 
 from __future__ import annotations
 from typing import Union, Optional, Literal, TYPE_CHECKING
+import numbers
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, savgol_filter
@@ -83,13 +84,53 @@ def validate_filter_params(data: ArrayLike,
 
     # Also NaN-blind on its own; ordered after the rate check so a NaN rate
     # reports the degenerate time base rather than a confusing cutoff error.
+    # The limit is named, not just the rule. A message stating no number sends
+    # the caller round the loop a second time on a value that was never going
+    # to work, which is the #28 lesson - a message that implies a remedy has to
+    # carry enough for the remedy to be right.
     if not (cutoff_freq > 0) or cutoff_freq >= sampling_freq/2:
-        raise InvalidParameterError("Cutoff frequency must be positive and less than Nyquist frequency")
+        raise InvalidParameterError(
+            f"Cutoff frequency must be positive and less than Nyquist frequency "
+            f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
 
     if order <= 0:
         raise InvalidParameterError("Filter order must be positive")
 
     return sampling_freq
+
+
+def _require_real(label: str, value) -> None:
+    """
+    Reject a parameter that is not a real scalar.
+
+    Membership is tested against numbers.Real rather than by attempting
+    float(value). `float(np.array([0.1]))` returns 0.1 on numpy 1.x and raises
+    on 2.x, so a float()-based guard would accept a one-element array on one
+    CI leg and reject it on another with the suite green either way - the trap
+    PR #26 hit with `float(np.array([30.0]))`.
+
+    bool is excluded explicitly: it is a Real, and `True` as a band edge or a
+    window step is a mistake worth naming rather than silently reading as 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise InvalidParameterError(
+            f"{label} must be a real number, got {value!r}")
+
+
+def _require_finite_real(label: str, value) -> float:
+    """Reject a non-real or non-finite parameter; return it as a float.
+
+    Used for parameters that are arithmetic operands rather than comparands.
+    NaN survives every `<`/`>=` comparison as False, so a NaN reaching
+    `max(1, window_step - overlap)` is silently clamped rather than rejected -
+    the same order-dependent `max()` blindness this module had for band edges.
+    """
+    _require_real(label, value)
+    number = float(value)
+    if not np.isfinite(number):
+        raise InvalidParameterError(
+            f"{label} must be a real number and finite, got {value!r}")
+    return number
 
 
 def validate_band_params(data: ArrayLike,
@@ -127,31 +168,53 @@ def validate_band_params(data: ArrayLike,
         order-dependent on NaN (#30). Both edges are checked here, along with
         the relation between them.
 
-        Data, rate and order are delegated to validate_filter_params rather
-        than re-derived. Local copies of a shared check are what let the
-        spectral family drift apart before #28. That call also normalises the
-        rate, which must happen before the division below - a Decimal or
-        string rate would otherwise die on it with a raw TypeError, outside
-        the InvalidParameterError contract.
+        Data and order are delegated to validate_filter_params rather than
+        re-derived. Local copies of a shared check are what let the spectral
+        family drift apart before #28.
 
-        The upper edge is therefore checked twice: once by the delegated call
-        against the declared Nyquist, then again below against the effective
-        one. The first is strictly weaker, so it can never reject a band the
-        second would accept. One visible consequence: a NaN `lp_hz` is
-        reported by the delegated call with its generic cutoff message rather
-        than with a band-specific one naming the edge.
+        The rate is normalised through the same shared door before any
+        arithmetic touches it: a Decimal or string rate would otherwise die on
+        the division below with a raw TypeError, outside the
+        InvalidParameterError contract.
+
+        The delegated call receives the *effective* rate, not the declared
+        one, so its Nyquist figure is the limit the filter will really apply.
+        An earlier revision passed the declared rate and reported a limit of
+        5.0 Hz where the real one was 1.25, which is worse than reporting no
+        limit at all - a caller retrying just under the quoted figure failed
+        again.
+
+        The upper edge is therefore checked twice, once by the delegated call
+        and once below, against the same effective Nyquist both times. One
+        visible consequence remains: a `lp_hz` out of range is reported by the
+        delegated call with its generic cutoff message rather than a
+        band-specific one naming the edge. The message carries the offending
+        value and the real limit, so it is complete; only its wording differs.
 
         Edges are checked before their ordering, so a band that is both
         out-of-range and out-of-order reports the out-of-range edge - the more
         specific complaint of the two.
     """
-    sampling_freq = validate_filter_params(data, sampling_freq, lp_hz, order)
+    # The rate first, and through the shared door, so it is a normalised float
+    # before it is divided.
+    try:
+        sampling_freq = validate_sampling_freq(sampling_freq)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
 
+    window_step = _require_finite_real('Window step', window_step)
     if not window_step >= 1:
         raise InvalidParameterError(
             f"Window step must be at least 1, got {window_step!r}")
 
     effective_freq = sampling_freq / window_step
+
+    # Scalar-ness before any comparison: `not (edge > 0)` on an array raises
+    # numpy's ambiguity ValueError, which escapes this module's contract.
+    for name, edge in (('hp_hz', hp_hz), ('lp_hz', lp_hz)):
+        _require_real(f"Band edge {name}={edge!r}", edge)
+
+    effective_freq = validate_filter_params(data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
 
     # `not (edge > 0)` rather than `edge <= 0`, which is False for NaN.
@@ -309,6 +372,14 @@ def bandpass_filter(data: ArrayLike,
     # Effective sampling rate of windowed analysis, computed before validation
     # rather than after it: this is the rate the band edges are normalised by
     # below, so it is the rate they have to be validated against (#30).
+    #
+    # Both operands are checked before the subtraction, which is eager enough
+    # to raise a bare TypeError on a string or None, and before the max(),
+    # which is order-dependent on NaN exactly as `max(hp_hz, lp_hz)` was:
+    # `max(1, nan)` returns 1, so a NaN step used to be silently clamped and
+    # the filter ran at a rate the caller never asked for.
+    window_step = _require_finite_real('window_step', window_step)
+    overlap = _require_finite_real('overlap', overlap)
     window_step = max(1, window_step - overlap)
     effective_fs = validate_band_params(
         data, sample_Hz, hp_hz, lp_hz, 3, window_step=window_step)

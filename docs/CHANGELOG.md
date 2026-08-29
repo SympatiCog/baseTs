@@ -99,14 +99,63 @@ effective rate is computed. This is only reachable through a direct
 `filters.bandpass_filter` call — `bandpass_at` does not expose `window_step`
 or `overlap`, and nothing in the package, tests or docs passes them.
 
-**Breaking:** five previously-`ValueError` cases now raise
-`InvalidParameterError` — negative, zero or NaN lower edge, NaN upper edge, and
-transposed or equal edges. Code catching `ValueError` around a bandpass call
-will stop catching them. `InvalidParameterError` does not inherit from
-`ValueError`. A bad *upper* edge still reports the generic
-`"Cutoff frequency must be positive and less than Nyquist frequency"` message
-from the delegated call rather than a band-specific one, since that check runs
-first; this is pinned by tests rather than left to chance.
+**`window_step` and `overlap` are guarded the same way.** `max(1, window_step -
+overlap)` sat one line below `max(hp_hz, lp_hz)` and had the identical flaw:
+`max(1, nan)` returns `1`, so a NaN window step was silently clamped and the
+filter ran at a rate the caller never asked for — no error, just wrong output.
+A string or `None` died on the subtraction with a bare `TypeError` before any
+validation ran. Both operands are now checked before the arithmetic. Fixing one
+`max()` and shipping the other, in a change whose subject is this defect class,
+was not a defensible place to stop.
+
+**Non-scalar band edges are rejected rather than escaping.** `not (edge > 0)`
+on an array raises numpy's "truth value ... is ambiguous" `ValueError`, so the
+contract had a hole in it on `main` and would have kept it. Membership is
+tested against `numbers.Real`, deliberately not by attempting `float(value)`:
+`float(np.array([0.1]))` returns `0.1` on numpy 1.x and raises on 2.x, so a
+`float()`-based guard would accept a one-element array on one CI leg and reject
+it on another with the suite green either way — the trap PR #26 hit.
+
+**Rejection messages now name the limit, not just the rule.** The shared
+cutoff message stated no number at all. Combined with checking `lp_hz` against
+the *declared* Nyquist, that sent a caller round the loop twice: at
+`sample_Hz=10, window_step=4` an `lp_hz` of 6.0 was rejected against a limit of
+5.0 that was never printed, and a reasonable retry at 2.0 failed again against
+the real limit of 1.25. The delegated call now receives the effective rate, and
+both messages carry the offending value and the applicable Nyquist. Tests take
+the limit back out of the message and check that a band under it is accepted —
+the remedy is executed, not asserted (#28).
+
+**Breaking — thirteen behaviour changes**, enumerated by running each case
+against `main` and against this branch rather than from recall:
+
+*Ten move from a bare `ValueError` to `InvalidParameterError`* — negative,
+zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
+edge; transposed edges; equal edges; and an upper edge valid against the
+declared Nyquist but not against the effective one at `window_step > 1`. Code
+catching `ValueError` around a bandpass call will stop catching these:
+`InvalidParameterError` inherits from `FilterError`, not from `ValueError`.
+
+*Two move from a bare `TypeError`* — a non-numeric `window_step` or `overlap`,
+which used to die on the subtraction before any validation ran.
+
+*One moves from no error at all* — a NaN `window_step` or `overlap`, which used
+to be clamped to 1 by `max()` and filter at the wrong rate, silently. This is
+the only one of the thirteen that changes a *successful* call into a failing
+one, and the success it replaces was returning wrong numbers.
+
+A **NaN lower** edge is deliberately *not* in that list: `max(nan, 0.4)`
+returns `nan`, which the pre-existing NaN-safe cutoff check already caught, so
+it raised `InvalidParameterError` before this change too. An earlier draft of
+this entry listed it as breaking, omitted several cases that genuinely are, and
+gave a count that matched neither. The list is now pinned by
+`test_the_contract_holds_for_every_known_bad_input`, so it cannot drift from
+the code the way prose does.
+
+A bad *upper* edge still reports the generic cutoff message rather than a
+band-specific one, since the delegated check runs first. The message carries
+the offending value and the real limit, so it is complete — only its wording
+differs. Pinned by tests rather than left to chance.
 
 ## [Unreleased] — `butterpass_at` runs at all (#27)
 
