@@ -102,9 +102,13 @@ frequencies they are labelled with, and the caller would not be told. It also
 matches what the guarded siblings already did.
 
 **Secondary behaviour change:** non-numeric data (a string or object-dtype
-series) now raises `ValueError` naming the data, where both `compute_fft_power`
-and `get_frequency_content` previously raised `TypeError: ufunc 'isnan'/'fft'
-not supported for the input types`. Integer and boolean series skip the check
+series) now raises `ValueError` naming the data at **all four** entry points.
+`compute_fft_power` and `get_frequency_content` previously raised `TypeError:
+ufunc 'isnan'/'fft' not supported for the input types`; `relative_band_power`
+and `falff` raised `TypeError: float() argument must be a string or a real
+number` from their own `np.asarray(..., dtype=float)` narrowing, which runs
+before they delegate. That narrowing is now preceded by the shared guard, so
+the uniform-`ValueError` contract holds for dtype as well as for NaN. Integer and boolean series skip the check
 entirely — those dtypes cannot represent NaN or Inf — and complex data is
 checked without a float cast, so it is not newly rejected. Pandas nullable
 dtypes (`Int64`, `Float64`) and pyarrow-backed columns are checked correctly:

@@ -433,6 +433,16 @@ def test_get_peak_freq_rejects_nonfinite_data():
         ts.get_peak_freq(num_pks=3)
 
 
+def _all_four_entry_points(ts):
+    """The four public ways into an FFT, as zero-argument callables."""
+    return (
+        lambda: ts.get_frequency_content(),
+        lambda: ts.get_peak_freq(),
+        lambda: relative_band_power(ts, 0.01, 0.1),
+        lambda: compute_fft_power(ts),
+    )
+
+
 def test_nonfinite_data_message_names_the_remedy_everywhere():
     """All four spectral entry points give the same actionable error.
 
@@ -441,15 +451,31 @@ def test_nonfinite_data_message_names_the_remedy_everywhere():
     get_frequency_content carried none. The shared helper is what stops a
     fifth entry point being added without one.
     """
-    ts = _gappy_ts()
-
-    for call in (
-        lambda: ts.get_frequency_content(),
-        lambda: ts.get_peak_freq(),
-        lambda: relative_band_power(ts, 0.01, 0.1),
-        lambda: compute_fft_power(ts),
-    ):
+    for call in _all_four_entry_points(_gappy_ts()):
         with pytest.raises(ValueError, match="interpolate_gaps"):
+            call()
+
+
+def test_non_numeric_data_raises_the_same_way_at_all_four_entry_points():
+    """The uniform-ValueError contract must hold for dtype too, not just NaN.
+
+    An object array of non-numbers is the case that broke it. Three of the
+    four reach validate_finite_data first and raise ValueError, but
+    relative_band_power narrows with `np.asarray(ts.values, dtype=float)`
+    before delegating, and that cast raises a bare TypeError on values float()
+    cannot take. Sibling tests covering only NaN-gappy float data could not
+    see the asymmetry, so the contract was asserted without being checked.
+
+    Dicts rather than strings deliberately: `float('a')` raises ValueError, so
+    a string array happens to produce the right exception type for the wrong
+    reason and would have passed even unguarded.
+    """
+    n = 500
+    ts = baseTs(np.array([{} for _ in range(n)], dtype=object),
+                np.arange(n) / 2.0, freq=2.0)
+
+    for call in _all_four_entry_points(ts):
+        with pytest.raises(ValueError, match="not numeric"):
             call()
 
 

@@ -523,12 +523,12 @@ def relative_band_power(
         )
 
     # ts.get_frequency_content() below validates both the rate and the data,
-    # raising the same ValueErrors, so this function needs no guard of its
+    # raising the same ValueErrors, so this function carries no check of its
     # own. Two of the checks that follow are NaN-blind - `high_freq > nan` is
     # False, and np.std of data containing NaN is NaN, so `< 1e-15` is False
     # too - but that only means they decline to reject; the error still
     # arrives, with the same message, from the call at the end of this
-    # function. A local copy of either guard is what let the four spectral
+    # function. A local *copy* of either check is what let the four spectral
     # entry points drift apart in the first place (issue #28).
     nyquist = ts.freq / 2
     if high_freq > nyquist:
@@ -537,6 +537,13 @@ def relative_band_power(
             f"({nyquist} Hz)"
         )
 
+    # Called here, not left to get_frequency_content, because the cast on the
+    # next line runs first and raises TypeError of its own on an object array
+    # of non-numbers - so the "all four raise the same ValueError" contract
+    # held for NaN data but not for this dtype class. Calling the shared
+    # helper is not the drifting local copy the comment above warns about:
+    # there is one definition, so it cannot say something different.
+    validate_finite_data(ts.values)
     data = np.asarray(ts.values, dtype=float)
 
     # Effectively constant data has no oscillatory content, so any ratio would
