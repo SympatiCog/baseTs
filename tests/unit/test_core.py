@@ -3,6 +3,7 @@ Unit tests for baseTs core functionality.
 """
 import pytest
 import numpy as np
+import pandas as pd
 from baseTs import baseTs
 from baseTs.core import from_df
 
@@ -781,8 +782,11 @@ class TestButterpassAt:
     It called filters.bandpass_filter with `highpass_freq`/`lowpass_freq`/
     `sampling_freq`, none of which that function accepts, so every call raised
     TypeError. Nothing in the suite or the docs referenced it, so the method
-    was dead from introduction. It is now an alias for bandpass_at, which is
-    where the tested object plumbing and the #24 rate guard already live.
+    was dead from introduction. It is now an alias for bandpass_at, so it runs
+    the object plumbing the sibling filters already have tests for. It also
+    reaches the #24 rate guard, though that is not what the delegation buys -
+    the keyword rename the issue suggested would have reached it too, by
+    calling the same filters.bandpass_filter.
     """
 
     FS = 30.0
@@ -852,10 +856,18 @@ class TestButterpassAt:
         series, so every field it compared was either a default or derived from
         the index. An implementation that dropped `ts_offset`, `_lowess_fit`,
         `is_interpolated` and the rest would have passed it unchanged - the
-        inputs did not span the axis the test was named for. Verified: eleven
-        of the thirteen entries in TimeSeriesData._metadata survive this call
-        with the seeded value intact, and the two that change (`is_filtered`,
-        `last_process`) are the operation's own effect.
+        inputs did not span the axis the test was named for.
+
+        Census of TimeSeriesData._metadata, measured rather than asserted:
+        ten fields are seeded off their constructor default and survive this
+        call intact, and the other three (`is_filtered`, `last_process`,
+        `history`) change because changing them is the operation's own effect.
+        An earlier revision of this docstring claimed eleven and two. It was
+        wrong on both counts, and wrong for an instructive reason: the probe
+        behind it truncated each value to 26 characters, which hid the entry
+        `history` gains. `_freq_declaration` was the field it miscounted -
+        nothing here declared a rate, so that slot sat at None on both sides
+        and compared equal no matter what the implementation did with it.
         """
         ts = cls._two_tone()
         ts.set_outlier_filter(frac=0.25)
@@ -865,20 +877,42 @@ class TestButterpassAt:
         ts.is_outlier_filtered = True
         ts.lowess_fit = np.arange(len(ts), dtype=float)
         ts.outlier_indices = np.array([3, 7, 11])
+        # Declared last, on purpose: set_timestamp_offset shifts the index and
+        # would expire a declaration made before it (#38), leaving a stale
+        # token that says nothing about propagation. Declared here the token
+        # is live, and filtering preserves the index, so it must still be live
+        # on the far side. The value deliberately disagrees with the 30 Hz the
+        # index derives, as at test_explicit_freq_still_honoured - a rate that
+        # matched would be indistinguishable from re-derivation.
+        ts.freq = 999.0
         return ts
 
     @staticmethod
     def _comparable(ts, field):
-        """Render one metadata value so two objects' copies compare equal."""
-        value = getattr(ts, field, '<absent>')
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, tuple):  # the (value, index) stamps from #20
-            return [v.tolist() if isinstance(v, np.ndarray) else list(v)
-                    for v in value]
-        if type(value).__name__ == 'LowessOutlierFilter':
-            return value.config  # frozen since #15, so == is meaningful
-        return value
+        """Render one metadata value so two objects' copies compare equal.
+
+        No default on the getattr: _initialize_default_metadata sets all
+        thirteen fields unconditionally, so absence is a real failure and must
+        raise. A sentinel would compare equal to itself and quietly pass a
+        field that had gone missing from both objects.
+
+        Tuples are normalised element-wise rather than by assuming a shape.
+        Two different ones live in _metadata - the (array, Index) stamps from
+        #20 and the (rate, token) declaration from #38 - and an earlier
+        revision handled only the first, so seeding a rate made this raise.
+        """
+        def norm(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, pd.Index):
+                return value.tolist()
+            if isinstance(value, tuple):
+                return tuple(norm(v) for v in value)
+            if type(value).__name__ == 'LowessOutlierFilter':
+                return value.config  # frozen since #15, so == is meaningful
+            return value
+
+        return norm(getattr(ts, field))
 
     @pytest.mark.parametrize("inplace", [False, True])
     def test_metadata_matches_bandpass_at(self, inplace):
@@ -891,12 +925,12 @@ class TestButterpassAt:
         What this does NOT pin, stated plainly: it cannot tell delegation apart
         from a correct hand-rolled reimplementation. Measured, not assumed - a
         mutant restoring the old `self.copy()` / `newTs.data = ...` body with
-        the keywords merely renamed produces byte-identical metadata on all
-        thirteen fields, both inplace modes. The two implementations are
-        observably equivalent; delegation is preferred for having one code path
-        rather than two, which is a maintainability claim and not a behavioral
-        one. What this test does catch is an implementation that drops metadata
-        - building a fresh baseTs from the filtered array, say.
+        the keywords merely renamed produces identical metadata on all thirteen
+        fields, both inplace modes. The two implementations are observably
+        equivalent; delegation is preferred for having one code path rather
+        than two, which is a maintainability claim and not a behavioral one.
+        What this test does catch is an implementation that drops metadata -
+        building a fresh baseTs from the filtered array, say.
         """
         from baseTs.series import TimeSeriesData
 

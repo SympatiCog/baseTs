@@ -82,11 +82,13 @@ is and is not worth:** it deletes fourteen lines of hand-rolled `self.copy()` /
 `newTs.data = ...` plumbing that bypassed `_create_new_with_data` and
 `_update_flags`, leaving one code path where there were two. It is *not* an
 output difference, and the entry does not claim one. Measured rather than
-assumed: a rename-only version, on a source seeded with a non-default value in
-every slot, produces identical metadata across all thirteen entries of
-`TimeSeriesData._metadata` on both `inplace` branches. The rate guard above is
-likewise not a differentiator — the rename would have inherited it too, since
-it also calls `bandpass_filter`. The case for delegating is maintainability.
+assumed: a rename-only version produces identical metadata across all thirteen
+entries of `TimeSeriesData._metadata` on both `inplace` branches, on a source
+seeded off its constructor default in each of the ten slots the operation
+preserves — the remaining three (`is_filtered`, `last_process`, `history`) are
+changed by the operation itself. The rate guard above is likewise not a
+differentiator — the rename would have inherited it too, since it also calls
+`bandpass_filter`. The case for delegating is maintainability.
 
 **Not a breaking change for any caller of the public API, with one visible
 consequence:** history now records the `bandpass_at` entry (`"Bandpass filtered
