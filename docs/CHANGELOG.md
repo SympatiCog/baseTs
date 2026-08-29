@@ -72,11 +72,21 @@ It was dead from introduction. Nothing referenced it — no test, no example, no
 entry in this file or `API.md` — which is why nobody hit it.
 
 `butterpass_at` is now an alias for `bandpass_at`, joining `bandpass_filter`,
-which already delegates the same way. That deletes fourteen lines of hand-rolled
-`self.copy()` / `newTs.data = ...` plumbing that bypassed
-`_create_new_with_data` and `_update_flags`, and it puts the method behind
+which already delegates the same way. The method reaches
+`filters.bandpass_filter` for the first time, and therefore
 `validate_filter_params`, so a degenerate sampling rate now raises
 `InvalidParameterError` here as it does for every sibling filter (#24).
+
+**Delegation rather than the keyword rename the issue suggested, and what that
+is and is not worth:** it deletes fourteen lines of hand-rolled `self.copy()` /
+`newTs.data = ...` plumbing that bypassed `_create_new_with_data` and
+`_update_flags`, leaving one code path where there were two. It is *not* an
+output difference, and the entry does not claim one. Measured rather than
+assumed: a rename-only version, on a source seeded with a non-default value in
+every slot, produces identical metadata across all thirteen entries of
+`TimeSeriesData._metadata` on both `inplace` branches. The rate guard above is
+likewise not a differentiator — the rename would have inherited it too, since
+it also calls `bandpass_filter`. The case for delegating is maintainability.
 
 **Not a breaking change for any caller of the public API, with one visible
 consequence:** history now records the `bandpass_at` entry (`"Bandpass filtered

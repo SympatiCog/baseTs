@@ -844,17 +844,73 @@ class TestButterpassAt:
             np.asarray(alias.data, float), np.asarray(direct.data, float)
         )
 
-    def test_metadata_matches_bandpass_at(self):
-        """Asserted against the sibling, so a pre-existing gap cannot fail it."""
-        ts = self._two_tone()
+    @classmethod
+    def _seeded(cls):
+        """A source carrying a non-default value in every seedable metadata slot.
 
-        alias = ts.butterpass_at(self.HP, self.LP)
-        direct = ts.bandpass_at(hp_hz=self.HP, lp_hz=self.LP)
+        The first version of the metadata test below ran on a freshly built
+        series, so every field it compared was either a default or derived from
+        the index. An implementation that dropped `ts_offset`, `_lowess_fit`,
+        `is_interpolated` and the rest would have passed it unchanged - the
+        inputs did not span the axis the test was named for. Verified: eleven
+        of the thirteen entries in TimeSeriesData._metadata survive this call
+        with the seeded value intact, and the two that change (`is_filtered`,
+        `last_process`) are the operation's own effect.
+        """
+        ts = cls._two_tone()
+        ts.set_outlier_filter(frac=0.25)
+        ts.set_timestamp_offset(1.5)
+        ts.is_interpolated = True
+        ts.is_uniform_grid = True
+        ts.is_outlier_filtered = True
+        ts.lowess_fit = np.arange(len(ts), dtype=float)
+        ts.outlier_indices = np.array([3, 7, 11])
+        return ts
 
-        assert alias.is_filtered is direct.is_filtered is True
-        assert alias.signal_name == direct.signal_name
-        assert alias.freq == direct.freq
+    @staticmethod
+    def _comparable(ts, field):
+        """Render one metadata value so two objects' copies compare equal."""
+        value = getattr(ts, field, '<absent>')
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, tuple):  # the (value, index) stamps from #20
+            return [v.tolist() if isinstance(v, np.ndarray) else list(v)
+                    for v in value]
+        if type(value).__name__ == 'LowessOutlierFilter':
+            return value.config  # frozen since #15, so == is meaningful
+        return value
+
+    @pytest.mark.parametrize("inplace", [False, True])
+    def test_metadata_matches_bandpass_at(self, inplace):
+        """Every metadata slot must come out where bandpass_at puts it.
+
+        Asserted against the sibling rather than against fixed values, so a
+        pre-existing propagation gap cannot fail this - it is an alias test,
+        not an audit of _create_new_with_data.
+
+        What this does NOT pin, stated plainly: it cannot tell delegation apart
+        from a correct hand-rolled reimplementation. Measured, not assumed - a
+        mutant restoring the old `self.copy()` / `newTs.data = ...` body with
+        the keywords merely renamed produces byte-identical metadata on all
+        thirteen fields, both inplace modes. The two implementations are
+        observably equivalent; delegation is preferred for having one code path
+        rather than two, which is a maintainability claim and not a behavioral
+        one. What this test does catch is an implementation that drops metadata
+        - building a fresh baseTs from the filtered array, say.
+        """
+        from baseTs.series import TimeSeriesData
+
+        alias = self._seeded().butterpass_at(self.HP, self.LP, inplace=inplace)
+        direct = self._seeded().bandpass_at(
+            hp_hz=self.HP, lp_hz=self.LP, inplace=inplace
+        )
+
+        for field in TimeSeriesData._metadata:
+            assert self._comparable(alias, field) == self._comparable(direct, field), (
+                f"metadata field {field!r} diverges from bandpass_at"
+            )
         np.testing.assert_array_equal(alias.times, direct.times)
+        assert alias.freq == direct.freq
 
     def test_records_the_bandpass_history_entry(self):
         """Delegation is deliberate: the entry reads bandpass, not butterworth.
