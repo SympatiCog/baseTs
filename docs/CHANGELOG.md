@@ -118,12 +118,17 @@ float — so a `NaT` would otherwise pass the finiteness check and die later in
 This concerns *values* only; a series with a `DatetimeIndex` and numeric data
 is unaffected.
 
-That error deliberately does **not** suggest `.astype(float)`. It is the
-obvious remedy and it is wrong: it reinterprets the int64 storage, so `NaT`
-comes back as `-9.22e18`, which the guard then accepts — reproducing the
-silent-nonsense failure one level up. `values / np.timedelta64(1, 's')` goes
-through duration semantics and maps `NaT` to `NaN`, landing the caller on the
-gap-filling message instead.
+That error deliberately does **not** suggest a cast through `float` or
+`int64`. It is the obvious remedy and it is wrong: it reinterprets the int64
+storage, so `NaT` comes back as `-9.22e18`, which the guard then accepts —
+reproducing the silent-nonsense failure one level up. Datetime arithmetic maps
+`NaT` to `NaN` instead, landing the caller on the gap-filling message.
+
+The message names a different remedy per dtype, because they are not
+interchangeable: `values / np.timedelta64(1, 's')` for durations, and
+`(values - values[0]) / np.timedelta64(1, 's')` for timestamps. Handing the
+duration form to a `datetime64` caller does not merely fail to help — it
+raises `UFuncTypeError`.
 
 ## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the index (#20)
 

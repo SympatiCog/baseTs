@@ -134,19 +134,35 @@ def validate_finite_data(data: Any) -> None:
     # value reaches np.fft.fft to die there as a DTypePromotionError naming an
     # internal promotion rule instead of the caller's data.
     if arr.dtype.kind in "Mm":
-        # The remedy deliberately does NOT say .astype(float). That is the
+        # No remedy here mentions a cast through int64 or float. That is the
         # obvious suggestion and it is actively wrong: it reinterprets the
         # int64 storage, so NaT comes back as -9.22e18 - a large finite number
         # this guard would then accept, reproducing one level up the exact
-        # silent-nonsense failure it exists to prevent. Dividing by a
-        # timedelta64 unit goes through duration semantics instead and maps
-        # NaT to NaN, which lands the caller on the gap-filling message above.
+        # silent-nonsense failure it exists to prevent. Subtracting or dividing
+        # goes through datetime semantics instead and maps NaT to NaN, landing
+        # the caller on the gap-filling message above.
+        #
+        # Split by kind because the two need genuinely different remedies:
+        # dividing a datetime64 by a timedelta64 is not merely unhelpful, it
+        # raises UFuncTypeError. An earlier revision offered the duration
+        # remedy for both and left datetime callers to improvise, which is how
+        # they would have found the int64 cast.
+        if arr.dtype.kind == "m":
+            remedy = (
+                "Convert durations to a number of seconds first, e.g. "
+                "`values / np.timedelta64(1, 's')`."
+            )
+        else:
+            remedy = (
+                "Convert timestamps to elapsed seconds first, e.g. "
+                "`(values - values[0]) / np.timedelta64(1, 's')`."
+            )
         raise ValueError(
             f"Time series data is not numeric: dtype '{arr.dtype}' holds "
-            f"datetimes or durations, not sample values. Convert durations to "
-            f"a number of seconds first, e.g. `values / np.timedelta64(1, 's')` "
-            f"- note that `.astype(float)` will not do, since it exposes NaT's "
-            f"integer sentinel as a large finite number rather than NaN."
+            f"datetimes or durations, not sample values. {remedy} Note that "
+            f"casting via `.astype(float)` or `.astype('int64')` will not do: "
+            f"it exposes NaT's integer sentinel as a large finite number "
+            f"rather than NaN, which this check would then accept."
         )
 
     # Anything not already numeric (object arrays, most often) is converted so

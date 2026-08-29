@@ -523,36 +523,68 @@ def test_validate_finite_data_rejects_datetime_dtypes(dtype):
 def test_datetime_remedy_does_not_recreate_the_bug_it_reports():
     """The remedy the message names must not launder NaT into a finite float.
 
-    `.astype(float)` is the obvious suggestion and is actively wrong: it
-    reinterprets the int64 storage, so NaT returns as -9.22e18, which this
+    An integer or float cast is the obvious suggestion and is actively wrong:
+    it reinterprets the int64 storage, so NaT returns as -9.22e18, which this
     guard accepts. Following that advice would move the silent-nonsense
     failure one level up rather than fixing it, which is why the message
-    steers to a timedelta64 division instead - that maps NaT to NaN.
+    steers to datetime arithmetic instead - that maps NaT to NaN.
 
-    An earlier revision of the message did recommend `.astype(float)`, and no
-    test looked at the remedy text, only at "not numeric".
+    An earlier revision did recommend `.astype(float)`, and no test looked at
+    the remedy text, only at "not numeric". A later one gave the *duration*
+    remedy to datetime callers too, where it raises UFuncTypeError - so each
+    dtype's own remedy is exercised here rather than assumed to transfer.
+
+    Note the first assertion in each pair deliberately pins behaviour that
+    looks like a bug. It is not fixable at this layer: once a float64 array
+    arrives, the dtype provenance is gone and a laundered NaT is
+    indistinguishable from a genuine large value. That is precisely why the
+    message had to change rather than the validator.
     """
     from baseTs.utils import validate_finite_data
 
-    gappy = np.array([1, 'NaT'], dtype='timedelta64[ns]')
+    cases = [
+        # dtype kind 'm': durations
+        (np.array([1, 'NaT'], dtype='timedelta64[ns]'),
+         np.array([1, 2], dtype='timedelta64[ns]'),
+         lambda v: v / np.timedelta64(1, 's'),
+         lambda v: v.astype(float),
+         "values / np.timedelta64(1, 's')"),
+        # dtype kind 'M': timestamps, which need a different remedy entirely -
+        # dividing one by a timedelta64 raises rather than helping
+        (np.array(['2020-01-01', 'NaT'], dtype='datetime64[ns]'),
+         np.array(['2020-01-01', '2020-01-03'], dtype='datetime64[ns]'),
+         lambda v: (v - v[0]) / np.timedelta64(1, 's'),
+         lambda v: v.astype('int64').astype(float),
+         "(values - values[0]) / np.timedelta64(1, 's')"),
+    ]
 
-    # The wrong remedy: silently accepted, which is the failure mode.
-    assert validate_finite_data(gappy.astype(float)) is None
-    assert np.all(np.isfinite(gappy.astype(float)))
+    for gappy, clean, remedy, wrong_remedy, expected_text in cases:
+        # The wrong remedy: silently accepted, which is the failure mode.
+        assert validate_finite_data(wrong_remedy(gappy)) is None
+        assert np.all(np.isfinite(wrong_remedy(gappy)))
 
-    # The remedy the message actually names: NaT becomes NaN, so the caller
-    # lands on the gap-filling error rather than a wrong number.
-    with pytest.raises(ValueError, match="interpolate_gaps"):
-        validate_finite_data(gappy / np.timedelta64(1, 's'))
+        # The remedy the message names: NaT becomes NaN, so the caller lands
+        # on the gap-filling error rather than on a wrong number.
+        with pytest.raises(ValueError, match="interpolate_gaps"):
+            validate_finite_data(remedy(gappy))
 
-    # ...and it accepts cleanly once there is no NaT.
-    clean = np.array([1, 2], dtype='timedelta64[ns]')
-    assert validate_finite_data(clean / np.timedelta64(1, 's')) is None
+        # ...and it accepts cleanly once there is no NaT.
+        assert validate_finite_data(remedy(clean)) is None
 
-    # Pin that the message does not send anyone down the wrong path.
-    with pytest.raises(ValueError) as exc:
-        validate_finite_data(gappy)
-    assert "np.timedelta64" in str(exc.value)
+        # Pin the message against the exact remedy verified above. Asserting
+        # merely that it says "np.timedelta64" is vacuous - both dtypes'
+        # messages do, so the duration remedy could be handed to a datetime
+        # caller (where it raises UFuncTypeError) with the test still green.
+        # That mutant survived until this assertion named the whole expression.
+        with pytest.raises(ValueError) as exc:
+            validate_finite_data(gappy)
+        assert expected_text in str(exc.value)
+        assert "astype" in str(exc.value)
+
+    # The duration remedy is not merely unhelpful on timestamps, it raises -
+    # which is why the message splits by dtype instead of offering one.
+    with pytest.raises(TypeError):
+        np.array(['2020-01-01'], dtype='datetime64[ns]') / np.timedelta64(1, 's')
 
 
 def test_validate_finite_data_reports_non_numeric_as_valueerror():
