@@ -54,6 +54,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `butterpass_at` runs at all (#27)
+
+### Fixed — `butterpass_at` raised `TypeError` on every call
+
+The method passed `highpass_freq`, `lowpass_freq` and `sampling_freq` to
+`filters.bandpass_filter`, whose parameters are `hp_hz`, `lp_hz` and
+`sample_Hz`. None of the three keywords existed, so the call never got past
+argument binding:
+
+```python
+ts.butterpass_at(0.05, 0.4)
+# TypeError: bandpass_filter() got an unexpected keyword argument 'highpass_freq'
+```
+
+It was dead from introduction. Nothing referenced it — no test, no example, no
+entry in this file or `API.md` — which is why nobody hit it.
+
+`butterpass_at` is now an alias for `bandpass_at`, joining `bandpass_filter`,
+which already delegates the same way. That deletes fourteen lines of hand-rolled
+`self.copy()` / `newTs.data = ...` plumbing that bypassed
+`_create_new_with_data` and `_update_flags`, and it puts the method behind
+`validate_filter_params`, so a degenerate sampling rate now raises
+`InvalidParameterError` here as it does for every sibling filter (#24).
+
+**Not a breaking change, with one visible consequence:** history now records
+the `bandpass_at` entry (`"Bandpass filtered at ..."` / `_bp_{lp}:{hp}Hz`)
+rather than the old `"Butterworth pass filtered ..."` / `_btrp_{lp}:{hp}Hz`.
+No caller can have observed the old token, because the method raised several
+lines before writing it.
+
 ## [Unreleased] — the spectral family rejects non-finite *data* (#28)
 
 ### Fixed — `get_peak_freq` no longer returns a confident wrong answer on gappy data

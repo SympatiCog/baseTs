@@ -576,6 +576,18 @@ class TestFiltersRejectNanFreq:
         with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
             self._degenerate().bandpass_filter(0.1, 0.4)
 
+    def test_butterpass_at_raises(self):
+        """butterpass_at was absent from this family because it never ran (#27).
+
+        It reached filters.bandpass_filter with keywords that do not exist, so
+        it died on a TypeError long before any rate was validated. Delegating
+        to bandpass_at is what puts it behind validate_filter_params.
+        """
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().butterpass_at(0.1, 0.4)
+
     def test_healthy_series_still_filters(self):
         """The guard must not disturb an ordinary series."""
         ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
@@ -761,3 +773,113 @@ class TestInfoToleratesOddHistory:
         tsd.history = value
         tsd.info()
         assert capsys.readouterr().out  # rendered without raising
+
+
+class TestButterpassAt:
+    """butterpass_at must actually run, and must mean what its name says (#27).
+
+    It called filters.bandpass_filter with `highpass_freq`/`lowpass_freq`/
+    `sampling_freq`, none of which that function accepts, so every call raised
+    TypeError. Nothing in the suite or the docs referenced it, so the method
+    was dead from introduction. It is now an alias for bandpass_at, which is
+    where the tested object plumbing and the #24 rate guard already live.
+    """
+
+    FS = 30.0
+    LOW_HZ = 0.2
+    HIGH_HZ = 5.0
+    HP, LP = 1.0, 10.0  # a band that keeps HIGH_HZ and rejects LOW_HZ
+
+    @classmethod
+    def _two_tone(cls):
+        t = np.arange(int(cls.FS * 50)) / cls.FS
+        data = (np.sin(2 * np.pi * cls.LOW_HZ * t)
+                + np.sin(2 * np.pi * cls.HIGH_HZ * t))
+        return baseTs(data, t, signal_name="TwoTone")
+
+    @staticmethod
+    def _amplitude_at(ts, hz):
+        """Amplitude of one tone by projection, so no FFT bin has to line up."""
+        t = np.asarray(ts.times, float)
+        values = np.asarray(ts.data, float)
+        return abs(2.0 / len(t) * np.sum(values * np.exp(-2j * np.pi * hz * t)))
+
+    def test_butterpass_at_runs(self):
+        """The issue's reproduction: this raised TypeError on every call."""
+        ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
+
+        out = ts.butterpass_at(0.05, 0.4)
+
+        assert isinstance(out, baseTs)
+        assert len(out) == len(ts)
+
+    def test_hp_and_lp_are_not_transposed(self):
+        """The band kept must be [hp_freq, lp_freq], not its mirror image.
+
+        A positional signature this easy to swap needs the orientation pinned
+        against the signal rather than against the call.
+        """
+        ts = self._two_tone()
+        before_low = self._amplitude_at(ts, self.LOW_HZ)
+        before_high = self._amplitude_at(ts, self.HIGH_HZ)
+
+        out = ts.butterpass_at(self.HP, self.LP)
+
+        assert self._amplitude_at(out, self.HIGH_HZ) > 0.9 * before_high
+        assert self._amplitude_at(out, self.LOW_HZ) < 0.1 * before_low
+
+    def test_agrees_with_bandpass_at_sample_for_sample(self):
+        """An alias that computes something else is not an alias."""
+        ts = self._two_tone()
+
+        alias = ts.butterpass_at(self.HP, self.LP)
+        direct = ts.bandpass_at(hp_hz=self.HP, lp_hz=self.LP)
+
+        np.testing.assert_array_equal(
+            np.asarray(alias.data, float), np.asarray(direct.data, float)
+        )
+
+    def test_metadata_matches_bandpass_at(self):
+        """Asserted against the sibling, so a pre-existing gap cannot fail it."""
+        ts = self._two_tone()
+
+        alias = ts.butterpass_at(self.HP, self.LP)
+        direct = ts.bandpass_at(hp_hz=self.HP, lp_hz=self.LP)
+
+        assert alias.is_filtered is direct.is_filtered is True
+        assert alias.signal_name == direct.signal_name
+        assert alias.freq == direct.freq
+        np.testing.assert_array_equal(alias.times, direct.times)
+
+    def test_records_the_bandpass_history_entry(self):
+        """Delegation is deliberate: the entry reads bandpass, not butterworth.
+
+        No caller can have seen the old `_btrp_` token - the method raised
+        before reaching it - and the sibling bandpass_filter alias already
+        records itself this way.
+        """
+        ts = self._two_tone()
+
+        out = ts.butterpass_at(self.HP, self.LP)
+
+        assert out.last_process == f"_bp_{self.LP}:{self.HP}Hz"
+        assert out.history[-1] == f"Bandpass filtered at {self.LP} Hz and {self.HP} Hz"
+
+    def test_inplace_mutates_and_returns_self(self):
+        ts = self._two_tone()
+        before_low = self._amplitude_at(ts, self.LOW_HZ)
+
+        out = ts.butterpass_at(self.HP, self.LP, inplace=True)
+
+        assert out is ts
+        assert ts.is_filtered is True
+        assert self._amplitude_at(ts, self.LOW_HZ) < 0.1 * before_low
+
+    def test_not_inplace_leaves_the_original_alone(self):
+        ts = self._two_tone()
+        before = np.asarray(ts.data, float).copy()
+
+        ts.butterpass_at(self.HP, self.LP)
+
+        np.testing.assert_array_equal(np.asarray(ts.data, float), before)
+        assert ts.is_filtered is False
