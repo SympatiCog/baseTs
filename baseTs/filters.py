@@ -91,7 +91,85 @@ def validate_filter_params(data: ArrayLike,
 
     return sampling_freq
 
-def sg_filter(data: ArrayLike, 
+
+def validate_band_params(data: ArrayLike,
+                         sampling_freq: float,
+                         hp_hz: float,
+                         lp_hz: float,
+                         order: int,
+                         window_step: int = 1) -> float:
+    """
+    Validate the parameters of a two-edged (band) filter.
+
+    Args:
+        data: Input data array
+        sampling_freq: Sampling frequency in Hz, before windowing
+        hp_hz: High-pass (lower) band edge in Hz
+        lp_hz: Low-pass (upper) band edge in Hz
+        order: Filter order
+        window_step: Step size of the windowed analysis, already net of
+            overlap. The band edges are checked against the rate this
+            produces, not against `sampling_freq`.
+
+    Returns:
+        The effective sampling frequency, `sampling_freq / window_step`,
+        normalised to a float. Callers must use this return value: it is both
+        the normalised rate (see validate_filter_params on why the raw
+        argument is unusable) and the rate the band was actually validated
+        against.
+
+    Raises:
+        InvalidParameterError: If parameters are invalid
+
+    Notes:
+        Callers used to validate with `max(hp_hz, lp_hz)`, which checked one
+        edge and picked which one by argument position, since `max()` is
+        order-dependent on NaN (#30). Both edges are checked here, along with
+        the relation between them.
+
+        Data, rate and order are delegated to validate_filter_params rather
+        than re-derived. Local copies of a shared check are what let the
+        spectral family drift apart before #28. That call also normalises the
+        rate, which must happen before the division below - a Decimal or
+        string rate would otherwise die on it with a raw TypeError, outside
+        the InvalidParameterError contract.
+
+        The upper edge is therefore checked twice: once by the delegated call
+        against the declared Nyquist, then again below against the effective
+        one. The first is strictly weaker, so it can never reject a band the
+        second would accept. One visible consequence: a NaN `lp_hz` is
+        reported by the delegated call with its generic cutoff message rather
+        than with a band-specific one naming the edge.
+
+        Edges are checked before their ordering, so a band that is both
+        out-of-range and out-of-order reports the out-of-range edge - the more
+        specific complaint of the two.
+    """
+    sampling_freq = validate_filter_params(data, sampling_freq, lp_hz, order)
+
+    if not window_step >= 1:
+        raise InvalidParameterError(
+            f"Window step must be at least 1, got {window_step!r}")
+
+    effective_freq = sampling_freq / window_step
+    nyquist = effective_freq / 2
+
+    # `not (edge > 0)` rather than `edge <= 0`, which is False for NaN.
+    for name, edge in (('hp_hz', hp_hz), ('lp_hz', lp_hz)):
+        if not (edge > 0) or edge >= nyquist:
+            raise InvalidParameterError(
+                f"Band edge {name}={edge!r} must be positive and less than "
+                f"the Nyquist frequency ({nyquist} Hz)")
+
+    if not (hp_hz < lp_hz):
+        raise InvalidParameterError(
+            f"Band edges out of order: hp_hz={hp_hz!r} must be less than "
+            f"lp_hz={lp_hz!r}")
+
+    return effective_freq
+
+
+def sg_filter(data: ArrayLike,
               window_length: int = 11, 
               polyorder: int = 2) -> np.ndarray:
     """
@@ -227,12 +305,14 @@ def bandpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    sample_Hz = validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
-    
-    # Effective sampling rate of windowed analysis
+
+    # Effective sampling rate of windowed analysis, computed before validation
+    # rather than after it: this is the rate the band edges are normalised by
+    # below, so it is the rate they have to be validated against (#30).
     window_step = max(1, window_step - overlap)
-    effective_fs = sample_Hz / window_step
-    
+    effective_fs = validate_band_params(
+        data, sample_Hz, hp_hz, lp_hz, 3, window_step=window_step)
+
     nyq = effective_fs / 2
     b, a = signal.butter(3, [hp_hz/nyq, lp_hz/nyq], btype='band')
     filtered = signal.filtfilt(b, a, data)

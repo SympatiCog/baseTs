@@ -54,6 +54,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — both band edges are validated (#30)
+
+### Fixed — `bandpass_filter` checked one edge, and argument order picked which
+
+Validation was:
+
+```python
+validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
+```
+
+One of the two edges, never both. And `max()` is order-dependent on NaN —
+`max(0.1, nan)` returns `0.1`, so a NaN *upper* edge was silently discarded,
+while `max(nan, 0.4)` returns `nan` and was caught. The same bad argument was
+accepted or rejected depending on which parameter it was passed as.
+
+So a negative, zero or NaN lower edge reached scipy and died there:
+
+```python
+ts.bandpass_filter(-1.0, 0.4)   # ValueError: filter critical frequencies must be greater than 0
+ts.bandpass_filter(0.1, np.nan) # ValueError: Wn[0] must be less than Wn[1]
+ts.bandpass_filter(0.4, 0.1)    # ValueError: Wn[0] must be less than Wn[1]
+```
+
+Each escaped this module's `InvalidParameterError` contract, and each pointed
+at scipy's `Wn` internals rather than at the argument the caller got wrong.
+
+A new `filters.validate_band_params` is now the single door for two-edged
+filters. It checks each edge positive and below Nyquist (NaN-safely, via
+`not (x > 0)`), then checks the ordering relation explicitly, naming both
+values. Data, rate and order are delegated to `validate_filter_params` rather
+than re-derived — local copies of a shared check drifting apart is what #28
+cleaned up in the spectral family.
+
+**Transposed edges raise rather than being sorted.** Silently reordering would
+filter a band the caller did not ask for and hide the mistake; #27 had just
+shown how easy this argument order is to get wrong.
+
+**Nyquist now comes from the rate the filter actually uses.** The edges are
+normalised by `effective_fs = sample_Hz / max(1, window_step - overlap)`, but
+validation compared against `sample_Hz / 2`. At `window_step=4`, `lp_hz=4.0`
+passed validation and then died inside scipy. Validation moved after the
+effective rate is computed. This is only reachable through a direct
+`filters.bandpass_filter` call — `bandpass_at` does not expose `window_step`
+or `overlap`, and nothing in the package, tests or docs passes them.
+
+**Breaking:** five previously-`ValueError` cases now raise
+`InvalidParameterError` — negative, zero or NaN lower edge, NaN upper edge, and
+transposed or equal edges. Code catching `ValueError` around a bandpass call
+will stop catching them. `InvalidParameterError` does not inherit from
+`ValueError`. A bad *upper* edge still reports the generic
+`"Cutoff frequency must be positive and less than Nyquist frequency"` message
+from the delegated call rather than a band-specific one, since that check runs
+first; this is pinned by tests rather than left to chance.
+
 ## [Unreleased] — `butterpass_at` runs at all (#27)
 
 ### Fixed — `butterpass_at` raised `TypeError` on every call
