@@ -81,11 +81,22 @@ Each escaped this module's `InvalidParameterError` contract, and each pointed
 at scipy's `Wn` internals rather than at the argument the caller got wrong.
 
 A new `filters.validate_band_params` is now the single door for two-edged
-filters. It checks each edge positive and below Nyquist (NaN-safely, via
-`not (x > 0)`), then checks the ordering relation explicitly, naming both
-values. Data, rate and order are delegated to `validate_filter_params` rather
-than re-derived — local copies of a shared check drifting apart is what #28
-cleaned up in the spectral family.
+filters. It type-checks both edges, coerces them to plain floats, checks each
+positive and below Nyquist (NaN-safely, via `not (x > 0)`), then checks the
+ordering relation explicitly, naming both values. Data, rate and order are
+delegated to `validate_filter_params` rather than re-derived — local copies of
+a shared check drifting apart is what #28 cleaned up in the spectral family.
+
+**The coercion is load-bearing, not tidiness.** `numbers.Real` is a
+*registrable* ABC, so an accepted value can be an object whose comparisons are
+stateful — able to answer `>= nyquist` with `False` once and `True` the next
+time. That makes "these two textually identical predicates are redundant"
+unsound as a claim about the accepted domain, and the upper edge genuinely is
+checked twice (once by the delegated call, once by the local rule that was
+subsequently removed as dead). Comparing coerced floats makes the redundancy
+real rather than assumed, so the removal is safe. The same coercion is why an
+oversized integer edge now reports "too large to convert" instead of "past
+Nyquist" — same exception type, different message.
 
 **Transposed edges raise rather than being sorted.** Silently reordering would
 filter a band the caller did not ask for and hide the mistake; #27 had just
@@ -126,7 +137,7 @@ both messages carry the offending value and the applicable Nyquist. Tests take
 the limit back out of the message and check that a band under it is accepted —
 the remedy is executed, not asserted (#28).
 
-**Breaking — eighteen behaviour changes**, enumerated by replaying every case
+**Breaking — twenty behaviour changes**, enumerated by replaying every case
 against a `main` worktree and against this branch, not from recall:
 
 *Ten move from a bare `ValueError` to `InvalidParameterError`* — negative,
@@ -136,9 +147,9 @@ declared Nyquist but not against the effective one at `window_step > 1`. Code
 catching `ValueError` around a bandpass call will stop catching these:
 `InvalidParameterError` inherits from `FilterError`, not from `ValueError`.
 
-*Four move from a bare `TypeError`* — a `window_step` or `overlap` that is
-non-numeric, or that registers as `numbers.Real` without a usable `__float__`.
-Both used to die on the subtraction before any validation ran.
+*Six move from a bare `TypeError`* — a band edge, `window_step` or `overlap`
+that is non-numeric, or that registers as `numbers.Real` without a usable
+`__float__`.
 
 *One moves from a bare `OverflowError`* — a `window_step` too large to convert
 to a float, which used to die on `sample_Hz / window_step`.
@@ -150,10 +161,13 @@ happily in unbounded integer arithmetic. These three are the only ones that
 turn a *succeeding* call into a failing one, and all three successes were
 returning wrong numbers.
 
-Two cases that look like they belong are deliberately absent, because both
-already raised `InvalidParameterError` before this change: a **NaN lower** edge
+Four cases that look like they belong are absent, because all four already
+raised `InvalidParameterError` before this change: a **NaN lower** edge
 (`max(nan, 0.4)` returns `nan`, which the pre-existing NaN-safe cutoff check
-caught) and a **degenerate sampling rate** (guarded since #24).
+caught), an **oversized integer** on either edge (the range check compared a
+big int against a float exactly), and a **degenerate sampling rate** (guarded
+since #24). The messages for the oversized-integer cases changed; the
+behaviour did not.
 
 This count was wrong three times before it was right — first thirteen including
 a case that was never breaking, then "eight" while enumerating ten, then fifteen
@@ -162,10 +176,10 @@ the instructive one: a hand-written list of a symmetric family keeps losing one
 half of it. So the enumeration is now *generated* as a product over both band
 edges and both windowing parameters, with only genuinely one-off cases written
 out, and `TestTheInvalidParameterContractIsComplete` asserts the total against
-the number printed here. Each case also carries the message fragment its own
-guard produces, and a further test cross-matches every fragment against every
-message so that a fragment satisfied by a different guard fails rather than
-passing quietly.
+the number printed here — it caught the drift to twenty by itself. Each case
+also carries the message fragment its own guard produces, and a further test
+cross-matches every fragment against every message so that a fragment satisfied
+by a different guard fails rather than passing quietly.
 
 A bad *upper* edge still reports the generic cutoff message rather than a
 band-specific one, since the delegated check runs first. The message carries

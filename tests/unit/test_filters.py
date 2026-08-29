@@ -400,6 +400,18 @@ class TestTheInvalidParameterContractIsComplete:
         'non-scalar': (np.array([0.1, 0.2]), {
             'hp_hz': (r"Band edge hp_hz=.*must be a real number", True),
             'lp_hz': (r"Band edge lp_hz=.*must be a real number", True)}),
+        # Already InvalidParameterError on main, where the range check caught
+        # it by comparing a big int against a float exactly. Now caught one
+        # step earlier by the coercion, so the message changed and the
+        # behaviour did not.
+        'too large': (10 ** 400, {
+            'hp_hz': (r"Band edge hp_hz=.*is too large", False),
+            'lp_hz': (r"Band edge lp_hz=.*is too large", False)}),
+        # A Real that cannot be coerced. The band edges take the same path the
+        # windowing parameters do, so this case has to exist on both.
+        'unconvertible': (_UnconvertibleReal(), {
+            'hp_hz': (r"Band edge hp_hz=.*could not be converted", True),
+            'lp_hz': (r"Band edge lp_hz=.*could not be converted", True)}),
     }
 
     #: value -> (fragment template, changed-by-this-fix)
@@ -441,7 +453,7 @@ class TestTheInvalidParameterContractIsComplete:
         return rows + cls.ONE_OFF
 
     #: The count quoted in the CHANGELOG entry for #30, asserted below.
-    BEHAVIOUR_CHANGES_CLAIMED = 18
+    BEHAVIOUR_CHANGES_CLAIMED = 20
 
     def test_the_contract_holds_for_every_known_bad_input(self):
         """Every known bad input raises, with the message its own guard makes."""
@@ -472,7 +484,9 @@ class TestTheInvalidParameterContractIsComplete:
         unchanged = [c for c in census if not c[3]]
 
         assert len(changed) == self.BEHAVIOUR_CHANGES_CLAIMED
-        assert sorted(c[0] for c in unchanged) == ["degenerate rate", "hp_hz NaN"]
+        assert sorted(c[0] for c in unchanged) == [
+            "degenerate rate", "hp_hz NaN", "hp_hz too large", "lp_hz too large",
+        ]
 
     def test_every_fragment_pins_its_own_case(self):
         """A fragment true of another case's message pins nothing.

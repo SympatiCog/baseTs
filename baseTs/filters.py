@@ -117,13 +117,18 @@ def _require_real(label: str, value) -> None:
             f"{label} must be a real number, got {value!r}")
 
 
-def _require_finite_real(label: str, value) -> float:
-    """Reject a non-real or non-finite parameter; return it as a float.
+def _as_real_float(label: str, value) -> float:
+    """Type-check a parameter and coerce it to a plain float.
 
-    Used for parameters that are arithmetic operands rather than comparands.
-    NaN survives every `<`/`>=` comparison as False, so a NaN reaching
-    `max(1, window_step - overlap)` is silently clamped rather than rejected -
-    the same order-dependent `max()` blindness this module had for band edges.
+    NaN and the infinities pass through: callers that must reject them say so
+    with their own check, so the message can name the actual rule broken.
+
+    Coercing matters beyond tidiness. numbers.Real is a registrable ABC, so an
+    accepted value can be an object whose comparisons are stateful - two
+    textually identical checks need not agree, and reasoning about whether one
+    of them is redundant becomes unsound. Every comparison downstream is
+    against the float this returns, which removes the question instead of
+    answering it.
     """
     _require_real(label, value)
 
@@ -149,6 +154,18 @@ def _require_finite_real(label: str, value) -> float:
         raise InvalidParameterError(
             f"{label} could not be converted to a float, got {value!r}") from exc
 
+    return number
+
+
+def _require_finite_real(label: str, value) -> float:
+    """Coerce, and additionally reject NaN and the infinities.
+
+    Used for parameters that are arithmetic operands rather than comparands.
+    NaN survives every `<`/`>=` comparison as False, so a NaN reaching
+    `max(1, window_step - overlap)` is silently clamped rather than rejected -
+    the same order-dependent `max()` blindness this module had for band edges.
+    """
+    number = _as_real_float(label, value)
     if not np.isfinite(number):
         raise InvalidParameterError(
             f"{label} must be a real number and finite, got {value!r}")
@@ -206,15 +223,24 @@ def validate_band_params(data: ArrayLike,
         limit at all - a caller retrying just under the quoted figure failed
         again.
 
-        The delegated call is what range-checks `lp_hz`, so the loop below
-        covers `hp_hz` only. An earlier revision looped over both edges; that
-        second `lp_hz` iteration was unreachable, since the delegated call
-        evaluates the identical predicate on the identical value against the
-        identical Nyquist and always raises first. Dead code implying a check
-        that never runs is worse than the asymmetry it was hiding: a `lp_hz`
-        out of range is reported with the generic cutoff message rather than a
-        band-specific one naming the edge. That message carries the offending
-        value and the real limit, so it is complete; only its wording differs.
+        The delegated call is what range-checks `lp_hz`, so the check below
+        covers `hp_hz` only. An earlier revision tested both edges again
+        afterwards; that second `lp_hz` test was unreachable, since the
+        delegated call evaluates the same predicate on the same value against
+        the same Nyquist and raises first.
+
+        "The same value" is doing real work in that sentence, and is why the
+        edges are coerced to float above rather than merely type-checked. A
+        `numbers.Real` virtual subclass may answer the identical comparison
+        differently on two calls, which would make the removed test reachable
+        after all - textually identical predicates are not observationally
+        identical over an ABC-registered domain. Comparing coerced floats makes
+        the redundancy real rather than assumed.
+
+        One visible asymmetry remains: an out-of-range `lp_hz` is reported with
+        the generic cutoff message rather than a band-specific one naming the
+        edge. That message carries the offending value and the real limit, so
+        it is complete; only its wording differs.
 
         Edges are checked before their ordering, so a band that is both
         out-of-range and out-of-order reports the out-of-range edge - the more
@@ -236,8 +262,11 @@ def validate_band_params(data: ArrayLike,
 
     # Scalar-ness before any comparison: `not (edge > 0)` on an array raises
     # numpy's ambiguity ValueError, which escapes this module's contract.
-    for name, edge in (('hp_hz', hp_hz), ('lp_hz', lp_hz)):
-        _require_real(f"Band edge {name}={edge!r}", edge)
+    # Coerced in the same breath, so every comparison below - and the one
+    # inside the delegated call - is against a plain float rather than against
+    # an object free to answer the same question twice, differently.
+    hp_hz = _as_real_float(f"Band edge hp_hz={hp_hz!r}", hp_hz)
+    lp_hz = _as_real_float(f"Band edge lp_hz={lp_hz!r}", lp_hz)
 
     effective_freq = validate_filter_params(data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
