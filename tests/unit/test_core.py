@@ -3,8 +3,10 @@ Unit tests for baseTs core functionality.
 """
 import pytest
 import numpy as np
+import pandas as pd
 from baseTs import baseTs
 from baseTs.core import from_df
+from baseTs.series import TimeSeriesData
 
 
 class TestBaseTsInitialization:
@@ -576,6 +578,18 @@ class TestFiltersRejectNanFreq:
         with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
             self._degenerate().bandpass_filter(0.1, 0.4)
 
+    def test_butterpass_at_raises(self):
+        """butterpass_at was absent from this family because it never ran (#27).
+
+        It reached filters.bandpass_filter with keywords that do not exist, so
+        it died on a TypeError long before any rate was validated. Delegating
+        to bandpass_at is what puts it behind validate_filter_params.
+        """
+        from baseTs.filters import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            self._degenerate().butterpass_at(0.1, 0.4)
+
     def test_healthy_series_still_filters(self):
         """The guard must not disturb an ordinary series."""
         ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
@@ -761,3 +775,295 @@ class TestInfoToleratesOddHistory:
         tsd.history = value
         tsd.info()
         assert capsys.readouterr().out  # rendered without raising
+
+
+class TestButterpassAt:
+    """butterpass_at must actually run, and must mean what its name says (#27).
+
+    It called filters.bandpass_filter with `highpass_freq`/`lowpass_freq`/
+    `sampling_freq`, none of which that function accepts, so every call raised
+    TypeError. Nothing in the suite or the docs referenced it, so the method
+    was dead from introduction. It is now an alias for bandpass_at, so it runs
+    the object plumbing the sibling filters already have tests for. It also
+    reaches the #24 rate guard, though that is not what the delegation buys -
+    the keyword rename the issue suggested would have reached it too, by
+    calling the same filters.bandpass_filter.
+    """
+
+    FS = 30.0
+    LOW_HZ = 0.2
+    HIGH_HZ = 5.0
+    HP, LP = 1.0, 10.0  # a band that keeps HIGH_HZ and rejects LOW_HZ
+
+    @classmethod
+    def _two_tone(cls):
+        t = np.arange(int(cls.FS * 50)) / cls.FS
+        data = (np.sin(2 * np.pi * cls.LOW_HZ * t)
+                + np.sin(2 * np.pi * cls.HIGH_HZ * t))
+        return baseTs(data, t, signal_name="TwoTone")
+
+    @staticmethod
+    def _amplitude_at(ts, hz):
+        """Amplitude of one tone by projection, so no FFT bin has to line up."""
+        t = np.asarray(ts.times, float)
+        values = np.asarray(ts.data, float)
+        return abs(2.0 / len(t) * np.sum(values * np.exp(-2j * np.pi * hz * t)))
+
+    def test_butterpass_at_runs(self):
+        """The issue's reproduction: this raised TypeError on every call."""
+        ts = baseTs(np.sin(np.arange(500) / 10.0), np.arange(500) / 10.0)
+
+        out = ts.butterpass_at(0.05, 0.4)
+
+        assert isinstance(out, baseTs)
+        assert len(out) == len(ts)
+
+    def test_hp_and_lp_are_not_transposed(self):
+        """The band kept must be [hp_freq, lp_freq], not its mirror image.
+
+        A positional signature this easy to swap needs the orientation pinned
+        against the signal rather than against the call. Note a transposition
+        fails here by raising rather than by tripping these assertions:
+        scipy.signal.butter rejects a descending Wn pair, so the call dies
+        before the amplitudes are measured. The measurements are still what
+        pin the caller-facing meaning, and they would catch a swap that some
+        future implementation sorted into range instead of rejecting.
+        """
+        ts = self._two_tone()
+        before_low = self._amplitude_at(ts, self.LOW_HZ)
+        before_high = self._amplitude_at(ts, self.HIGH_HZ)
+
+        out = ts.butterpass_at(self.HP, self.LP)
+
+        assert self._amplitude_at(out, self.HIGH_HZ) > 0.9 * before_high
+        assert self._amplitude_at(out, self.LOW_HZ) < 0.1 * before_low
+
+    def test_agrees_with_bandpass_at_sample_for_sample(self):
+        """An alias that computes something else is not an alias."""
+        ts = self._two_tone()
+
+        alias = ts.butterpass_at(self.HP, self.LP)
+        direct = ts.bandpass_at(hp_hz=self.HP, lp_hz=self.LP)
+
+        np.testing.assert_array_equal(
+            np.asarray(alias.data, float), np.asarray(direct.data, float)
+        )
+
+    @classmethod
+    def _seeded(cls):
+        """A source carrying a non-default value in every seedable metadata slot.
+
+        The first version of the metadata test below ran on a freshly built
+        series, so every field it compared was either a default or derived from
+        the index. An implementation that dropped `ts_offset`, `_lowess_fit`,
+        `is_interpolated` and the rest would have passed it unchanged - the
+        inputs did not span the axis the test was named for.
+
+        Census of TimeSeriesData._metadata, measured rather than asserted:
+        ten fields are seeded off their constructor default and survive this
+        call intact, and the other three (`is_filtered`, `last_process`,
+        `history`) change because changing them is the operation's own effect.
+        An earlier revision of this docstring claimed eleven and two. It was
+        wrong on both counts, and wrong for an instructive reason: the probe
+        behind it truncated each value to 26 characters, which hid the entry
+        `history` gains. `_freq_declaration` was the field it miscounted -
+        nothing here declared a rate, so that slot sat at None on both sides
+        and compared equal no matter what the implementation did with it.
+        """
+        ts = cls._two_tone()
+        ts.set_outlier_filter(frac=0.25)
+        ts.set_timestamp_offset(1.5)
+        ts.is_interpolated = True
+        ts.is_uniform_grid = True
+        ts.is_outlier_filtered = True
+        ts.lowess_fit = np.arange(len(ts), dtype=float)
+        ts.outlier_indices = np.array([3, 7, 11])
+        # Declared last, on purpose: set_timestamp_offset shifts the index and
+        # would expire a declaration made before it (#38), leaving a stale
+        # token that says nothing about propagation. Declared here the token
+        # is live, and filtering preserves the index, so it must still be live
+        # on the far side. The value deliberately disagrees with the 30 Hz the
+        # index derives, as at test_explicit_freq_still_honoured - a rate that
+        # matched would be indistinguishable from re-derivation.
+        ts.freq = 999.0
+        return ts
+
+    @staticmethod
+    def _comparable(ts, field):
+        """Render one metadata value so two objects' copies compare equal.
+
+        No default on the getattr: _initialize_default_metadata sets all
+        thirteen fields unconditionally, so absence is a real failure and must
+        raise. A sentinel would compare equal to itself and quietly pass a
+        field that had gone missing from both objects.
+
+        Tuples are normalised element-wise rather than by assuming a shape.
+        Two different ones live in _metadata - the (array, Index) stamps from
+        #20 and the (rate, token) declaration from #38 - and an earlier
+        revision handled only the first, so seeding a rate made this raise.
+        """
+        def norm(value):
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, pd.Index):
+                return value.tolist()
+            if isinstance(value, tuple):
+                return tuple(norm(v) for v in value)
+            if type(value).__name__ == 'LowessOutlierFilter':
+                return value.config  # frozen since #15, so == is meaningful
+            return value
+
+        return norm(getattr(ts, field))
+
+    #: The census quoted in _seeded's docstring, in
+    #: test_metadata_matches_bandpass_at's, and in the CHANGELOG entry for #27.
+    #: Named here so those three prose copies are pinned by a test rather than
+    #: maintained by hand - the previous revision asserted only that no field
+    #: was vacuous, which let a field move between these two groups without
+    #: anything noticing that the documented counts had gone stale.
+    PRESERVED_BY_OP = frozenset({
+        '_freq_declaration', 'signal_name', 'is_interpolated', 'is_uniform_grid',
+        'ts_offset', 'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
+        'is_outlier_filtered', 'outlier_filter',
+    })
+    CHANGED_BY_OP = frozenset({'is_filtered', 'last_process', 'history'})
+
+    def _census(self):
+        """Partition _metadata by what the call does to each field."""
+        source = self._seeded()
+        result = self._seeded().butterpass_at(self.HP, self.LP)
+        preserved, changed = set(), set()
+        for field in TimeSeriesData._metadata:
+            same = (self._comparable(result, field)
+                    == self._comparable(source, field))
+            (preserved if same else changed).add(field)
+        return source, preserved, changed
+
+    def test_metadata_census_is_exactly_what_the_docs_claim(self):
+        """The 10-preserved / 3-changed split is asserted, not just described.
+
+        Three places quote this census in prose - _seeded's docstring,
+        test_metadata_matches_bandpass_at's, and the CHANGELOG entry. Prose
+        drifts. If a future change made the call reset `is_interpolated`, say,
+        that field would move from one group to the other, every existing
+        assertion here would still pass, and all three descriptions would
+        quietly become wrong.
+
+        Splitting the sets by name rather than by count also means a field
+        added to TimeSeriesData._metadata fails here until someone decides
+        which group it belongs in.
+        """
+        _, preserved, changed = self._census()
+
+        assert self.PRESERVED_BY_OP | self.CHANGED_BY_OP == set(
+            TimeSeriesData._metadata
+        ), "a field was added to or removed from _metadata; classify it here"
+        assert preserved == self.PRESERVED_BY_OP
+        assert changed == self.CHANGED_BY_OP
+        assert (len(preserved), len(changed)) == (10, 3)  # the quoted numbers
+
+    def test_seeding_leaves_no_metadata_field_vacuous(self):
+        """No field may sit at its default and stay there across the call.
+
+        This is the guard the two preceding review rounds each found missing,
+        by hand, one field at a time. A field that starts at its constructor
+        default and is not touched by the operation compares equal to itself
+        in test_metadata_matches_bandpass_at no matter what the implementation
+        does with it - which is how `_freq_declaration` sat there unnoticed
+        through a rewrite that existed to close exactly that gap, and through
+        the docstring census written to prove it closed.
+
+        Asserting the census instead of describing it moves the check
+        somewhere it cannot be bypassed: a field added to
+        TimeSeriesData._metadata later fails here until someone either seeds
+        it in _seeded or establishes that this operation changes it. Prose
+        drifts from the code; this cannot.
+
+        A field earns its place by being discriminating in one of two ways -
+        it carries a seeded value the call must preserve, or the call changes
+        it. `is_filtered` is the second kind, and deliberately left at its
+        default of False on the source: seeding it True would make it
+        indistinguishable from the True the operation sets.
+        """
+        t = np.arange(int(self.FS * 50)) / self.FS
+        default = baseTs(np.sin(2 * np.pi * self.HIGH_HZ * t), t)
+        source = self._seeded()
+        result = self._seeded().butterpass_at(self.HP, self.LP)
+
+        vacuous = []
+        for field in TimeSeriesData._metadata:
+            at_default = (self._comparable(source, field)
+                          == self._comparable(default, field))
+            unchanged = (self._comparable(result, field)
+                         == self._comparable(source, field))
+            if at_default and unchanged:
+                vacuous.append(field)
+
+        assert not vacuous, (
+            f"{vacuous} sit at the constructor default and are not touched by "
+            f"the call, so test_metadata_matches_bandpass_at compares them "
+            f"equal for the wrong reason. Seed them in _seeded()."
+        )
+
+    @pytest.mark.parametrize("inplace", [False, True])
+    def test_metadata_matches_bandpass_at(self, inplace):
+        """Every metadata slot must come out where bandpass_at puts it.
+
+        Asserted against the sibling rather than against fixed values, so a
+        pre-existing propagation gap cannot fail this - it is an alias test,
+        not an audit of _create_new_with_data.
+
+        What this does NOT pin, stated plainly: it cannot tell delegation apart
+        from a correct hand-rolled reimplementation. Measured, not assumed - a
+        mutant restoring the old `self.copy()` / `newTs.data = ...` body with
+        the keywords merely renamed produces identical metadata on all thirteen
+        fields, both inplace modes. The two implementations are observably
+        equivalent; delegation is preferred for having one code path rather
+        than two, which is a maintainability claim and not a behavioral one.
+        What this test does catch is an implementation that drops metadata -
+        building a fresh baseTs from the filtered array, say.
+        """
+        alias = self._seeded().butterpass_at(self.HP, self.LP, inplace=inplace)
+        direct = self._seeded().bandpass_at(
+            hp_hz=self.HP, lp_hz=self.LP, inplace=inplace
+        )
+
+        for field in TimeSeriesData._metadata:
+            assert self._comparable(alias, field) == self._comparable(direct, field), (
+                f"metadata field {field!r} diverges from bandpass_at"
+            )
+        np.testing.assert_array_equal(alias.times, direct.times)
+        assert alias.freq == direct.freq
+
+    def test_records_the_bandpass_history_entry(self):
+        """Delegation is deliberate: the entry reads bandpass, not butterworth.
+
+        No caller can have seen the old `_btrp_` token - the method raised
+        before reaching it - and the sibling bandpass_filter alias already
+        records itself this way.
+        """
+        ts = self._two_tone()
+
+        out = ts.butterpass_at(self.HP, self.LP)
+
+        assert out.last_process == f"_bp_{self.LP}:{self.HP}Hz"
+        assert out.history[-1] == f"Bandpass filtered at {self.LP} Hz and {self.HP} Hz"
+
+    def test_inplace_mutates_and_returns_self(self):
+        ts = self._two_tone()
+        before_low = self._amplitude_at(ts, self.LOW_HZ)
+
+        out = ts.butterpass_at(self.HP, self.LP, inplace=True)
+
+        assert out is ts
+        assert ts.is_filtered is True
+        assert self._amplitude_at(ts, self.LOW_HZ) < 0.1 * before_low
+
+    def test_not_inplace_leaves_the_original_alone(self):
+        ts = self._two_tone()
+        before = np.asarray(ts.data, float).copy()
+
+        ts.butterpass_at(self.HP, self.LP)
+
+        np.testing.assert_array_equal(np.asarray(ts.data, float), before)
+        assert ts.is_filtered is False

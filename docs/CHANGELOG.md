@@ -54,6 +54,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `butterpass_at` runs at all (#27)
+
+### Fixed — `butterpass_at` raised `TypeError` on every call
+
+The method passed `highpass_freq`, `lowpass_freq` and `sampling_freq` to
+`filters.bandpass_filter`, whose parameters are `hp_hz`, `lp_hz` and
+`sample_Hz`. None of the three keywords existed, so the call never got past
+argument binding:
+
+```python
+ts.butterpass_at(0.05, 0.4)
+# TypeError: bandpass_filter() got an unexpected keyword argument 'highpass_freq'
+```
+
+It was dead from introduction. Nothing referenced it — no test, no example, no
+entry in this file or `API.md` — which is why nobody hit it.
+
+`butterpass_at` is now an alias for `bandpass_at`, joining `bandpass_filter`,
+which already delegates the same way. The method reaches
+`filters.bandpass_filter` for the first time, and therefore
+`validate_filter_params`, so a degenerate sampling rate now raises
+`InvalidParameterError` here as it does for every sibling filter (#24).
+
+**Delegation rather than the keyword rename the issue suggested, and what that
+is and is not worth:** it deletes fourteen lines of hand-rolled `self.copy()` /
+`newTs.data = ...` plumbing that bypassed `_create_new_with_data` and
+`_update_flags`, leaving one code path where there were two. It is *not* an
+output difference, and the entry does not claim one. Measured rather than
+assumed: a rename-only version produces identical metadata across all thirteen
+entries of `TimeSeriesData._metadata` on both `inplace` branches, on a source
+seeded off its constructor default in each of the ten slots the operation
+preserves — the remaining three (`is_filtered`, `last_process`, `history`) are
+changed by the operation itself. The rate guard above is likewise not a
+differentiator — the rename would have inherited it too, since it also calls
+`bandpass_filter`. The case for delegating is maintainability.
+
+**Not a breaking change for any caller of the public API, with one visible
+consequence:** history now records the `bandpass_at` entry (`"Bandpass filtered
+at ..."` / `_bp_{lp}:{hp}Hz`) rather than the old `"Butterworth pass
+filtered ..."` / `_btrp_{lp}:{hp}Hz`. Calling the shipped method could not
+reach the old token — it raised several lines before writing it. The one way
+to have observed it was to monkeypatch `baseTs.core.bandpass_filter` (the
+import-time binding; patching `baseTs.filters.bandpass_filter` has no effect)
+with a replacement shaped to accept `highpass_freq`/`lowpass_freq`/
+`sampling_freq` — parameter names that only ever existed as an artifact of this
+bug.
+
 ## [Unreleased] — the spectral family rejects non-finite *data* (#28)
 
 ### Fixed — `get_peak_freq` no longer returns a confident wrong answer on gappy data

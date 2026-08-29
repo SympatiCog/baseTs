@@ -273,6 +273,27 @@ Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 bandpassed = ts.bandpass_filter(low_cutoff=0.1, high_cutoff=0.4)
 ```
 
+### `butterpass_at(hp_freq, lp_freq, inplace=False)`
+
+Apply a band-pass Butterworth filter. Alias for `bandpass_at()`.
+
+**Parameters:**
+- `hp_freq` (float): High-pass cutoff frequency in Hz (passed to `bandpass_at` as `hp_hz`)
+- `lp_freq` (float): Low-pass cutoff frequency in Hz (passed to `bandpass_at` as `lp_hz`)
+- `inplace` (bool, optional): If True, modifies the existing object. Default: False
+
+**Returns:**
+- `baseTs`: New filtered baseTs object
+
+**Example:**
+```python
+# Keep 1-10 Hz
+banded = ts.butterpass_at(hp_freq=1.0, lp_freq=10.0)
+```
+
+**Note:** Prior to the #27 fix this method raised `TypeError` on every call, so
+it has no legacy behavior to preserve. History records the `bandpass_at` entry.
+
 ### `notch_filter(freq, order=4)`
 
 Apply notch filter to remove specific frequency. Alias for `notch_at()`.

@@ -1000,32 +1000,28 @@ class baseTs(TimeSeriesData):
 
     def butterpass_at(self, hp_freq: float, lp_freq: float, inplace: bool = False) -> "baseTs":
         """
-        Apply a Butterworth pass filter to the signal at specified low-pass and high-pass frequencies.
+        Apply a Butterworth bandpass filter (alias for bandpass_at).
 
         Args:
-            hp_freq (float): High-pass frequency.
-            lp_freq (float): Low-pass frequency.
-            inplace (bool, optional): If True, modifies existing object. Otherwise returns a new filtered data. Defaults to False.
+            hp_freq: High-pass cutoff frequency in Hz (maps to bandpass_at's hp_hz)
+            lp_freq: Low-pass cutoff frequency in Hz (maps to bandpass_at's lp_hz)
+            inplace: If True, modifies existing object. Otherwise returns new object.
 
         Returns:
-            baseTs: Butterworth pass filtered data
+            Bandpass filtered baseTs object
+
+        Notes:
+            This delegated body replaces one that passed keyword arguments
+            filters.bandpass_filter does not accept, so every call raised
+            TypeError (#27). History therefore records the bandpass_at entry:
+            calling the shipped method could not reach the old "_btrp_" token,
+            and the sibling bandpass_filter alias already records itself this
+            way. See docs/CHANGELOG.md for the one contrived way the old token
+            was reachable.
         """
-        filt = bandpass_filter(self.data, highpass_freq=hp_freq, lowpass_freq=lp_freq, sampling_freq=self.freq)
-        hist_msg = f"Butterworth pass filtered at {hp_freq} Hz and {lp_freq} Hz"
-        last_process = "_btrp_" + str(lp_freq) + ":" + str(hp_freq) + "Hz"
-        if inplace is True:
-            self.data = filt
-            self.is_filtered = True
-            self._update_history_and_process(hist_msg, last_process)
-            return self
-        else:
-            newTs = self.copy()
-            newTs.data = filt
-            newTs.is_filtered = True
-            newTs._update_history_and_process(hist_msg, last_process)   
-            return newTs
-        
-    def set_outlier_filter(self, 
+        return self.bandpass_at(hp_hz=hp_freq, lp_hz=lp_freq, inplace=inplace)
+
+    def set_outlier_filter(self,
                         params: dict = None,
                         z_threshold: Optional[float] = None,
                         frac: Optional[float] = None,
