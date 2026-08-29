@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from baseTs import baseTs
 from baseTs.core import from_df
+from baseTs.series import TimeSeriesData
 
 
 class TestBaseTsInitialization:
@@ -914,6 +915,53 @@ class TestButterpassAt:
 
         return norm(getattr(ts, field))
 
+    #: The census quoted in _seeded's docstring, in
+    #: test_metadata_matches_bandpass_at's, and in the CHANGELOG entry for #27.
+    #: Named here so those three prose copies are pinned by a test rather than
+    #: maintained by hand - the previous revision asserted only that no field
+    #: was vacuous, which let a field move between these two groups without
+    #: anything noticing that the documented counts had gone stale.
+    PRESERVED_BY_OP = frozenset({
+        '_freq_declaration', 'signal_name', 'is_interpolated', 'is_uniform_grid',
+        'ts_offset', 'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
+        'is_outlier_filtered', 'outlier_filter',
+    })
+    CHANGED_BY_OP = frozenset({'is_filtered', 'last_process', 'history'})
+
+    def _census(self):
+        """Partition _metadata by what the call does to each field."""
+        source = self._seeded()
+        result = self._seeded().butterpass_at(self.HP, self.LP)
+        preserved, changed = set(), set()
+        for field in TimeSeriesData._metadata:
+            same = (self._comparable(result, field)
+                    == self._comparable(source, field))
+            (preserved if same else changed).add(field)
+        return source, preserved, changed
+
+    def test_metadata_census_is_exactly_what_the_docs_claim(self):
+        """The 10-preserved / 3-changed split is asserted, not just described.
+
+        Three places quote this census in prose - _seeded's docstring,
+        test_metadata_matches_bandpass_at's, and the CHANGELOG entry. Prose
+        drifts. If a future change made the call reset `is_interpolated`, say,
+        that field would move from one group to the other, every existing
+        assertion here would still pass, and all three descriptions would
+        quietly become wrong.
+
+        Splitting the sets by name rather than by count also means a field
+        added to TimeSeriesData._metadata fails here until someone decides
+        which group it belongs in.
+        """
+        _, preserved, changed = self._census()
+
+        assert self.PRESERVED_BY_OP | self.CHANGED_BY_OP == set(
+            TimeSeriesData._metadata
+        ), "a field was added to or removed from _metadata; classify it here"
+        assert preserved == self.PRESERVED_BY_OP
+        assert changed == self.CHANGED_BY_OP
+        assert (len(preserved), len(changed)) == (10, 3)  # the quoted numbers
+
     def test_seeding_leaves_no_metadata_field_vacuous(self):
         """No field may sit at its default and stay there across the call.
 
@@ -937,8 +985,6 @@ class TestButterpassAt:
         default of False on the source: seeding it True would make it
         indistinguishable from the True the operation sets.
         """
-        from baseTs.series import TimeSeriesData
-
         t = np.arange(int(self.FS * 50)) / self.FS
         default = baseTs(np.sin(2 * np.pi * self.HIGH_HZ * t), t)
         source = self._seeded()
@@ -977,8 +1023,6 @@ class TestButterpassAt:
         What this test does catch is an implementation that drops metadata -
         building a fresh baseTs from the filtered array, say.
         """
-        from baseTs.series import TimeSeriesData
-
         alias = self._seeded().butterpass_at(self.HP, self.LP, inplace=inplace)
         direct = self._seeded().bandpass_at(
             hp_hz=self.HP, lp_hz=self.LP, inplace=inplace
