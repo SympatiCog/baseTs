@@ -126,7 +126,18 @@ def _require_finite_real(label: str, value) -> float:
     the same order-dependent `max()` blindness this module had for band edges.
     """
     _require_real(label, value)
-    number = float(value)
+
+    # A Python int is a Real of unbounded width, so it passes the membership
+    # test and then dies in the conversion: float(10**400) raises
+    # OverflowError. Unwrapped, that escapes the contract exactly as the bare
+    # TypeError this helper exists to prevent - the same class of hole, one
+    # step further in.
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise InvalidParameterError(
+            f"{label} is too large to convert to a float, got {value!r}") from exc
+
     if not np.isfinite(number):
         raise InvalidParameterError(
             f"{label} must be a real number and finite, got {value!r}")

@@ -173,6 +173,34 @@ class TestWindowingParamsAreGuardedLikeTheBandEdges:
         ("None overlap", dict(overlap=None)),
     ]
 
+    OVERSIZED = [
+        ("huge int overlap", dict(overlap=10 ** 400)),
+        ("huge int window_step", dict(window_step=10 ** 400)),
+    ]
+
+    @pytest.mark.parametrize(
+        "label,kwargs", OVERSIZED, ids=[c[0] for c in OVERSIZED]
+    )
+    def test_an_int_too_large_for_float_is_rejected_not_raised_through(self, label, kwargs):
+        """`float(10**400)` raises OverflowError, which is not our contract.
+
+        A Python int is a numbers.Real, so it passes the membership test and
+        then dies on the conversion. The first draft of this guard did the
+        conversion unwrapped, which turned `overlap=10**400` from silently
+        succeeding on main - `max(1, 1 - 10**400)` is fine in int arithmetic -
+        into a bare OverflowError. Making a wrong answer into an exception is
+        an improvement; making it into an exception outside the contract this
+        change exists to restore is not.
+
+        `window_step=10**400` already raised OverflowError on main, through
+        `sample_Hz / window_step`. The guard claimed to close that class and
+        did not until now.
+        """
+        with pytest.raises(InvalidParameterError, match="is too large to convert"):
+            bandpass_filter(
+                self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS, **kwargs
+            )
+
     @pytest.mark.parametrize(
         "label,kwargs", BAD_WINDOWING, ids=[c[0] for c in BAD_WINDOWING]
     )
@@ -327,34 +355,80 @@ class TestTheInvalidParameterContractIsComplete:
     def _data(cls):
         return np.sin(np.arange(500) / 10.0)
 
+    #: (label, kwargs, message fragment, changed by this fix)
+    #:
+    #: The fourth field is what makes this a census rather than a list. An
+    #: earlier revision asserted only that each case raises, which stays green
+    #: however the breaking-change enumeration drifts - it could not tell a
+    #: case this fix changed from one that already behaved. The `main` column
+    #: is frozen history (main = pre-#30), so recording it as data is a fact,
+    #: not a cached value that can go stale.
+    #:
+    #: The fragment is what makes each case pin its own check. Type-only
+    #: assertions cannot tell the intended guard firing from some other guard
+    #: that also raises InvalidParameterError.
     BAD_INPUTS = [
-        ("lower: negative", dict(hp_hz=-1.0, lp_hz=0.4)),
-        ("lower: zero", dict(hp_hz=0.0, lp_hz=0.4)),
-        ("lower: NaN", dict(hp_hz=np.nan, lp_hz=0.4)),
-        ("lower: non-scalar", dict(hp_hz=np.array([0.1, 0.2]), lp_hz=0.4)),
-        ("upper: negative", dict(hp_hz=0.1, lp_hz=-0.4)),
-        ("upper: zero", dict(hp_hz=0.1, lp_hz=0.0)),
-        ("upper: NaN", dict(hp_hz=0.1, lp_hz=np.nan)),
-        ("upper: non-scalar", dict(hp_hz=0.1, lp_hz=np.array([0.4, 0.5]))),
-        ("edges transposed", dict(hp_hz=0.4, lp_hz=0.1)),
-        ("edges equal", dict(hp_hz=0.2, lp_hz=0.2)),
-        ("upper past effective Nyquist",
-         dict(hp_hz=0.5, lp_hz=4.0, window_step=4)),
-        ("window_step NaN", dict(hp_hz=0.1, lp_hz=0.4, window_step=np.nan)),
-        ("window_step non-numeric",
-         dict(hp_hz=0.1, lp_hz=0.4, window_step="1")),
-        ("overlap non-numeric", dict(hp_hz=0.1, lp_hz=0.4, overlap=None)),
-        ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan)),
+        ("lower: negative", dict(hp_hz=-1.0, lp_hz=0.4), "Band edge hp_hz", True),
+        ("lower: zero", dict(hp_hz=0.0, lp_hz=0.4), "Band edge hp_hz", True),
+        # Already InvalidParameterError before this fix: max(nan, 0.4) returns
+        # nan, which the pre-existing NaN-safe cutoff check caught.
+        ("lower: NaN", dict(hp_hz=np.nan, lp_hz=0.4), "Band edge hp_hz", False),
+        ("lower: non-scalar", dict(hp_hz=np.array([0.1, 0.2]), lp_hz=0.4),
+         "Band edge hp_hz", True),
+        ("upper: negative", dict(hp_hz=0.1, lp_hz=-0.4), "Cutoff frequency", True),
+        ("upper: zero", dict(hp_hz=0.1, lp_hz=0.0), "Cutoff frequency", True),
+        ("upper: NaN", dict(hp_hz=0.1, lp_hz=np.nan), "Cutoff frequency", True),
+        ("upper: non-scalar", dict(hp_hz=0.1, lp_hz=np.array([0.4, 0.5])),
+         "Band edge lp_hz", True),
+        ("edges transposed", dict(hp_hz=0.4, lp_hz=0.1),
+         "Band edges out of order", True),
+        ("edges equal", dict(hp_hz=0.2, lp_hz=0.2),
+         "Band edges out of order", True),
+        ("upper past effective Nyquist", dict(hp_hz=0.5, lp_hz=4.0, window_step=4),
+         "Cutoff frequency", True),
+        ("window_step NaN", dict(hp_hz=0.1, lp_hz=0.4, window_step=np.nan),
+         "window_step must be a real number", True),
+        ("window_step non-numeric", dict(hp_hz=0.1, lp_hz=0.4, window_step="1"),
+         "window_step must be a real number", True),
+        ("overlap non-numeric", dict(hp_hz=0.1, lp_hz=0.4, overlap=None),
+         "overlap must be a real number", True),
+        ("overlap too large", dict(hp_hz=0.1, lp_hz=0.4, overlap=10 ** 400),
+         "overlap is too large", True),
+        ("window_step too large", dict(hp_hz=0.1, lp_hz=0.4, window_step=10 ** 400),
+         "window_step is too large", True),
+        # Already InvalidParameterError before this fix, via the pre-existing
+        # rate guard from #24.
+        ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan),
+         "Invalid sampling frequency", False),
     ]
 
+    #: The count quoted in the CHANGELOG entry for #30, asserted below.
+    BEHAVIOUR_CHANGES_CLAIMED = 15
+
     @pytest.mark.parametrize(
-        "label,kwargs", BAD_INPUTS, ids=[c[0] for c in BAD_INPUTS]
+        "label,kwargs,fragment,changed",
+        BAD_INPUTS,
+        ids=[c[0] for c in BAD_INPUTS],
     )
-    def test_the_contract_holds_for_every_known_bad_input(self, label, kwargs):
+    def test_the_contract_holds_for_every_known_bad_input(
+        self, label, kwargs, fragment, changed
+    ):
         kwargs = {'sample_Hz': self.FS, **kwargs}
 
-        with pytest.raises(InvalidParameterError):
+        with pytest.raises(InvalidParameterError, match=fragment):
             bandpass_filter(self._data(), **kwargs)
+
+    def test_the_breaking_change_count_matches_the_changelog(self):
+        """The number in the prose is asserted against the table.
+
+        Adding a case without classifying it, or reclassifying one, now fails
+        here instead of quietly making a CHANGELOG paragraph wrong.
+        """
+        changed = [c for c in self.BAD_INPUTS if c[3]]
+        unchanged = [c for c in self.BAD_INPUTS if not c[3]]
+
+        assert len(changed) == self.BEHAVIOUR_CHANGES_CLAIMED
+        assert [c[0] for c in unchanged] == ["lower: NaN", "degenerate rate"]
 
 
 class TestEveryBandpassEntryPointRejectsABadLowerEdge:

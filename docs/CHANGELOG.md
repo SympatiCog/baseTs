@@ -126,7 +126,7 @@ both messages carry the offending value and the applicable Nyquist. Tests take
 the limit back out of the message and check that a band under it is accepted —
 the remedy is executed, not asserted (#28).
 
-**Breaking — thirteen behaviour changes**, enumerated by running each case
+**Breaking — fifteen behaviour changes**, enumerated by running each case
 against `main` and against this branch rather than from recall:
 
 *Ten move from a bare `ValueError` to `InvalidParameterError`* — negative,
@@ -139,18 +139,30 @@ catching `ValueError` around a bandpass call will stop catching these:
 *Two move from a bare `TypeError`* — a non-numeric `window_step` or `overlap`,
 which used to die on the subtraction before any validation ran.
 
-*One moves from no error at all* — a NaN `window_step` or `overlap`, which used
-to be clamped to 1 by `max()` and filter at the wrong rate, silently. This is
-the only one of the thirteen that changes a *successful* call into a failing
-one, and the success it replaces was returning wrong numbers.
+*One moves from a bare `OverflowError`* — a `window_step` too large to convert
+to a float, which used to die on `sample_Hz / window_step`.
 
-A **NaN lower** edge is deliberately *not* in that list: `max(nan, 0.4)`
-returns `nan`, which the pre-existing NaN-safe cutoff check already caught, so
-it raised `InvalidParameterError` before this change too. An earlier draft of
-this entry listed it as breaking, omitted several cases that genuinely are, and
-gave a count that matched neither. The list is now pinned by
-`test_the_contract_holds_for_every_known_bad_input`, so it cannot drift from
-the code the way prose does.
+*Two move from no error at all* — a NaN `window_step` or `overlap`, clamped to
+1 by `max()` and filtered at a rate the caller never asked for; and an
+oversized integer `overlap`, which `max(1, window_step - overlap)` evaluated
+happily in unbounded integer arithmetic. These are the only two of the fifteen
+that turn a *succeeding* call into a failing one, and both successes were
+returning wrong numbers.
+
+Two cases that look like they belong on that list are deliberately absent,
+because both already raised `InvalidParameterError` before this change: a
+**NaN lower** edge (`max(nan, 0.4)` returns `nan`, which the pre-existing
+NaN-safe cutoff check caught) and a **degenerate sampling rate** (guarded since
+#24).
+
+An earlier draft of this entry listed the NaN lower edge as breaking, omitted
+several cases that genuinely are, and gave a count matching neither; a first
+correction then said "eight" while enumerating ten. The list and its count are
+now asserted by `TestTheInvalidParameterContractIsComplete` — each case carries
+the message fragment its own guard produces and a flag for whether this change
+altered it, and a separate test checks the total against the number written
+here. Adding a case without classifying it fails a test rather than quietly
+making this paragraph wrong.
 
 A bad *upper* edge still reports the generic cutoff message rather than a
 band-specific one, since the delegated check runs first. The message carries
