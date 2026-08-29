@@ -914,6 +914,51 @@ class TestButterpassAt:
 
         return norm(getattr(ts, field))
 
+    def test_seeding_leaves_no_metadata_field_vacuous(self):
+        """No field may sit at its default and stay there across the call.
+
+        This is the guard the two preceding review rounds each found missing,
+        by hand, one field at a time. A field that starts at its constructor
+        default and is not touched by the operation compares equal to itself
+        in test_metadata_matches_bandpass_at no matter what the implementation
+        does with it - which is how `_freq_declaration` sat there unnoticed
+        through a rewrite that existed to close exactly that gap, and through
+        the docstring census written to prove it closed.
+
+        Asserting the census instead of describing it moves the check
+        somewhere it cannot be bypassed: a field added to
+        TimeSeriesData._metadata later fails here until someone either seeds
+        it in _seeded or establishes that this operation changes it. Prose
+        drifts from the code; this cannot.
+
+        A field earns its place by being discriminating in one of two ways -
+        it carries a seeded value the call must preserve, or the call changes
+        it. `is_filtered` is the second kind, and deliberately left at its
+        default of False on the source: seeding it True would make it
+        indistinguishable from the True the operation sets.
+        """
+        from baseTs.series import TimeSeriesData
+
+        t = np.arange(int(self.FS * 50)) / self.FS
+        default = baseTs(np.sin(2 * np.pi * self.HIGH_HZ * t), t)
+        source = self._seeded()
+        result = self._seeded().butterpass_at(self.HP, self.LP)
+
+        vacuous = []
+        for field in TimeSeriesData._metadata:
+            at_default = (self._comparable(source, field)
+                          == self._comparable(default, field))
+            unchanged = (self._comparable(result, field)
+                         == self._comparable(source, field))
+            if at_default and unchanged:
+                vacuous.append(field)
+
+        assert not vacuous, (
+            f"{vacuous} sit at the constructor default and are not touched by "
+            f"the call, so test_metadata_matches_bandpass_at compares them "
+            f"equal for the wrong reason. Seed them in _seeded()."
+        )
+
     @pytest.mark.parametrize("inplace", [False, True])
     def test_metadata_matches_bandpass_at(self, inplace):
         """Every metadata slot must come out where bandpass_at puts it.
