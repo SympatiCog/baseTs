@@ -267,6 +267,11 @@ Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 **Returns:**
 - `baseTs`: New filtered baseTs object
 
+**Raises:**
+- `InvalidParameterError`: If either band edge is not positive and below the Nyquist
+  frequency, or if `low_cutoff` is not strictly less than `high_cutoff`. Both edges are
+  checked; before the #30 fix only one was, and which one depended on argument order.
+
 **Example:**
 ```python
 # Extract specific frequency band

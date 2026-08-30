@@ -54,6 +54,173 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — both band edges are validated (#30)
+
+### Fixed — `bandpass_filter` checked one edge, and argument order picked which
+
+Validation was:
+
+```python
+validate_filter_params(data, sample_Hz, max(hp_hz, lp_hz), 3)
+```
+
+One of the two edges, never both. And `max()` is order-dependent on NaN —
+`max(0.1, nan)` returns `0.1`, so a NaN *upper* edge was silently discarded,
+while `max(nan, 0.4)` returns `nan` and was caught. The same bad argument was
+accepted or rejected depending on which parameter it was passed as.
+
+So a negative, zero or NaN lower edge reached scipy and died there:
+
+```python
+ts.bandpass_filter(-1.0, 0.4)   # ValueError: filter critical frequencies must be greater than 0
+ts.bandpass_filter(0.1, np.nan) # ValueError: Wn[0] must be less than Wn[1]
+ts.bandpass_filter(0.4, 0.1)    # ValueError: Wn[0] must be less than Wn[1]
+```
+
+Each escaped this module's `InvalidParameterError` contract, and each pointed
+at scipy's `Wn` internals rather than at the argument the caller got wrong.
+
+A new `filters.validate_band_params` is now the single door for two-edged
+filters. It type-checks both edges, coerces them to plain floats, checks each
+positive and below Nyquist (NaN-safely, via `not (x > 0)`), then checks the
+ordering relation explicitly, naming both values. Data, rate and order are
+delegated to `validate_filter_params` rather than re-derived — local copies of
+a shared check drifting apart is what #28 cleaned up in the spectral family.
+
+**The coercion is load-bearing, not tidiness.** `numbers.Real` is a
+*registrable* ABC, so an accepted value can be an object whose comparisons are
+stateful — able to answer `>= nyquist` with `False` once and `True` the next
+time. That makes "these two textually identical predicates are redundant"
+unsound as a claim about the accepted domain, and the upper edge genuinely is
+checked twice (once by the delegated call, once by the local rule that was
+subsequently removed as dead). Comparing coerced floats makes the redundancy
+real rather than assumed, so the removal is safe. The same coercion is why an
+oversized integer edge now reports "too large to convert" instead of "past
+Nyquist" — same exception type, different message.
+
+**The validated value is now the one that gets filtered.** `validate_band_params`
+returns `(effective_freq, hp_hz, lp_hz)` rather than the rate alone, and
+`bandpass_filter` uses all three. Previously the coerced edges were local to the
+validator, so `signal.butter(3, [hp_hz/nyq, lp_hz/nyq])` still divided the
+caller's original objects — meaning an edge could be validated as one value and
+filtered as another. A `numbers.Real` with no `__truediv__` died there with a
+bare `TypeError`; one whose `__truediv__` disagreed with its `__float__`
+produced a bare scipy `ValueError` about `Wn`, past every guard. Five review
+rounds audited this validator's internals and none looked at the line that
+consumes its result: enumerating the checks inside a function is not the same
+as enumerating the surface.
+
+**Fixed for `bandpass_filter` only — one of four entry points.** `lowpass_filter`,
+`highpass_filter` and `notch_filter` share `validate_filter_params`, which
+range-checks `cutoff_freq` without coercing it and returns only the normalised
+rate, so all three still divide the caller's original object. A `Decimal`
+cutoff raises a bare `TypeError` in each. That is filed as #49 rather than
+fixed here, to keep this change to its stated scope — but it is named here
+because the paragraph above would otherwise read as closing the defect class
+outright, and it does not.
+
+**Transposed edges raise rather than being sorted.** Silently reordering would
+filter a band the caller did not ask for and hide the mistake; #27 had just
+shown how easy this argument order is to get wrong.
+
+**`Decimal` is accepted as a band edge**, alongside everything registered under
+`numbers.Real`. It is registered under `numbers.Number` only, so the first
+version of the type guard rejected a `Decimal` edge while
+`validate_sampling_freq` deliberately accepted a `Decimal` *rate* — one type,
+two answers, in the same call.
+
+**Nyquist now comes from the rate the filter actually uses.** The edges are
+normalised by `effective_fs = sample_Hz / max(1, window_step - overlap)`, but
+validation compared against `sample_Hz / 2`. At `window_step=4`, `lp_hz=4.0`
+passed validation and then died inside scipy. Validation moved after the
+effective rate is computed. This is only reachable through a direct
+`filters.bandpass_filter` call — `bandpass_at` does not expose `window_step`
+or `overlap`, and nothing in the package, tests or docs passes them.
+
+**`window_step` and `overlap` are guarded the same way.** `max(1, window_step -
+overlap)` sat one line below `max(hp_hz, lp_hz)` and had the identical flaw:
+`max(1, nan)` returns `1`, so a NaN window step was silently clamped and the
+filter ran at a rate the caller never asked for — no error, just wrong output.
+A string or `None` died on the subtraction with a bare `TypeError` before any
+validation ran. Both operands are now checked before the arithmetic. Fixing one
+`max()` and shipping the other, in a change whose subject is this defect class,
+was not a defensible place to stop.
+
+What this does *not* cover, said plainly: the two operands are checked for type
+and finiteness, not for their relationship. `overlap >= window_step` still
+clamps to 1 and filters at the full declared rate, and a negative `overlap`
+still inflates the effective rate above the real one — both silently. Neither
+is reachable through `bandpass_at`, which does not expose either parameter.
+
+**Non-scalar band edges are rejected rather than escaping.** `not (edge > 0)`
+on an array raises numpy's "truth value ... is ambiguous" `ValueError`, so the
+contract had a hole in it on `main` and would have kept it. Membership is
+tested against `numbers.Real`, deliberately not by attempting `float(value)`:
+`float(np.array([0.1]))` returns `0.1` on numpy 1.x and raises on 2.x, so a
+`float()`-based guard would accept a one-element array on one CI leg and reject
+it on another with the suite green either way — the trap PR #26 hit.
+
+**Rejection messages now name the limit, not just the rule.** The shared
+cutoff message stated no number at all. Combined with checking `lp_hz` against
+the *declared* Nyquist, that sent a caller round the loop twice: at
+`sample_Hz=10, window_step=4` an `lp_hz` of 6.0 was rejected against a limit of
+5.0 that was never printed, and a reasonable retry at 2.0 failed again against
+the real limit of 1.25. The delegated call now receives the effective rate, and
+both messages carry the offending value and the applicable Nyquist. Tests take
+the limit back out of the message and check that a band under it is accepted —
+the remedy is executed, not asserted (#28).
+
+**Breaking — twenty-one behaviour changes**, enumerated by replaying every case
+against a `main` worktree and against this branch, not from recall:
+
+*Eleven move from a bare `ValueError` to `InvalidParameterError`* — negative,
+zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
+edge; transposed edges; equal edges; an upper edge valid against the declared
+Nyquist but not against the effective one at `window_step > 1`; and an exact
+type (`Fraction`, `Decimal`) whose value is below Nyquist but whose nearest
+double is not. Code catching `ValueError` around a bandpass call will stop
+catching these: `InvalidParameterError` inherits from `FilterError`, not from
+`ValueError`.
+
+*Six move from a bare `TypeError`* — a band edge, `window_step` or `overlap`
+that is non-numeric, or that registers as `numbers.Real` without a usable
+`__float__`.
+
+*One moves from a bare `OverflowError`* — a `window_step` too large to convert
+to a float, which used to die on `sample_Hz / window_step`.
+
+*Three move from no error at all* — a NaN `window_step` or `overlap`, clamped
+to 1 by `max()` and filtered at a rate the caller never asked for; and an
+oversized integer `overlap`, which `max(1, window_step - overlap)` evaluated
+happily in unbounded integer arithmetic. These three are the only ones that
+turn a *succeeding* call into a failing one, and all three successes were
+returning wrong numbers.
+
+Four cases that look like they belong are absent, because all four already
+raised `InvalidParameterError` before this change: a **NaN lower** edge
+(`max(nan, 0.4)` returns `nan`, which the pre-existing NaN-safe cutoff check
+caught), an **oversized integer** on either edge (the range check compared a
+big int against a float exactly), and a **degenerate sampling rate** (guarded
+since #24). The messages for the oversized-integer cases changed; the
+behaviour did not.
+
+This count was wrong three times before it was right — first thirteen including
+a case that was never breaking, then "eight" while enumerating ten, then fifteen
+with `overlap=NaN` missing while `window_step=NaN` was present. The last miss is
+the instructive one: a hand-written list of a symmetric family keeps losing one
+half of it. So the enumeration is now *generated* as a product over both band
+edges and both windowing parameters, with only genuinely one-off cases written
+out, and `TestTheInvalidParameterContractIsComplete` asserts the total against
+the number printed here — it caught the drift to twenty by itself. Each case
+also carries the message fragment its own guard produces, and a further test
+cross-matches every fragment against every message so that a fragment satisfied
+by a different guard fails rather than passing quietly.
+
+A bad *upper* edge still reports the generic cutoff message rather than a
+band-specific one, since the delegated check runs first. The message carries
+the offending value and the real limit, so it is complete — only its wording
+differs. Pinned by tests rather than left to chance.
+
 ## [Unreleased] — `butterpass_at` runs at all (#27)
 
 ### Fixed — `butterpass_at` raised `TypeError` on every call
