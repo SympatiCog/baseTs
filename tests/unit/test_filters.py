@@ -3,6 +3,7 @@ Unit tests for baseTs.filters parameter validation.
 """
 import numbers
 import re
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -24,6 +25,35 @@ class _UnconvertibleReal:
     - one of the conversion errors an `except OverflowError` alone let escape
     the InvalidParameterError contract.
     """
+
+
+@numbers.Real.register
+class _DeclaresOneHz:
+    """A Real that converts to 1.0 and supports nothing else.
+
+    Registers, coerces, passes every range check - and then has no
+    __truediv__, so it used to die in signal.butter past all validation.
+    """
+
+    def __float__(self):
+        return 1.0
+
+
+@numbers.Real.register
+class _LiesAboutDivision:
+    """Converts to 1.0 but divides to something else entirely.
+
+    The nastier half of the same hole: validation saw 1.0, scipy saw a
+    near-Nyquist Wn, and the mismatch surfaced as a bare scipy ValueError
+    about `Wn` internals - the exact failure mode this whole change exists to
+    remove.
+    """
+
+    def __float__(self):
+        return 1.0
+
+    def __truediv__(self, other):
+        return 0.999999
 
 
 class TestBandEdgeValidation:
@@ -349,6 +379,61 @@ class TestRejectionMessagesNameTheRealLimit:
         assert self._limit_from(str(excinfo.value)) == pytest.approx(5.0)
 
 
+class TestTheValidatedValueIsTheOneThatGetsFiltered:
+    """Validation is worthless if the filter then uses a different value.
+
+    Five review rounds audited validate_band_params' internals. None looked at
+    the line that consumes the result: `signal.butter(3, [hp_hz/nyq,
+    lp_hz/nyq])` divided the caller's *original* object, because the coerced
+    edges were local to the validator and never came back. So an edge could be
+    validated as 1.0 and then divide to something else entirely - or fail to
+    divide at all - and the call died past every guard, with a bare exception.
+
+    Enumerating the call sites inside a function is not the same as
+    enumerating the surface: the escape was one line outside it.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    def test_an_edge_with_no_truediv_is_still_filtered(self):
+        """It declared float() == 1.0, so 1.0 is what the filter must use."""
+        out = bandpass_filter(
+            self._data(), hp_hz=_DeclaresOneHz(), lp_hz=4.0, sample_Hz=self.FS
+        )
+
+        assert np.all(np.isfinite(out))
+
+    def test_a_lying_truediv_cannot_change_the_band(self):
+        """The value validated is the value filtered, whatever __truediv__ says."""
+        lying = bandpass_filter(
+            self._data(), hp_hz=_LiesAboutDivision(), lp_hz=4.0, sample_Hz=self.FS
+        )
+        honest = bandpass_filter(
+            self._data(), hp_hz=1.0, lp_hz=4.0, sample_Hz=self.FS
+        )
+
+        np.testing.assert_array_equal(lying, honest)
+
+    def test_an_exact_type_filters_as_its_float(self):
+        """Fraction and Decimal are legitimate Reals, not adversarial ones."""
+        from decimal import Decimal
+        from fractions import Fraction
+
+        expected = bandpass_filter(
+            self._data(), hp_hz=0.5, lp_hz=4.0, sample_Hz=self.FS
+        )
+
+        for edge in (Fraction(1, 2), Decimal("0.5")):
+            out = bandpass_filter(
+                self._data(), hp_hz=edge, lp_hz=4.0, sample_Hz=self.FS
+            )
+            np.testing.assert_array_equal(out, expected)
+
+
 class TestTheInvalidParameterContractIsComplete:
     """Every known bad input raises InvalidParameterError, enumerated.
 
@@ -385,33 +470,33 @@ class TestTheInvalidParameterContractIsComplete:
     #: value -> per-edge (fragment, changed-by-this-fix)
     EDGE_CASES = {
         'negative': (-1.0, {
-            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", True),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", True),
             'lp_hz': (r"Cutoff frequency must be positive", True)}),
         'zero': (0.0, {
-            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", True),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", True),
             'lp_hz': (r"Cutoff frequency must be positive", True)}),
         # A NaN *lower* edge already raised InvalidParameterError before this
         # change: max(nan, 0.4) returns nan, which the pre-existing NaN-safe
         # cutoff check caught. A NaN *upper* edge did not - max(0.1, nan)
         # returns 0.1. That asymmetry is the whole bug.
         'NaN': (np.nan, {
-            'hp_hz': (r"Band edge hp_hz=.*must be positive and less than", False),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", False),
             'lp_hz': (r"Cutoff frequency must be positive", True)}),
         'non-scalar': (np.array([0.1, 0.2]), {
-            'hp_hz': (r"Band edge hp_hz=.*must be a real number", True),
-            'lp_hz': (r"Band edge lp_hz=.*must be a real number", True)}),
+            'hp_hz': (r"Band edge hp_hz must be a real number", True),
+            'lp_hz': (r"Band edge lp_hz must be a real number", True)}),
         # Already InvalidParameterError on main, where the range check caught
         # it by comparing a big int against a float exactly. Now caught one
         # step earlier by the coercion, so the message changed and the
         # behaviour did not.
         'too large': (10 ** 400, {
-            'hp_hz': (r"Band edge hp_hz=.*is too large", False),
-            'lp_hz': (r"Band edge lp_hz=.*is too large", False)}),
+            'hp_hz': (r"Band edge hp_hz is too large", False),
+            'lp_hz': (r"Band edge lp_hz is too large", False)}),
         # A Real that cannot be coerced. The band edges take the same path the
         # windowing parameters do, so this case has to exist on both.
         'unconvertible': (_UnconvertibleReal(), {
-            'hp_hz': (r"Band edge hp_hz=.*could not be converted", True),
-            'lp_hz': (r"Band edge lp_hz=.*could not be converted", True)}),
+            'hp_hz': (r"Band edge hp_hz could not be converted", True),
+            'lp_hz': (r"Band edge lp_hz could not be converted", True)}),
     }
 
     #: value -> (fragment template, changed-by-this-fix)
@@ -434,6 +519,17 @@ class TestTheInvalidParameterContractIsComplete:
         # Guarded since #24, so unchanged by this fix.
         ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan),
          r"Invalid sampling frequency", False),
+        # An exact type whose value is below Nyquist but whose nearest double
+        # is not. A review round read this as a narrowing introduced by the
+        # coercion, because comparing the Fraction exactly accepts it. It is
+        # not: float(lp) == 500.0 exactly, so scipy computes Wn == 1.0 and
+        # dies. On main this passes validation and then raises a bare
+        # ValueError from scipy - the very failure this change exists to stop.
+        # Rejecting it up front is the guard predicting what the filter does.
+        ("upper edge rounds onto Nyquist",
+         dict(hp_hz=1.0, lp_hz=Fraction(500) - Fraction(1, 10 ** 16),
+              sample_Hz=1000.0),
+         r"Cutoff frequency must be positive", True),
     ]
 
     @staticmethod
@@ -453,7 +549,7 @@ class TestTheInvalidParameterContractIsComplete:
         return rows + cls.ONE_OFF
 
     #: The count quoted in the CHANGELOG entry for #30, asserted below.
-    BEHAVIOUR_CHANGES_CLAIMED = 20
+    BEHAVIOUR_CHANGES_CLAIMED = 21
 
     def test_the_contract_holds_for_every_known_bad_input(self):
         """Every known bad input raises, with the message its own guard makes."""

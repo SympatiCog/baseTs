@@ -98,9 +98,27 @@ real rather than assumed, so the removal is safe. The same coercion is why an
 oversized integer edge now reports "too large to convert" instead of "past
 Nyquist" — same exception type, different message.
 
+**The validated value is now the one that gets filtered.** `validate_band_params`
+returns `(effective_freq, hp_hz, lp_hz)` rather than the rate alone, and
+`bandpass_filter` uses all three. Previously the coerced edges were local to the
+validator, so `signal.butter(3, [hp_hz/nyq, lp_hz/nyq])` still divided the
+caller's original objects — meaning an edge could be validated as one value and
+filtered as another. A `numbers.Real` with no `__truediv__` died there with a
+bare `TypeError`; one whose `__truediv__` disagreed with its `__float__`
+produced a bare scipy `ValueError` about `Wn`, past every guard. Five review
+rounds audited this validator's internals and none looked at the line that
+consumes its result: enumerating the checks inside a function is not the same
+as enumerating the surface.
+
 **Transposed edges raise rather than being sorted.** Silently reordering would
 filter a band the caller did not ask for and hide the mistake; #27 had just
 shown how easy this argument order is to get wrong.
+
+**`Decimal` is accepted as a band edge**, alongside everything registered under
+`numbers.Real`. It is registered under `numbers.Number` only, so the first
+version of the type guard rejected a `Decimal` edge while
+`validate_sampling_freq` deliberately accepted a `Decimal` *rate* — one type,
+two answers, in the same call.
 
 **Nyquist now comes from the rate the filter actually uses.** The edges are
 normalised by `effective_fs = sample_Hz / max(1, window_step - overlap)`, but
@@ -137,15 +155,17 @@ both messages carry the offending value and the applicable Nyquist. Tests take
 the limit back out of the message and check that a band under it is accepted —
 the remedy is executed, not asserted (#28).
 
-**Breaking — twenty behaviour changes**, enumerated by replaying every case
+**Breaking — twenty-one behaviour changes**, enumerated by replaying every case
 against a `main` worktree and against this branch, not from recall:
 
-*Ten move from a bare `ValueError` to `InvalidParameterError`* — negative,
+*Eleven move from a bare `ValueError` to `InvalidParameterError`* — negative,
 zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
-edge; transposed edges; equal edges; and an upper edge valid against the
-declared Nyquist but not against the effective one at `window_step > 1`. Code
-catching `ValueError` around a bandpass call will stop catching these:
-`InvalidParameterError` inherits from `FilterError`, not from `ValueError`.
+edge; transposed edges; equal edges; an upper edge valid against the declared
+Nyquist but not against the effective one at `window_step > 1`; and an exact
+type (`Fraction`, `Decimal`) whose value is below Nyquist but whose nearest
+double is not. Code catching `ValueError` around a bandpass call will stop
+catching these: `InvalidParameterError` inherits from `FilterError`, not from
+`ValueError`.
 
 *Six move from a bare `TypeError`* — a band edge, `window_step` or `overlap`
 that is non-numeric, or that registers as `numbers.Real` without a usable

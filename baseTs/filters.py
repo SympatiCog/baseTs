@@ -7,6 +7,8 @@ Created on Oct 19 2024
 from __future__ import annotations
 from typing import Union, Optional, Literal, TYPE_CHECKING
 import numbers
+from decimal import Decimal
+
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, savgol_filter
@@ -109,10 +111,16 @@ def _require_real(label: str, value) -> None:
     CI leg and reject it on another with the suite green either way - the trap
     PR #26 hit with `float(np.array([30.0]))`.
 
+    Decimal is admitted alongside numbers.Real because it is registered under
+    numbers.Number only, and rejecting it here would have this module accept a
+    Decimal *rate* - validate_sampling_freq does so deliberately - while
+    refusing a Decimal *band edge*. One type, two answers, same call.
+
     bool is excluded explicitly: it is a Real, and `True` as a band edge or a
     window step is a mistake worth naming rather than silently reading as 1.
+    Complex is excluded by construction, being neither.
     """
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+    if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         raise InvalidParameterError(
             f"{label} must be a real number, got {value!r}")
 
@@ -177,7 +185,7 @@ def validate_band_params(data: ArrayLike,
                          hp_hz: float,
                          lp_hz: float,
                          order: int,
-                         window_step: int = 1) -> float:
+                         window_step: int = 1) -> tuple:
     """
     Validate the parameters of a two-edged (band) filter.
 
@@ -192,11 +200,18 @@ def validate_band_params(data: ArrayLike,
             produces, not against `sampling_freq`.
 
     Returns:
-        The effective sampling frequency, `sampling_freq / window_step`,
-        normalised to a float. Callers must use this return value: it is both
-        the normalised rate (see validate_filter_params on why the raw
-        argument is unusable) and the rate the band was actually validated
-        against.
+        `(effective_freq, hp_hz, lp_hz)`, all plain floats.
+
+        Callers must use all three, not just the first. The rate is the
+        normalised one (see validate_filter_params on why the raw argument is
+        unusable) and the rate the band was actually validated against. The
+        edges are the coerced values that were validated - which is the point:
+        a caller that validates these and then computes with its own originals
+        is filtering something other than what was checked. That was a real
+        hole, not a hypothetical one: `signal.butter(3, [hp_hz/nyq,
+        lp_hz/nyq])` divided the caller's objects, so a numbers.Real whose
+        __truediv__ disagreed with its __float__ passed every guard here and
+        then produced a bare scipy ValueError about Wn.
 
     Raises:
         InvalidParameterError: If parameters are invalid
@@ -265,8 +280,8 @@ def validate_band_params(data: ArrayLike,
     # Coerced in the same breath, so every comparison below - and the one
     # inside the delegated call - is against a plain float rather than against
     # an object free to answer the same question twice, differently.
-    hp_hz = _as_real_float(f"Band edge hp_hz={hp_hz!r}", hp_hz)
-    lp_hz = _as_real_float(f"Band edge lp_hz={lp_hz!r}", lp_hz)
+    hp_hz = _as_real_float("Band edge hp_hz", hp_hz)
+    lp_hz = _as_real_float("Band edge lp_hz", lp_hz)
 
     effective_freq = validate_filter_params(data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
@@ -276,15 +291,15 @@ def validate_band_params(data: ArrayLike,
     # lp_hz against this same nyquist.
     if not (hp_hz > 0) or hp_hz >= nyquist:
         raise InvalidParameterError(
-            f"Band edge hp_hz={hp_hz!r} must be positive and less than "
-            f"the Nyquist frequency ({nyquist} Hz)")
+            f"Band edge hp_hz must be positive and less than the Nyquist "
+            f"frequency ({nyquist} Hz), got {hp_hz!r}")
 
     if not (hp_hz < lp_hz):
         raise InvalidParameterError(
             f"Band edges out of order: hp_hz={hp_hz!r} must be less than "
             f"lp_hz={lp_hz!r}")
 
-    return effective_freq
+    return effective_freq, hp_hz, lp_hz
 
 
 def sg_filter(data: ArrayLike,
@@ -436,7 +451,9 @@ def bandpass_filter(data: ArrayLike,
     window_step = _require_finite_real('window_step', window_step)
     overlap = _require_finite_real('overlap', overlap)
     window_step = max(1, window_step - overlap)
-    effective_fs = validate_band_params(
+    # The coerced edges come back and are what gets filtered. Validating one
+    # value and computing with another is not validation (#30).
+    effective_fs, hp_hz, lp_hz = validate_band_params(
         data, sample_Hz, hp_hz, lp_hz, 3, window_step=window_step)
 
     nyq = effective_fs / 2
