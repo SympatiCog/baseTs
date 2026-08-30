@@ -110,6 +110,15 @@ rounds audited this validator's internals and none looked at the line that
 consumes its result: enumerating the checks inside a function is not the same
 as enumerating the surface.
 
+**Fixed for `bandpass_filter` only — one of four entry points.** `lowpass_filter`,
+`highpass_filter` and `notch_filter` share `validate_filter_params`, which
+range-checks `cutoff_freq` without coercing it and returns only the normalised
+rate, so all three still divide the caller's original object. A `Decimal`
+cutoff raises a bare `TypeError` in each. That is filed as #49 rather than
+fixed here, to keep this change to its stated scope — but it is named here
+because the paragraph above would otherwise read as closing the defect class
+outright, and it does not.
+
 **Transposed edges raise rather than being sorted.** Silently reordering would
 filter a band the caller did not ask for and hide the mistake; #27 had just
 shown how easy this argument order is to get wrong.
@@ -136,6 +145,12 @@ A string or `None` died on the subtraction with a bare `TypeError` before any
 validation ran. Both operands are now checked before the arithmetic. Fixing one
 `max()` and shipping the other, in a change whose subject is this defect class,
 was not a defensible place to stop.
+
+What this does *not* cover, said plainly: the two operands are checked for type
+and finiteness, not for their relationship. `overlap >= window_step` still
+clamps to 1 and filters at the full declared rate, and a negative `overlap`
+still inflates the effective rate above the real one — both silently. Neither
+is reachable through `bandpass_at`, which does not expose either parameter.
 
 **Non-scalar band edges are rejected rather than escaping.** `not (edge > 0)`
 on an array raises numpy's "truth value ... is ambiguous" `ValueError`, so the
