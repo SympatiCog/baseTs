@@ -100,7 +100,21 @@ class TestBandEdgeValidation:
         ids=[c[0] for c in BAD_BANDS],
     )
     def test_bad_band_raises_invalid_parameter_error(self, label, hp_hz, lp_hz, fragment):
-        """Every one of these reached scipy and raised a bare ValueError."""
+        """All of these must raise; four of the seven previously did not.
+
+        The negative, zero, transposed and equal cases reached scipy on main
+        and raised a bare ValueError. The other three - NaN lower edge, and a
+        lower edge at or above Nyquist - were already InvalidParameterError,
+        because `max(hp_hz, lp_hz)` happens to select the offending value in
+        each. They are here for coverage of the message, not as evidence of a
+        behaviour change; TestTheInvalidParameterContractIsComplete carries the
+        per-case classification and is what the CHANGELOG's count comes from.
+
+        An earlier docstring claimed all seven changed. That was the census
+        error over again in a place the census does not reach, which is worth
+        saying out loud: asserting the count fixed the table, not the prose
+        around it.
+        """
         with pytest.raises(InvalidParameterError, match=fragment):
             bandpass_filter(self._data(), hp_hz=hp_hz, lp_hz=lp_hz, sample_Hz=self.FS)
 
