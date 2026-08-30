@@ -770,6 +770,52 @@ def validate_lag(lag: Union[int, float], lag_idx: int, lag_unit: str, freq: floa
                 f"In index mode, got lag={lag}. {floatmsg}"
             )
 
+def _coerce_lag(lag: Any) -> float:
+    """Convert a lag to a float, or say which argument is wrong.
+
+    validate_lag is the diagnosis for a bad lag, but shift_timeseries calls it
+    *after* get_lags has already converted, so an unconvertible lag died in the
+    conversion - `int(nan * rate)`, `"0.5" / rate` - naming the operation
+    rather than the argument. This runs first so the caller is told what is
+    actually wrong, and runs for both modes so they cannot disagree about the
+    same bad value.
+
+    Non-finite values are deliberately allowed through: division handles them,
+    so an index-mode NaN reaches validate_lag, which diagnoses it better
+    because it knows index mode is what the caller asked for. time_to_idx adds
+    its own finiteness check, since int() has no such tolerance.
+
+    Coerced via float() rather than gated on numbers.Real, matching
+    validate_sampling_freq: a registrable virtual subclass can satisfy an
+    isinstance test and still have no working __float__, and float() accepts
+    everything the arithmetic below can actually use, including 0-d arrays and
+    Decimal. str and bytes are excluded first because float("0.5") succeeds -
+    without that exclusion this would *widen* what the conversion accepts,
+    where today a string lag raises TypeError.
+
+    bool is deliberately not excluded: float(True) is 1.0 and `True * rate`
+    already produced exactly that, so rejecting it would break input that
+    worked.
+
+    Args:
+        lag: The lag to convert, in seconds or in samples
+
+    Returns:
+        The lag as a float, when it is convertible
+
+    Raises:
+        ValidationError: If the lag is not a real scalar
+    """
+    if isinstance(lag, (str, bytes)):
+        raise ValidationError(f"lag must be a real number, not {lag!r}.")
+    try:
+        return float(lag)
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError, not just TypeError/ValueError: float(10**400) raises
+        # it, and it is neither - so it would escape this contract exactly as
+        # it escapes int() and the division today.
+        raise ValidationError(f"lag must be a real number, not {lag!r}.") from exc
+
 def idx_to_time(lag_idx: int, freq: float) -> float:
     """
     Convert an index to a time value.
@@ -780,8 +826,25 @@ def idx_to_time(lag_idx: int, freq: float) -> float:
 
     Returns:
         Time value in seconds
+
+    Raises:
+        ValueError: If the sampling frequency is not a usable rate (issue #32).
+            A degenerate time base derives to NaN, which propagated silently
+            into the returned seconds; a zero rate raised ZeroDivisionError,
+            naming the division rather than the rate.
+        ValidationError: If the lag is not a real scalar
+
+    Note:
+        A non-finite index is *not* rejected here. It divides to NaN and
+        reaches validate_lag, whose message names index mode and the integer
+        rule - a better diagnosis than this function can give.
     """
-    return lag_idx / float(freq)
+    # Sequenced rather than written as one expression: `_coerce_lag(lag) /
+    # validate_sampling_freq(freq)` evaluates the left operand first, so a call
+    # with both arguments bad would blame the lag here and the rate in
+    # time_to_idx - the same mistake diagnosed two ways depending on the unit.
+    rate = validate_sampling_freq(freq)
+    return _coerce_lag(lag_idx) / rate
 
 def time_to_idx(lag_secs: float, freq: float) -> int:
     """
@@ -793,8 +856,28 @@ def time_to_idx(lag_secs: float, freq: float) -> int:
 
     Returns:
         Index value
+
+    Raises:
+        ValueError: If the sampling frequency is not a usable rate (issue #32)
+        ValidationError: If the lag is not a real scalar, or is NaN or infinite
+
+    Note:
+        Both values are coerced by their validators and the *coerced* values
+        are what get multiplied. Validating one object and computing with
+        another is how a value validated as 1.0 got filtered as something else
+        in issue #30.
     """
-    return int(lag_secs * float(freq))
+    rate = validate_sampling_freq(freq)
+    secs = _coerce_lag(lag_secs)
+    if not math.isfinite(secs):
+        # Unlike the division in idx_to_time, int() cannot carry a NaN or an
+        # infinity forward to validate_lag - it raises ValueError and
+        # OverflowError respectively, naming neither the lag nor the mode.
+        raise ValidationError(
+            f"lag must be a finite number of seconds. Got lag={lag_secs}, "
+            f"which has no corresponding index."
+        )
+    return int(secs * rate)
 
 def get_lags(
     lag: Union[int, float],

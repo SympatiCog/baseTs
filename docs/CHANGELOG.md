@@ -54,6 +54,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the lag conversions validate the rate (#32)
+
+### Fixed — a degenerate time base died in `int()`, or did not die at all
+
+`utils.time_to_idx` scaled a lag by `ts.freq` with no check on the rate:
+
+```python
+return int(lag_secs * float(freq))
+```
+
+A degenerate time base — duplicate or non-increasing timestamps — derives to a
+NaN rate, so this raised `ValueError: cannot convert float NaN to integer`,
+naming the conversion rather than the time base that caused it. That is exactly
+the failure #24's audit set out to remove, one module over; the site was simply
+missed. `idx_to_time` had the matching hole in the other direction:
+`idx_to_time(5, 0.0)` raised `ZeroDivisionError`.
+
+Both now call `validate_sampling_freq`, which covers `get_lags`,
+`shift_timeseries`, `validate_lag`, `plotting.lag_plot` and `baseTs.lag_plot`
+in one place — the single door every lag consumer already passes through.
+
+**The silent half was worse than the loud one.** In index mode the rate is only
+used to *label* the lag, so nothing raised: `shift_timeseries(deg, 5, 'index')`
+returned successfully with `lag_secs=nan`, and `lag_plot(deg, 5)` drew a plot
+titled "nan seconds". Index mode is `lag_plot`'s default.
+
+**The `get_peaks` precedent does not carry over.** #24 deliberately left
+`freq <= 0` acceptable there, because its `max(25, ...)` floor makes the rate
+irrelevant. There is no such floor here — a zero rate is a genuine
+`ZeroDivisionError` — so the full guard applies.
+
+**The lag is checked in the same place, because `validate_lag` never got to
+speak.** `shift_timeseries` calls it *after* `get_lags` has already converted,
+so an unusable lag died in the conversion — `int(nan * rate)`, `"0.5" / rate` —
+and the validator that exists to diagnose exactly that ran too late to be
+reached. Both primitives now coerce the lag through one helper and raise
+`ValidationError`, the type `validate_lag` already raises for every other bad
+lag.
+
+**Finiteness is asymmetric on purpose.** `int()` cannot carry a NaN forward, so
+`time_to_idx` refuses one; division can, so a NaN *index* still flows through to
+`validate_lag`, whose message names index mode and the integer rule — a better
+diagnosis than the conversion can give. The numeric-but-wrong lag stays
+`validate_lag`'s to judge; only the unconvertible one is refused earlier.
+
+**Both functions name the rate first when both arguments are bad.** Written as
+one expression, `_coerce_lag(lag) / validate_sampling_freq(freq)` evaluates its
+left operand first and would blame the lag, while `int(secs * rate)` blames the
+rate — the same mistake diagnosed two ways depending on which unit the caller
+chose. The rate check is now sequenced ahead of the lag in both.
+
+**The validated values are the ones that get used**, returned from their
+validators rather than re-read from the caller's arguments. Validating one
+object and computing with another is how a band edge validated as 1.0 got
+filtered as something else in #30.
+
+**Breaking — forty-five of sixty replayed cases change** through
+`shift_timeseries`, `plotting.lag_plot` and `baseTs.lag_plot`, enumerated by
+replaying fifteen lag shapes × two units × two time bases against a `main`
+worktree and against this branch, not from recall. The table is asserted by
+`TestTheOutcomeCensusIsComplete`, which also fails if a new lag shape is added
+without being classified.
+
+*Two turn a succeeding call into a failing one* — index mode on a degenerate
+time base with a usable integer lag (`50`, and `True`, which is `1`). Both were
+returning `lag_secs=nan`, and both are the silent failure this fixes.
+
+*Thirty move to `ValueError`* — every remaining degenerate-time-base case.
+Nine were already `ValueError` and gain the diagnosis; eleven were a bare
+`TypeError` or `OverflowError` thrown by the conversion; eight were a
+`ValidationError` about the lag, since the rate is now reported first; two are
+the successes above.
+
+*Fourteen move to `ValidationError`* — a lag that is NaN, infinite, a `str`,
+`bytes`, `None`, a multi-element array, or an integer too large to convert.
+Thirteen were bare `TypeError`, `OverflowError` or `ValueError`; the fourteenth
+was already a `ValidationError` and only its message changes. **Code catching
+`ValueError` around these calls will stop catching them:** `ValidationError`
+inherits from `TimeSeriesError`, not from `ValueError`.
+
+*One turns a failing call into a succeeding one* — a `Decimal` lag in seconds
+mode, which used to die on `Decimal * float`. `validate_sampling_freq` accepts
+`Decimal` as a rate deliberately, and coercing the lag the same way makes the
+two arguments agree.
+
+**Direct callers of the two primitives see more change**, because both now
+apply `validate_sampling_freq`'s full contract to the rate. A `str` rate is now
+refused, where `float("100")` used to succeed and return 50; `True` is refused,
+where it used to be taken as 1 Hz and return 0; and negative, zero and infinite
+rates are refused, where `time_to_idx(0.5, -100.0)` returned `-50`,
+`time_to_idx(0.5, 0.0)` returned `0`, and `idx_to_time(0.5, inf)` returned
+`0.0`. None of these can arrive from `ts.freq`, which validates at the property
+setter — only from a direct call passing a literal.
+
+One value-level change, on the accepted path: `idx_to_time` with a 0-d array
+index returns a Python `float` where it returned `np.float64`. Same value, and
+unreachable through `shift_timeseries`, where `validate_lag` rejects a 0-d
+array index before it is returned.
+
 ## [Unreleased] — both band edges are validated (#30)
 
 ### Fixed — `bandpass_filter` checked one edge, and argument order picked which
