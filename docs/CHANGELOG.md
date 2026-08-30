@@ -105,6 +105,18 @@ left operand first and would blame the lag, while `int(secs * rate)` blames the
 rate — the same mistake diagnosed two ways depending on which unit the caller
 chose. The rate check is now sequenced ahead of the lag in both.
 
+**Checking the operands is not the same as checking the result.** Two
+individually valid values can still combine into something the conversion
+cannot express: `1e300 s * 1e300 Hz` is `inf`, so `int()` raised a bare
+`OverflowError` — the same raw-conversion leak this change exists to stop — and
+`10**300 / 1e-300` is `inf`, which nothing downstream catches, because
+`validate_lag` only asks whether the *index* is a positive integer and never
+looks at the seconds derived from it. That `lag_secs=inf` rode out into the
+result dict and the plot title. Both were reachable on `main` as well; what is
+new is the docstring promising otherwise, so the promise is what was made true.
+The rule is now *finite in, finite out, or a diagnosis* — guarded on a finite
+input, so a NaN index still reaches `validate_lag`.
+
 **The validated values are the ones that get used**, returned from their
 validators rather than re-read from the caller's arguments. Validating one
 object and computing with another is how a band edge validated as 1.0 got

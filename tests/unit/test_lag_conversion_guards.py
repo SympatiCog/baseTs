@@ -147,12 +147,12 @@ class TestANonFiniteLagIsDiagnosed:
 
     @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
     def test_a_non_finite_lag_in_seconds_is_a_validation_error(self, bad):
-        with pytest.raises(ValidationError, match="finite"):
+        with pytest.raises(ValidationError, match="no corresponding index"):
             shift_timeseries(_uniform(), bad, "seconds")
 
     @pytest.mark.parametrize("bad", [np.nan, np.inf])
     def test_time_to_idx_refuses_a_non_finite_lag_directly(self, bad):
-        with pytest.raises(ValidationError, match="finite"):
+        with pytest.raises(ValidationError, match="no corresponding index"):
             time_to_idx(bad, 100.0)
 
     @pytest.mark.parametrize("bad", ["0.5", b"0.5", None, np.array([0.5, 1.0])])
@@ -228,6 +228,48 @@ class TestBothModesRefuseANonNumericLagTheSameWay:
 
         with pytest.raises(ValidationError, match="positive nonzero integer"):
             shift_timeseries(_uniform(), Decimal("5"), "index")
+
+
+class TestAFiniteInputCannotProduceANonFiniteResult:
+    """Checking the operands is not the same as checking the result.
+
+    Both arguments can pass their own guard and still combine into something
+    the conversion cannot express: `1e300 s * 1e300 Hz` is `inf`, so `int()`
+    raised a bare OverflowError - the very class of raw-conversion leak this
+    module exists to stop, and one the docstring now promises not to emit.
+    Division has the mirror case: `10**300 / 1e-300` is `inf`, which nothing
+    downstream catches, because `validate_lag` only asks whether the *index*
+    is a positive int and never looks at the seconds derived from it.
+
+    Both were reachable on main too. What is new is the promise, so the
+    promise is what has to be made true.
+    """
+
+    def test_a_product_that_overflows_is_a_diagnosis(self):
+        with pytest.raises(ValidationError, match="conversion overflows"):
+            time_to_idx(1e300, 1e300)
+
+    def test_a_quotient_that_overflows_is_a_diagnosis(self):
+        with pytest.raises(ValidationError, match="conversion overflows"):
+            idx_to_time(10 ** 300, 1e-300)
+
+    def test_the_overflowing_seconds_no_longer_reach_the_result(self):
+        """`lag_secs=inf` used to ride out into the returned dict and the plot
+        title, which is #32's silent failure in a different disguise."""
+        tiny_rate = baseTs(_signal(), np.arange(300) / 100.0, freq=1e-300)
+
+        with pytest.raises(ValidationError, match="conversion overflows"):
+            shift_timeseries(tiny_rate, 10 ** 300, "index")
+
+    def test_a_non_finite_input_is_still_the_other_guards_business(self):
+        """The result check must not swallow the NaN index that validate_lag
+        diagnoses better: only a *finite* input is promised a finite result."""
+        assert np.isnan(idx_to_time(np.nan, 100.0))
+
+    def test_a_large_but_representable_product_still_converts(self):
+        """The check is finiteness, not a magnitude policy. This is absurd
+        input, but it has an exact answer and always returned one."""
+        assert time_to_idx(1e300, 100.0) == int(1e302)
 
 
 class TestTheOutcomeCensusIsComplete:

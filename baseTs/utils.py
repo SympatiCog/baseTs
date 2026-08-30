@@ -844,7 +844,21 @@ def idx_to_time(lag_idx: int, freq: float) -> float:
     # with both arguments bad would blame the lag here and the rate in
     # time_to_idx - the same mistake diagnosed two ways depending on the unit.
     rate = validate_sampling_freq(freq)
-    return _coerce_lag(lag_idx) / rate
+    samples = _coerce_lag(lag_idx)
+    seconds = samples / rate
+
+    if math.isfinite(samples) and not math.isfinite(seconds):
+        # Checking the operands is not the same as checking the result: both
+        # can pass their own guard and still divide to inf. Nothing downstream
+        # catches that - validate_lag only asks whether the index is a positive
+        # int - so an infinite lag_secs rode out into the returned dict and the
+        # plot title. Guarded on a finite *input* so a NaN index still reaches
+        # validate_lag, which names index mode and the integer rule.
+        raise ValidationError(
+            f"lag index {lag_idx} at {freq} Hz has no finite duration: the "
+            f"conversion overflows."
+        )
+    return seconds
 
 def time_to_idx(lag_secs: float, freq: float) -> int:
     """
@@ -873,11 +887,30 @@ def time_to_idx(lag_secs: float, freq: float) -> int:
         # Unlike the division in idx_to_time, int() cannot carry a NaN or an
         # infinity forward to validate_lag - it raises ValueError and
         # OverflowError respectively, naming neither the lag nor the mode.
+        #
+        # Redundant for *coverage* and kept for the *message*: the rate is
+        # finite and positive by now, so a non-finite lag cannot produce a
+        # finite product either, and the check below would catch every case
+        # this one does. It would report an overflow, though, which is the
+        # wrong diagnosis for an argument that arrived as NaN. Both messages
+        # are pinned by tests that match the distinguishing wording - matching
+        # a substring common to both is how this check went undetected as
+        # deletable through a whole mutation round.
         raise ValidationError(
             f"lag must be a finite number of seconds. Got lag={lag_secs}, "
             f"which has no corresponding index."
         )
-    return int(secs * rate)
+
+    samples = secs * rate
+    if not math.isfinite(samples):
+        # Two individually finite values can still multiply to inf, and int()
+        # then leaks the bare OverflowError this function promises not to
+        # emit. The operands were checked; the product was not.
+        raise ValidationError(
+            f"lag={lag_secs} at {freq} Hz has no finite index: the conversion "
+            f"overflows."
+        )
+    return int(samples)
 
 def get_lags(
     lag: Union[int, float],
