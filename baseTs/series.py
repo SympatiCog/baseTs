@@ -223,7 +223,8 @@ def _detach_shared_metadata(obj):
     if getattr(obj, 'outlier_filter', None) is None:
         object.__setattr__(obj, 'outlier_filter', LowessOutlierFilter())
     for label in ('signal_name', 'last_process'):
-        object.__setattr__(obj, label, normalise_label(getattr(obj, label, None)))
+        object.__setattr__(obj, label,
+                           normalise_label(getattr(obj, label, None)))
     stored = getattr(obj, '_outlier_indices', None)
     if stored is not None and isinstance(stored[0], (list, np.ndarray)):
         # ndarray as well as list: the constructor types this parameter as
@@ -493,23 +494,28 @@ class TimeSeriesData(pd.Series):
                 # Set default if attribute doesn't exist
                 if attr == 'history':
                     self.history = [f"Converted from baseTs with {len(self)} samples"]
-                elif attr in ['is_filtered', 'is_interpolated', 'is_uniform_grid', 'has_timestamp_offset']:
+                elif attr in ['is_filtered', 'is_interpolated', 'is_uniform_grid',
+                              'is_outlier_filtered', 'has_timestamp_offset']:
+                    # is_outlier_filtered was missing from this list, so the
+                    # one boolean flag that names the outlier filter fell to
+                    # the bare `else` and landed as None - on the same objects,
+                    # and by the same omission, as the filter itself. Nothing
+                    # downstream normalises it, so it propagated.
                     setattr(self, attr, False)
                 elif attr in ['ts_offset']:
                     setattr(self, attr, 0)
                 elif attr in ['signal_name', 'last_process']:
                     setattr(self, attr, "")
-                elif attr == 'outlier_filter':
-                    # The production site for the None issue #33 reports: the
-                    # bare else below is right for the slots that are
-                    # None-tolerant by design (_lowess_fit, _outlier_indices,
-                    # _freq_declaration) and wrong for this one, which every
-                    # consumer reads as `.config` without guarding. baseTs'
-                    # own __init__ re-guards it, so the state only survived on
-                    # a TimeSeriesData built straight from a source carrying
-                    # no metadata - and on everything derived from it.
-                    setattr(self, attr, LowessOutlierFilter())
                 else:
+                    # What reaches here is None-tolerant by design:
+                    # _lowess_fit and _outlier_indices carry the index they
+                    # describe (#20), and _freq_declaration is absent until
+                    # someone declares a rate (#29/#31/#23). outlier_filter is
+                    # not - but it needs no arm of its own, because the
+                    # _detach_shared_metadata call at the end of this method
+                    # restores a default for exactly that name. An arm here
+                    # would be unreachable in effect: neutralising it leaves
+                    # every test in test_metadata_defaults.py green.
                     setattr(self, attr, None)
 
         _detach_shared_metadata(self)

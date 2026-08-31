@@ -79,9 +79,24 @@ names real defaults when the source carries none, then falls through to
 `setattr(self, attr, None)` for everything else — `outlier_filter` included.
 `baseTs.__init__` re-guards it (the guard #15 added for exactly this), so the
 state only survived on a `TimeSeriesData` built straight from a source with no
-metadata, and on everything derived from it. That arm now installs a filter.
-The bare `else` stays correct for the slots that are `None`-tolerant by
-design: `_lowess_fit`, `_outlier_indices` and `_freq_declaration`.
+metadata, and on everything derived from it.
+
+That fallback needs no arm of its own, and an earlier revision of this branch
+added one anyway: the method ends by calling `_detach_shared_metadata`, so the
+`None` it had just written was restored one line later. Neutralising the arm
+left all of `test_metadata_defaults.py` green, which is how it was caught. It
+is gone, and the comment on the bare `else` now says which names legitimately
+reach it — `_lowess_fit` and `_outlier_indices`, which carry the index they
+describe (#20), and `_freq_declaration`, absent until a rate is declared
+(#29/#31/#23).
+
+**`is_outlier_filtered` was the fallback's real gap**, and the chokepoint does
+not cover it. The defaulting arm listed three of the four boolean flags, so
+the one that names the outlier filter fell to the bare `else` and landed as
+`None` — on the same objects, by the same omission, as the filter itself, and
+`assert ts.is_outlier_filtered is False` is an assertion the suite already
+makes elsewhere. It is in the flags list now, and all five flags are asserted
+boolean on a metadata-less source and on an object derived from one.
 
 **Restoring a default is not imposing one.** A configured filter reaches the
 derived object with its parameters intact — asserted across `__finalize__`,
@@ -106,17 +121,25 @@ Plotting builds every title, axis label and legend entry with
 matplotlib's caller. Both names now go through `normalise_label` at the same
 chokepoint.
 
-**Two behaviour changes, both narrow:**
+**Three behaviour changes, all narrow:**
 
 - A non-string label is coerced on derivation rather than propagated as-is:
   `ts.signal_name = 12` reaches `ts.iloc[:5]` as `'12'`. Stringified rather
   than blanked — a caller who set a number meant it to appear on the plot.
 - `TimeSeriesData(..., signal_name=12)` no longer raises `AttributeError:
   'int' object has no attribute 'upper'`; it stores `'12'`. A failing call
-  becomes a succeeding one. The constructor is the third door the label
-  arrives by, and the only one that called a `str` method on it —
+  becomes a succeeding one. The constructor is a door of its own for the
+  label, and the only one that called a `str` method on it —
   `copy(deep=True)` and `_create_new_with_data` both hand the parent's name
   back to it.
+- `baseTs(..., last_process=None)` returns a plottable object. This was the
+  hole a review round found in the fix above: `signal_name` is handed to
+  `TimeSeriesData.__init__` and normalised there, while `last_process` is
+  assigned straight onto the object by `baseTs.__init__`, so a caller passing
+  a supported keyword got back a series whose every plot label raised
+  `TypeError` — with nothing mutated afterwards, so not the in-place boundary
+  above but an unnormalised entry point. `baseTs(..., last_process=12)` now
+  stores `'12'` on the same rule as the name.
 
 Unchanged: the constructor still upper-cases the name it is given.
 

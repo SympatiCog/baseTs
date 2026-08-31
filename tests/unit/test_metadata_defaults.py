@@ -192,6 +192,60 @@ class TestLabelMetadataSurvivesDerivation:
         assert derive(self._labelled("sig", "_lowpass")).last_process == "_lowpass"
 
 
+class TestLabelMetadataAtConstruction:
+    """The constructor kwargs are a door of their own, and one was left open.
+
+    `signal_name` reaches TimeSeriesData.__init__ and is normalised there.
+    `last_process` is assigned straight onto the object by baseTs.__init__,
+    so a caller who passed a supported keyword got back an object that could
+    not be plotted - nothing was mutated afterwards, so this is not the
+    "does not heal in place" boundary, it is an unnormalised entry point.
+    """
+
+    @staticmethod
+    def _constructed(**kwargs):
+        return baseTs(np.arange(10.0), np.arange(10) / 10.0, **kwargs)
+
+    def test_none_last_process_kwarg_becomes_empty(self):
+        assert self._constructed(last_process=None).last_process == ""
+
+    def test_non_string_last_process_kwarg_is_coerced(self):
+        assert self._constructed(last_process=12).last_process == "12"
+
+    def test_plotting_what_the_constructor_returned_does_not_raise(self):
+        """TypeError: can only concatenate str (not "NoneType") to str."""
+        self._constructed(signal_name="hr", last_process=None).plot()
+
+    def test_none_signal_name_kwarg_becomes_empty(self):
+        """The sibling door, already closed - here so the pair stays closed."""
+        assert self._constructed(signal_name=None).signal_name == ""
+
+    def test_a_real_last_process_kwarg_is_kept(self):
+        assert self._constructed(last_process="_lowpass").last_process == "_lowpass"
+
+
+class TestFlagDefaultsAtConstruction:
+    """`is_outlier_filtered` is a flag, and the fallback left it None.
+
+    The defaulting arm in _copy_metadata_from_basetseries lists three of the
+    four boolean flags, so this one fell through to the bare `else` and landed
+    as None on a source carrying no metadata - then propagated, since nothing
+    downstream normalises it. `assert ts.is_outlier_filtered is False` is an
+    assertion the suite already makes elsewhere.
+    """
+
+    BOOLEAN_FLAGS = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
+                     'is_outlier_filtered', 'has_timestamp_offset']
+
+    @pytest.mark.parametrize("flag", BOOLEAN_FLAGS)
+    def test_duck_typed_source_gets_a_boolean(self, flag):
+        assert getattr(TimeSeriesData(_DuckSeries()), flag) is False
+
+    @pytest.mark.parametrize("flag", BOOLEAN_FLAGS)
+    def test_derived_object_inherits_a_boolean(self, flag):
+        assert getattr(TimeSeriesData(_DuckSeries()).iloc[:5], flag) is False
+
+
 class TestAConfiguredFilterIsNotReplaced:
     """The normaliser must restore a default, never impose one.
 

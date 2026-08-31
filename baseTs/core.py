@@ -26,7 +26,8 @@ from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak
                     BandPowerResult, validate_sampling_freq,
                     validate_finite_data)
 from .series import (TimeSeriesData, _detach_shared_metadata,
-                     deepcopy_metadata_value, normalise_history)
+                     deepcopy_metadata_value, normalise_history,
+                     normalise_label)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -225,7 +226,14 @@ class baseTs(TimeSeriesData):
         self.has_timestamp_offset = has_timestamp_offset
         self.outlier_indices = outlier_indices
         self.lowess_fit = lowess_fit
-        self.last_process = last_process
+        # The one label door that does not pass through
+        # TimeSeriesData.__init__:
+        # signal_name is handed to the superclass and normalised there, while
+        # this is assigned straight onto the object. Without the same coercion
+        # baseTs(..., last_process=None) returned an object whose every plot
+        # label raised TypeError, from a supported keyword and with nothing
+        # mutated afterwards.
+        self.last_process = normalise_label(last_process)
         
         # Handle timestamp offset
         if not _is_unset(ts_offset):
