@@ -54,6 +54,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the domain exceptions are also `ValueError`s
+
+### Changed — `except ValueError` now covers a whole call
+
+```python
+class ValidationError(TimeSeriesError, ValueError)          # baseTs/utils.py
+class InvalidParameterError(FilterError, ValueError)        # baseTs/filters.py
+```
+
+Two lines, and they delete two breaking changes instead of documenting them.
+
+Both validating families raise a type of their own, while the shared validator
+underneath them — `validate_sampling_freq` — raises a bare `ValueError`. So no
+single `except` clause covered one call: catching `ValueError` missed the lag
+or the band edge, catching `TimeSeriesError`/`FilterError` missed the rate. A
+caller who wanted "tell me when my input was rejected" had to name both, and
+nothing in the API said so.
+
+#30 and #32 each shipped a documented breaking change of exactly that shape —
+"code catching `ValueError` will stop catching these". **Both entries are still
+`[Unreleased]`**, so those breaks have never reached anyone. Widening the
+hierarchy retires both rather than shipping them, and both paragraphs have been
+corrected in place.
+
+**Widening only.** Every `except ValidationError`, `except TimeSeriesError`,
+`except InvalidParameterError` and `except FilterError` behaves as before, and
+the domain base precedes `ValueError` in the MRO, so a caller listing both
+clauses still reaches the domain one first. The whole suite passes unchanged.
+
+**The risk was never the two class definitions — it was the fourteen
+`except ValueError` sites** already in the package, any of which could start
+swallowing a domain error as a fallback. Each was checked: every one wraps
+either a builtin conversion (`float()`, `param_type()`) or exactly one
+validator that raises a *bare* `ValueError`. The two closest to the edge are
+`filters.py`'s translation sites, `except ValueError: raise
+InvalidParameterError(...)`, which can now catch the type they produce — their
+`try` blocks deliberately hold a single `validate_sampling_freq` call, so
+nothing double-wraps. That tightness is what makes the widening safe, so it is
+pinned by a test rather than left as a comment.
+
+Not done, and deliberately: the 56 remaining bare `raise ValueError` sites are
+untouched. Typing those would buy catch-by-domain, which is unreachable anyway
+— `__all__` is `['baseTs', 'from_df', 'TimeSeriesData']`, so the exception
+classes are not exported. Exporting them is the enabling step if that is ever
+wanted; sweeping 56 sites first would be building an API nobody can catch.
+
 ## [Unreleased] — the lag conversions validate the rate (#32)
 
 ### Fixed — a degenerate time base died in `int()`, or did not die at all
@@ -142,9 +188,9 @@ the successes above.
 *Fourteen move to `ValidationError`* — a lag that is NaN, infinite, a `str`,
 `bytes`, `None`, a multi-element array, or an integer too large to convert.
 Thirteen were bare `TypeError`, `OverflowError` or `ValueError`; the fourteenth
-was already a `ValidationError` and only its message changes. **Code catching
-`ValueError` around these calls will stop catching them:** `ValidationError`
-inherits from `TimeSeriesError`, not from `ValueError`.
+was already a `ValidationError` and only its message changes. The exception
+*type* changes, but `except ValueError` keeps catching them — see the hierarchy
+entry below, which widened `ValidationError` for exactly this reason.
 
 *One turns a failing call into a succeeding one* — a `Decimal` lag in seconds
 mode, which used to die on `Decimal * float`. `validate_sampling_freq` accepts
@@ -336,9 +382,9 @@ zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
 edge; transposed edges; equal edges; an upper edge valid against the declared
 Nyquist but not against the effective one at `window_step > 1`; and an exact
 type (`Fraction`, `Decimal`) whose value is below Nyquist but whose nearest
-double is not. Code catching `ValueError` around a bandpass call will stop
-catching these: `InvalidParameterError` inherits from `FilterError`, not from
-`ValueError`.
+double is not. The exception *type* changes, but `except ValueError` keeps
+catching them: `InvalidParameterError` was widened to inherit `ValueError`
+alongside `FilterError` before release — see the hierarchy entry above.
 
 *Six move from a bare `TypeError`* — a band edge, `window_step` or `overlap`
 that is non-numeric, or that registers as `numbers.Real` without a usable

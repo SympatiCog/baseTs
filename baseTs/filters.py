@@ -40,8 +40,23 @@ class FilterError(Exception):
     """Base exception for filter-related errors."""
     pass
 
-class InvalidParameterError(FilterError):
-    """Exception raised for invalid filter parameters."""
+class InvalidParameterError(FilterError, ValueError):
+    """Exception raised for invalid filter parameters.
+
+    Also a ValueError, for the same reason as utils.ValidationError: a rejected
+    parameter is an invalid value, and this module translates bare ValueErrors
+    from validate_sampling_freq into this type, so the two halves of one call
+    were catchable only by naming both.
+
+    Widening only - `except FilterError` and `except InvalidParameterError` are
+    unaffected, and FilterError precedes ValueError in the MRO.
+
+    Note the shape this creates in the two translation sites below:
+    `except ValueError: raise InvalidParameterError(...)` can now catch this
+    type. Both try blocks deliberately hold a single validate_sampling_freq
+    call, which raises a bare ValueError and never this one, so nothing
+    double-wraps - pinned by a test, since the tightness is what makes it safe.
+    """
     pass
 
 def validate_filter_params(data: ArrayLike, 

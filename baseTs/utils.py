@@ -237,8 +237,19 @@ class TimeSeriesError(Exception):
     """Base exception for time series related errors."""
     pass
 
-class ValidationError(TimeSeriesError):
-    """Exception raised for validation errors."""
+class ValidationError(TimeSeriesError, ValueError):
+    """Exception raised for validation errors.
+
+    Also a ValueError, because a rejected argument *is* an invalid value and
+    `except ValueError` is what callers write. Without it no single except
+    clause covered one call: the shared validators underneath this one
+    (validate_sampling_freq) raise a bare ValueError, so catching ValueError
+    missed the lag and catching TimeSeriesError missed the rate.
+
+    Widening only - every `except ValidationError` and `except TimeSeriesError`
+    keeps working, and TimeSeriesError precedes ValueError in the MRO, so a
+    caller who lists both clauses still reaches the domain one first.
+    """
     pass
 
 @dataclass
