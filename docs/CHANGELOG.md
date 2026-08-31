@@ -149,7 +149,12 @@ inherits from `TimeSeriesError`, not from `ValueError`.
 *One turns a failing call into a succeeding one* — a `Decimal` lag in seconds
 mode, which used to die on `Decimal * float`. `validate_sampling_freq` accepts
 `Decimal` as a rate deliberately, and coercing the lag the same way makes the
-two arguments agree.
+two arguments agree. Note what accepting it means: the lag converts through its
+nearest double, not exactly. `Decimal("0.499999999999999999999999999999")` is
+`0.5` as a float and so gives index 50, where exact arithmetic would floor to
+49. That is the same trade already made for an exact *rate*, it only shows
+within one ULP of an integer boundary, and it is pinned by a test — but "finite
+in, finite out" above is a claim about overflow, not about precision.
 
 **Direct callers of the two primitives see more change**, because both now
 apply `validate_sampling_freq`'s full contract to the rate. A `str` rate is now
@@ -164,6 +169,33 @@ One value-level change, on the accepted path: `idx_to_time` with a 0-d array
 index returns a Python `float` where it returned `np.float64`. Same value, and
 unreachable through `shift_timeseries`, where `validate_lag` rejects a 0-d
 array index before it is returned.
+
+**What this does not close, said plainly.** This change guards the sampling
+rate and the lag's *type* at the conversion. Three other ways into a bad lag
+result run through the same call and are untouched, all three verified
+identical on `main` and filed rather than folded in:
+
+- **#52** — `shift_timeseries` blanks the wrapped head with `lagged_data[:lag_idx] =
+  np.nan`, so an integer-dtype series raises `ValueError: cannot convert float
+  NaN to integer`. That is the *same message* this entry is about, from a
+  different line and a different cause: the rate is fine, the container cannot
+  hold the sentinel. Anyone reading #32's title would expect that path closed,
+  and it is not.
+- **#53** — nothing bounds `lag_idx` from above. `validate_lag` checks that it
+  is a positive integer, never that it fits the series, so a lag longer than
+  the data returns an empty array and a plot titled `100.0 seconds` for a
+  4-second series. Silent, and the magnitude is now the one unguarded parameter
+  left in this call.
+- **#54** — `get_lags` dispatches on `lag_unit == 'seconds'` with no else-branch
+  validation, so `'second'` or `'Seconds'` is silently reinterpreted as index
+  mode — a factor-of-the-sampling-rate difference in what the lag means, with
+  the plot correctly labelled for the wrong reading.
+
+Also unchanged: `int()` truncates rather than rounds (**#51**), so a derived
+rate can shift by one sample less than asked.
+
+Three of these four came out of adversarial review rounds on this change, not
+from the original report.
 
 ## [Unreleased] — both band edges are validated (#30)
 

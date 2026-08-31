@@ -426,6 +426,22 @@ class TestTheGuardsAreInertOnValidInput:
 
         assert time_to_idx(Decimal("0.5"), 100.0) == 50
 
+    def test_an_exact_lag_converts_through_its_float_not_exactly(self):
+        """Documented, not overlooked: coercion happens before the multiply.
+
+        Exact arithmetic on this Decimal gives 49.99...9, which floors to 49.
+        `float()` rounds it to 0.5 first, so the answer is 50. Accepting exact
+        types means accepting their nearest double - the same trade
+        `validate_sampling_freq` already makes for an exact *rate*. It only
+        shows within one ULP of an integer boundary, and the nearest float lag
+        below the boundary still gives 49.
+        """
+        boundary = Decimal("0.499999999999999999999999999999")
+
+        assert float(boundary) == 0.5
+        assert time_to_idx(boundary, 100.0) == 50
+        assert time_to_idx(0.4999999999999999, 100.0) == 49
+
     def test_a_lag_whose_multiplication_lies_cannot_change_the_index(self):
         """float() declared 0.5 s, so 0.5 s is what must be converted."""
         class _LiesAboutMultiplication:
