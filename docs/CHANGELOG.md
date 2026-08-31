@@ -54,6 +54,210 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the domain exceptions are also `ValueError`s
+
+### Changed — `except ValueError` now covers a whole call
+
+```python
+class ValidationError(TimeSeriesError, ValueError)          # baseTs/utils.py
+class InvalidParameterError(FilterError, ValueError)        # baseTs/filters.py
+```
+
+Two lines, and they delete two breaking changes instead of documenting them.
+
+Both validating families raise a type of their own, while the shared validator
+underneath them — `validate_sampling_freq` — raises a bare `ValueError`. So no
+single `except` clause covered one call: catching `ValueError` missed the lag
+or the band edge, catching `TimeSeriesError`/`FilterError` missed the rate. A
+caller who wanted "tell me when my input was rejected" had to name both, and
+nothing in the API said so.
+
+#30 and #32 each shipped a documented breaking change of exactly that shape —
+"code catching `ValueError` will stop catching these". **Both entries are still
+`[Unreleased]`**, so those breaks have never reached anyone. Widening the
+hierarchy retires both rather than shipping them, and both paragraphs have been
+corrected in place.
+
+**Widening only.** Every `except ValidationError`, `except TimeSeriesError`,
+`except InvalidParameterError` and `except FilterError` behaves as before, and
+the domain base precedes `ValueError` in the MRO, so a caller listing both
+clauses still reaches the domain one first. The whole suite passes unchanged.
+
+**The risk was never the two class definitions — it was the fourteen
+`except ValueError` sites** already in the package, any of which could start
+swallowing a domain error as a fallback. Each was checked: every one wraps
+either a builtin conversion (`float()`, `param_type()`) or exactly one
+validator that raises a *bare* `ValueError`. The two closest to the edge are
+`filters.py`'s translation sites, `except ValueError: raise
+InvalidParameterError(...)`, which can now catch the type they produce — their
+`try` blocks deliberately hold a single `validate_sampling_freq` call, so
+nothing double-wraps. That tightness is what makes the widening safe, so it is
+pinned by a test rather than left as a comment.
+
+Not done, and deliberately: the 56 remaining bare `raise ValueError` sites are
+untouched. Typing those would buy catch-by-domain, which is unreachable anyway
+— `__all__` is `['baseTs', 'from_df', 'TimeSeriesData']`, so the exception
+classes are not exported. Exporting them is the enabling step if that is ever
+wanted; sweeping 56 sites first would be building an API nobody can catch.
+
+## [Unreleased] — the lag conversions validate the rate (#32)
+
+### Fixed — a degenerate time base died in `int()`, or did not die at all
+
+`utils.time_to_idx` scaled a lag by `ts.freq` with no check on the rate:
+
+```python
+return int(lag_secs * float(freq))
+```
+
+A degenerate time base — duplicate or non-increasing timestamps — derives to a
+NaN rate, so this raised `ValueError: cannot convert float NaN to integer`,
+naming the conversion rather than the time base that caused it. That is exactly
+the failure #24's audit set out to remove, one module over; the site was simply
+missed. `idx_to_time` had the matching hole in the other direction:
+`idx_to_time(5, 0.0)` raised `ZeroDivisionError`.
+
+Both now call `validate_sampling_freq`, which covers `get_lags`,
+`shift_timeseries`, `validate_lag`, `plotting.lag_plot` and `baseTs.lag_plot`
+in one place — the single door every lag consumer already passes through.
+
+**The silent half was worse than the loud one.** In index mode the rate is only
+used to *label* the lag, so nothing raised: `shift_timeseries(deg, 5, 'index')`
+returned successfully with `lag_secs=nan`, and `lag_plot(deg, 5)` drew a plot
+titled "nan seconds". Index mode is `lag_plot`'s default.
+
+**The `get_peaks` precedent does not carry over.** #24 deliberately left
+`freq <= 0` acceptable there, because its `max(25, ...)` floor makes the rate
+irrelevant. There is no such floor here — a zero rate is a genuine
+`ZeroDivisionError` — so the full guard applies.
+
+**The lag is checked in the same place, because `validate_lag` never got to
+speak.** `shift_timeseries` calls it *after* `get_lags` has already converted,
+so an unusable lag died in the conversion — `int(nan * rate)`, `"0.5" / rate` —
+and the validator that exists to diagnose exactly that ran too late to be
+reached. Both primitives now coerce the lag through one helper and raise
+`ValidationError`, the type `validate_lag` already raises for every other bad
+lag.
+
+**Finiteness is asymmetric on purpose.** `int()` cannot carry a NaN forward, so
+`time_to_idx` refuses one; division can, so a NaN *index* still flows through to
+`validate_lag`, whose message names index mode and the integer rule — a better
+diagnosis than the conversion can give. The numeric-but-wrong lag stays
+`validate_lag`'s to judge; only the unconvertible one is refused earlier.
+
+**Both functions name the rate first when both arguments are bad.** Written as
+one expression, `_coerce_lag(lag) / validate_sampling_freq(freq)` evaluates its
+left operand first and would blame the lag, while `int(secs * rate)` blames the
+rate — the same mistake diagnosed two ways depending on which unit the caller
+chose. The rate check is now sequenced ahead of the lag in both.
+
+**Checking the operands is not the same as checking the result.** Two
+individually valid values can still combine into something the conversion
+cannot express: `1e300 s * 1e300 Hz` is `inf`, so `int()` raised a bare
+`OverflowError` — the same raw-conversion leak this change exists to stop — and
+`10**300 / 1e-300` is `inf`, which nothing downstream catches, because
+`validate_lag` only asks whether the *index* is a positive integer and never
+looks at the seconds derived from it. That `lag_secs=inf` rode out into the
+result dict and the plot title. Both were reachable on `main` as well; what is
+new is the docstring promising otherwise, so the promise is what was made true.
+The rule is now *finite in, finite out, or a diagnosis* — guarded on a finite
+input, so a NaN index still reaches `validate_lag`.
+
+**The validated values are the ones that get used**, returned from their
+validators rather than re-read from the caller's arguments. Validating one
+object and computing with another is how a band edge validated as 1.0 got
+filtered as something else in #30.
+
+**Breaking — forty-five of sixty replayed cases change** through
+`shift_timeseries`, `plotting.lag_plot` and `baseTs.lag_plot`, enumerated by
+replaying fifteen lag shapes × two units × two time bases against a `main`
+worktree and against this branch, not from recall. The table is asserted by
+`TestTheOutcomeCensusIsComplete`, which also fails if a new lag shape is added
+without being classified.
+
+*Two turn a succeeding call into a failing one* — index mode on a degenerate
+time base with a usable integer lag (`50`, and `True`, which is `1`). Both were
+returning `lag_secs=nan`, and both are the silent failure this fixes.
+
+*Thirty move to `ValueError`* — every remaining degenerate-time-base case.
+Nine were already `ValueError` and gain the diagnosis; eleven were a bare
+`TypeError` or `OverflowError` thrown by the conversion; eight were a
+`ValidationError` about the lag, since the rate is now reported first; two are
+the successes above.
+
+*Fourteen move to `ValidationError`* — a lag that is NaN, infinite, a `str`,
+`bytes`, `None`, a multi-element array, or an integer too large to convert.
+Thirteen were bare `TypeError`, `OverflowError` or `ValueError`; the fourteenth
+was already a `ValidationError` and only its message changes. The exception
+*type* changes, but `except ValueError` keeps catching them — see the hierarchy
+entry below, which widened `ValidationError` for exactly this reason.
+
+*One turns a failing call into a succeeding one* — a `Decimal` lag in seconds
+mode, which used to die on `Decimal * float`. `validate_sampling_freq` accepts
+`Decimal` as a rate deliberately, and coercing the lag the same way makes the
+two arguments agree. Note what accepting it means: the lag converts through its
+nearest double, not exactly. `Decimal("0.499999999999999999999999999999")` is
+`0.5` as a float and so gives index 50, where exact arithmetic would floor to
+49. That is the same trade already made for an exact *rate*, it only shows
+within one ULP of an integer boundary, and it is pinned by a test — but "finite
+in, finite out" above is a claim about overflow, not about precision.
+
+**One narrowing the census does not cover**, because it is a duck type rather
+than one of the fifteen shapes replayed: an object with a working `__mul__` and
+no `__float__` used to multiply straight through, and is now refused. That is
+the intended consequence of coercing before computing — an object whose
+`__mul__` returns something arbitrary is exactly what #30's "validate one
+value, compute another" lesson was about — but it is a behaviour change, and it
+is pinned by a test rather than left to be discovered.
+
+**Two message defects, both introduced here and both fixed before merge.** The
+`OverflowError` arm reported `10**400` as "not a real number", which is false —
+it is a real number outside float's range, and the message sent the caller
+looking for a type error they did not have; it now has its own wording. And the
+messages interpolated the rejected value with `{lag!r}`, so a 200k-element list
+produced a 1.4 MB exception; values are now truncated with their type name.
+
+**Direct callers of the two primitives see more change**, because both now
+apply `validate_sampling_freq`'s full contract to the rate. A `str` rate is now
+refused, where `float("100")` used to succeed and return 50; `True` is refused,
+where it used to be taken as 1 Hz and return 0; and negative, zero and infinite
+rates are refused, where `time_to_idx(0.5, -100.0)` returned `-50`,
+`time_to_idx(0.5, 0.0)` returned `0`, and `idx_to_time(0.5, inf)` returned
+`0.0`. None of these can arrive from `ts.freq`, which validates at the property
+setter — only from a direct call passing a literal.
+
+One value-level change, on the accepted path: `idx_to_time` with a 0-d array
+index returns a Python `float` where it returned `np.float64`. Same value, and
+unreachable through `shift_timeseries`, where `validate_lag` rejects a 0-d
+array index before it is returned.
+
+**What this does not close, said plainly.** This change guards the sampling
+rate and the lag's *type* at the conversion. Three other ways into a bad lag
+result run through the same call and are untouched, all three verified
+identical on `main` and filed rather than folded in:
+
+- **#52** — `shift_timeseries` blanks the wrapped head with `lagged_data[:lag_idx] =
+  np.nan`, so an integer-dtype series raises `ValueError: cannot convert float
+  NaN to integer`. That is the *same message* this entry is about, from a
+  different line and a different cause: the rate is fine, the container cannot
+  hold the sentinel. Anyone reading #32's title would expect that path closed,
+  and it is not.
+- **#53** — nothing bounds `lag_idx` from above. `validate_lag` checks that it
+  is a positive integer, never that it fits the series, so a lag longer than
+  the data returns an empty array and a plot titled `100.0 seconds` for a
+  4-second series. Silent, and the magnitude is now the one unguarded parameter
+  left in this call.
+- **#54** — `get_lags` dispatches on `lag_unit == 'seconds'` with no else-branch
+  validation, so `'second'` or `'Seconds'` is silently reinterpreted as index
+  mode — a factor-of-the-sampling-rate difference in what the lag means, with
+  the plot correctly labelled for the wrong reading.
+
+Also unchanged: `int()` truncates rather than rounds (**#51**), so a derived
+rate can shift by one sample less than asked.
+
+Three of these four came out of adversarial review rounds on this change, not
+from the original report.
+
 ## [Unreleased] — both band edges are validated (#30)
 
 ### Fixed — `bandpass_filter` checked one edge, and argument order picked which
@@ -178,9 +382,9 @@ zero or non-scalar **lower** edge; negative, zero, NaN or non-scalar **upper**
 edge; transposed edges; equal edges; an upper edge valid against the declared
 Nyquist but not against the effective one at `window_step > 1`; and an exact
 type (`Fraction`, `Decimal`) whose value is below Nyquist but whose nearest
-double is not. Code catching `ValueError` around a bandpass call will stop
-catching these: `InvalidParameterError` inherits from `FilterError`, not from
-`ValueError`.
+double is not. The exception *type* changes, but `except ValueError` keeps
+catching them: `InvalidParameterError` was widened to inherit `ValueError`
+alongside `FilterError` before release — see the hierarchy entry above.
 
 *Six move from a bare `TypeError`* — a band edge, `window_step` or `overlap`
 that is non-numeric, or that registers as `numbers.Real` without a usable
