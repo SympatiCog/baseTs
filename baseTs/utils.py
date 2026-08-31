@@ -770,6 +770,25 @@ def validate_lag(lag: Union[int, float], lag_idx: int, lag_unit: str, freq: floa
                 f"In index mode, got lag={lag}. {floatmsg}"
             )
 
+def _describe(value: Any) -> str:
+    """Render a rejected value for an error message, without pasting it whole.
+
+    `{value!r}` on a large object builds an unusably long exception - a
+    200k-element list produced a 1.4 MB message, and 10**400 a 400-digit one -
+    which then lands in logs and tracebacks. The type and a prefix are what
+    identify the mistake; the contents are not.
+
+    Args:
+        value: The rejected value
+
+    Returns:
+        Its repr, truncated with the type name appended when it is long
+    """
+    text = repr(value)
+    if len(text) <= 60:
+        return text
+    return f"{text[:57]}... ({type(value).__name__})"
+
 def _coerce_lag(lag: Any) -> float:
     """Convert a lag to a float, or say which argument is wrong.
 
@@ -787,11 +806,17 @@ def _coerce_lag(lag: Any) -> float:
 
     Coerced via float() rather than gated on numbers.Real, matching
     validate_sampling_freq: a registrable virtual subclass can satisfy an
-    isinstance test and still have no working __float__, and float() accepts
-    everything the arithmetic below can actually use, including 0-d arrays and
-    Decimal. str and bytes are excluded first because float("0.5") succeeds -
-    without that exclusion this would *widen* what the conversion accepts,
-    where today a string lag raises TypeError.
+    isinstance test and still have no working __float__. This narrows what the
+    conversion takes, deliberately - an object with a working __mul__ and no
+    __float__ used to multiply through and now does not, which is the point,
+    since #30 was about validating one value and computing with another.
+    0-d arrays and Decimal still convert.
+
+    str and bytes are both excluded first, and both are load-bearing:
+    float("0.5") and float(b"0.5") each return 0.5, so without the exclusion
+    this would *widen* what the conversion accepts, where today either raises.
+    bytes is easy to mistake for redundant here - float() refuses most
+    non-numerics, but not that one.
 
     bool is deliberately not excluded: float(True) is 1.0 and `True * rate`
     already produced exactly that, so rejecting it would break input that
@@ -804,17 +829,25 @@ def _coerce_lag(lag: Any) -> float:
         The lag as a float, when it is convertible
 
     Raises:
-        ValidationError: If the lag is not a real scalar
+        ValidationError: If the lag is not a real scalar, or is a real number
+            too large for a float
     """
     if isinstance(lag, (str, bytes)):
-        raise ValidationError(f"lag must be a real number, not {lag!r}.")
+        raise ValidationError(f"lag must be a real number, not {_describe(lag)}.")
     try:
         return float(lag)
-    except (TypeError, ValueError, OverflowError) as exc:
-        # OverflowError, not just TypeError/ValueError: float(10**400) raises
-        # it, and it is neither - so it would escape this contract exactly as
-        # it escapes int() and the division today.
-        raise ValidationError(f"lag must be a real number, not {lag!r}.") from exc
+    except OverflowError as exc:
+        # Separated from the other two: 10**400 *is* a real number, it is just
+        # outside float's range. Folding it into the "not a real number"
+        # message tells the caller something false about their value and sends
+        # them looking for a type error they do not have.
+        raise ValidationError(
+            f"lag is too large to convert to a float: {_describe(lag)}."
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"lag must be a real number, not {_describe(lag)}."
+        ) from exc
 
 def idx_to_time(lag_idx: int, freq: float) -> float:
     """
@@ -889,9 +922,10 @@ def time_to_idx(lag_secs: float, freq: float) -> int:
         # OverflowError respectively, naming neither the lag nor the mode.
         #
         # Redundant for *coverage* and kept for the *message*: the rate is
-        # finite and positive by now, so a non-finite lag cannot produce a
-        # finite product either, and the check below would catch every case
-        # this one does. It would report an overflow, though, which is the
+        # finite and positive by now - guaranteed by validate_sampling_freq's
+        # `not (value > 0) or not math.isfinite(value)`, not by anything here -
+        # so a non-finite lag cannot produce a finite product either, and the
+        # check below would catch every case this one does. It would report an overflow, though, which is the
         # wrong diagnosis for an argument that arrived as NaN. Both messages
         # are pinned by tests that match the distinguishing wording - matching
         # a substring common to both is how this check went undetected as

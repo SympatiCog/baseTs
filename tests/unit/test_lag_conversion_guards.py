@@ -178,6 +178,60 @@ class TestANonFiniteLagIsDiagnosed:
         with pytest.raises(ValidationError, match="[Ll]ag"):
             time_to_idx(10 ** 400, 100.0)
 
+    def test_an_oversized_int_is_not_called_unreal(self):
+        """It is a perfectly good real number; it is out of float's range.
+
+        Collapsing OverflowError into the "not a real number" message tells
+        the caller something false about their value, and sends them looking
+        for a type error they do not have.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            time_to_idx(10 ** 400, 100.0)
+
+        assert "too large" in str(excinfo.value)
+        assert "not a real number" not in str(excinfo.value)
+
+    def test_a_refused_lag_does_not_paste_itself_into_the_message(self):
+        """`{lag!r}` on a large object builds a megabyte-long exception.
+
+        A 200k-element list produced a 1.4 MB message, which reaches logs and
+        tracebacks. The type is what the caller needs; the contents are not.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            time_to_idx(list(range(200000)), 100.0)
+
+        assert len(str(excinfo.value)) < 200
+
+    def test_a_lag_that_multiplies_but_has_no_float_is_now_refused(self):
+        """A deliberate narrowing, pinned so it is not mistaken for a bug.
+
+        `lag * rate` used to accept anything with a working `__mul__`. Coercing
+        first means the lag has to be convertible, not merely multipliable -
+        which is the point, since an object whose `__mul__` returns something
+        arbitrary is exactly what #30's "validate one value, compute another"
+        lesson was about.
+        """
+        class _MultipliesOnly:
+            def __mul__(self, other):
+                return 50.0
+
+            __rmul__ = __mul__
+
+        assert _MultipliesOnly() * 100.0 == 50.0        # main returned 50
+        with pytest.raises(ValidationError, match="[Ll]ag"):
+            time_to_idx(_MultipliesOnly(), 100.0)
+
+    def test_a_bytes_lag_is_refused_because_float_would_take_it(self):
+        """The str/bytes exclusion is load-bearing for both, not just str.
+
+        `float(b"0.5")` returns 0.5 - bytes are not refused by float() the way
+        a reviewer might assume - so without the exclusion a bytes lag would be
+        silently accepted where it used to raise TypeError.
+        """
+        assert float(b"0.5") == 0.5
+        with pytest.raises(ValidationError, match="[Ll]ag"):
+            time_to_idx(b"0.5", 100.0)
+
     def test_a_non_finite_lag_in_index_mode_still_reaches_validate_lag(self):
         """Unchanged, and deliberately so: `idx_to_time` divides rather than
         truncating, so a NaN index flows through to `validate_lag`, which

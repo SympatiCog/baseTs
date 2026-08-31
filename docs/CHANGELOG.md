@@ -156,6 +156,21 @@ nearest double, not exactly. `Decimal("0.499999999999999999999999999999")` is
 within one ULP of an integer boundary, and it is pinned by a test — but "finite
 in, finite out" above is a claim about overflow, not about precision.
 
+**One narrowing the census does not cover**, because it is a duck type rather
+than one of the fifteen shapes replayed: an object with a working `__mul__` and
+no `__float__` used to multiply straight through, and is now refused. That is
+the intended consequence of coercing before computing — an object whose
+`__mul__` returns something arbitrary is exactly what #30's "validate one
+value, compute another" lesson was about — but it is a behaviour change, and it
+is pinned by a test rather than left to be discovered.
+
+**Two message defects, both introduced here and both fixed before merge.** The
+`OverflowError` arm reported `10**400` as "not a real number", which is false —
+it is a real number outside float's range, and the message sent the caller
+looking for a type error they did not have; it now has its own wording. And the
+messages interpolated the rejected value with `{lag!r}`, so a 200k-element list
+produced a 1.4 MB exception; values are now truncated with their type name.
+
 **Direct callers of the two primitives see more change**, because both now
 apply `validate_sampling_freq`'s full contract to the rate. A `str` rate is now
 refused, where `float("100")` used to succeed and return 50; `True` is refused,
