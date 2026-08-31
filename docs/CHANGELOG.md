@@ -122,18 +122,25 @@ Unchanged: the constructor still upper-cases the name it is given.
 
 ### Observed, not changed
 
-Two pre-existing inconsistencies in the same neighbourhood, both verified
-identical on a `main` worktree and left for their own issues rather than
-folded in here:
+Two pre-existing defects in the same neighbourhood, both verified identical on
+a `main` worktree and filed rather than folded in here:
 
-- `_create_new_with_data` re-upper-cases the signal name, so `ts.zscale()`
-  turns `'Heart Rate'` into `'HEART RATE'` while `ts.iloc[:5]` and `ts.copy()`
-  preserve it. Only reachable for a name assigned after construction, since
-  the constructor upper-cases anyway.
-- `TimeSeriesData(ts)` and `baseTs(ts)` drop the signal name entirely:
-  `_copy_metadata_from_basetseries` copies it, and the next statement
-  overwrites it with the kwarg default. The same overwrite that #15 fixed for
-  `outlier_filter`, still present for the name.
+- **#56** — `_create_new_with_data` re-upper-cases the signal name, so
+  `ts.zscale()` turns `'Heart Rate'` into `'HEART RATE'` while `ts.iloc[:5]`
+  and `ts.copy()` preserve it. Only reachable for a name assigned after
+  construction, since the constructor upper-cases anyway. A fix has to decide
+  which of the two behaviours is the intended one, which is why it is not
+  folded in.
+- **#57** — `baseTs(ts)` resets *nine of thirteen* `_metadata` values to
+  constructor defaults: `baseTs.__init__` assigns its own keyword defaults
+  over what `_copy_metadata_from_basetseries` just copied. The signal name is
+  what this sweep noticed; the other eight came out of checking whether it was
+  really alone. `outlier_filter` is the one that survives, and only because
+  #15 added the per-attribute guard whose comment describes this exact bug.
+  The history loss is the sharpest edge - a converted object reports a fresh
+  "Created baseTs object" as its entire provenance, with the flags that would
+  have contradicted it reset in the same breath. `TimeSeriesData(ts)` loses
+  one, the name.
 
 ## [Unreleased] — the domain exceptions are also `ValueError`s
 
