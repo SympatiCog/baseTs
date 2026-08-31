@@ -251,6 +251,13 @@ class TestAConfiguredFilterIsNotReplaced:
 
     A fix that assigned unconditionally would pass every test above while
     silently resetting the parameters of anyone who had set them.
+
+    This class passes on `main` as well, and that is not a defect in it: a
+    configured filter always survived a derivation, because pandas passed the
+    reference through untouched. It is here as the guard on the *new* code -
+    drop the `is None` from `_detach_shared_metadata` and these four are the
+    only tests in this file that fail. Read it as a mutation guard, never as
+    evidence that the branch enabled anything.
     """
 
     @staticmethod
