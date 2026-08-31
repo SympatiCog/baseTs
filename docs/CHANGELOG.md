@@ -54,6 +54,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the metadata defaults survive a derivation (#33)
+
+### Fixed — a `None` filter reached every derived object
+
+```python
+ts.outlier_filter = None
+ts.iloc[:5].get_outlier_filter_params()
+# AttributeError: 'NoneType' object has no attribute 'config'
+```
+
+`history` was made unconditionally a list in PR #26 by normalising in
+`_detach_shared_metadata`, the chokepoint `__finalize__` runs.
+`outlier_filter` arrives by the same mechanism — pandas copies every
+`_metadata` name with `object.__setattr__(self, name, getattr(other, name,
+None))` — but nothing re-applied a default afterwards, so a `None` propagated
+to every derived object, where `get_outlier_filter_params`, `info` and
+`filter_outliers` all read `.config` unguarded. The normaliser now restores a
+`LowessOutlierFilter()` there, the way it restores a list for `history`.
+
+**The `None` was minted in `series.py`, not by the user.**
+`_copy_metadata_from_basetseries` gives `history`, the flags and the string
+names real defaults when the source carries none, then falls through to
+`setattr(self, attr, None)` for everything else — `outlier_filter` included.
+`baseTs.__init__` re-guards it (the guard #15 added for exactly this), so the
+state only survived on a `TimeSeriesData` built straight from a source with no
+metadata, and on everything derived from it.
+
+That fallback needs no arm of its own, and an earlier revision of this branch
+added one anyway: the method ends by calling `_detach_shared_metadata`, so the
+`None` it had just written was restored one line later. Neutralising the arm
+left all of `test_metadata_defaults.py` green, which is how it was caught. It
+is gone, and the comment on the bare `else` now says which names legitimately
+reach it — `_lowess_fit` and `_outlier_indices`, which carry the index they
+describe (#20), and `_freq_declaration`, absent until a rate is declared
+(#29/#31/#23).
+
+**`is_outlier_filtered` was the fallback's real gap**, and the chokepoint does
+not cover it. The defaulting arm listed three of the four boolean flags, so
+the one that names the outlier filter fell to the bare `else` and landed as
+`None` — on the same objects, by the same omission, as the filter itself, and
+`assert ts.is_outlier_filtered is False` is an assertion the suite already
+makes elsewhere. It is in the flags list now, and all five flags are asserted
+boolean on a metadata-less source and on an object derived from one.
+
+**Restoring a default is not imposing one.** A configured filter reaches the
+derived object with its parameters intact — asserted across `__finalize__`,
+`copy(deep=True)`, `copy(deep=False)` and `_create_new_with_data`, because a
+normaliser that assigned unconditionally would pass every other test here
+while silently resetting `set_outlier_filter(frac=...)`.
+
+**What this does not do is heal in place**, and a test pins that rather than
+leaving it to be discovered. `_detach_shared_metadata` runs on derivation,
+never on the object you mutate, so clearing the attribute by hand leaves that
+object broken until something derives from it. What the fix guarantees is that
+the `None` stops *propagating* — no object inherits a state it never chose.
+Closing the in-place half would take a normalising property, the shape `freq`
+(#29/#31/#23) and `lowess_fit` (#20) use, and nothing yet needs it.
+
+### Changed — `signal_name` and `last_process` are always strings
+
+The same hole with a louder symptom, and the review issue #33 asks for.
+Plotting builds every title, axis label and legend entry with
+`ts.signal_name + " " + ts.last_process`, so a propagated `None` raised
+`TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'` from
+matplotlib's caller. Both names now go through `normalise_label` at the same
+chokepoint.
+
+**Three behaviour changes, all narrow:**
+
+- A non-string label is coerced on derivation rather than propagated as-is:
+  `ts.signal_name = 12` reaches `ts.iloc[:5]` as `'12'`. Stringified rather
+  than blanked — a caller who set a number meant it to appear on the plot.
+- `TimeSeriesData(..., signal_name=12)` no longer raises `AttributeError:
+  'int' object has no attribute 'upper'`; it stores `'12'`. A failing call
+  becomes a succeeding one. The constructor is a door of its own for the
+  label, and the only one that called a `str` method on it —
+  `copy(deep=True)` and `_create_new_with_data` both hand the parent's name
+  back to it.
+- `baseTs(..., last_process=None)` returns a plottable object. This was the
+  hole a review round found in the fix above: `signal_name` is handed to
+  `TimeSeriesData.__init__` and normalised there, while `last_process` is
+  assigned straight onto the object by `baseTs.__init__`, so a caller passing
+  a supported keyword got back a series whose every plot label raised
+  `TypeError` — with nothing mutated afterwards, so not the in-place boundary
+  above but an unnormalised entry point. `baseTs(..., last_process=12)` now
+  stores `'12'` on the same rule as the name.
+
+Unchanged: the constructor still upper-cases the name it is given.
+
+### Observed, not changed
+
+Two pre-existing defects in the same neighbourhood, both verified identical on
+a `main` worktree and filed rather than folded in here:
+
+- **#56** — `_create_new_with_data` re-upper-cases the signal name, so
+  `ts.zscale()` turns `'Heart Rate'` into `'HEART RATE'` while `ts.iloc[:5]`
+  and `ts.copy()` preserve it. Only reachable for a name assigned after
+  construction, since the constructor upper-cases anyway. A fix has to decide
+  which of the two behaviours is the intended one, which is why it is not
+  folded in.
+- **#57** — `baseTs(ts)` resets *nine of thirteen* `_metadata` values to
+  constructor defaults: `baseTs.__init__` assigns its own keyword defaults
+  over what `_copy_metadata_from_basetseries` just copied. The signal name is
+  what this sweep noticed; the other eight came out of checking whether it was
+  really alone. `outlier_filter` is the one that survives, and only because
+  #15 added the per-attribute guard whose comment describes this exact bug.
+  The history loss is the sharpest edge - a converted object reports a fresh
+  "Created baseTs object" as its entire provenance, with the flags that would
+  have contradicted it reset in the same breath. `TimeSeriesData(ts)` loses
+  one, the name.
+
 ## [Unreleased] — the domain exceptions are also `ValueError`s
 
 ### Changed — `except ValueError` now covers a whole call

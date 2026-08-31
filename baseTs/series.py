@@ -205,8 +205,26 @@ def _detach_shared_metadata(obj):
 
     Any non-list history is coerced, not just None: a str, tuple or ndarray is
     just as fatal to .append(). See normalise_history for the coercion rules.
+
+    A `None` outlier_filter is replaced by a default on the same argument, and
+    only when it is None - restoring a default is not the same as imposing one,
+    and a configured filter must reach the derived object untouched. pandas
+    copies whatever the parent holds, so an object that reached this state (see
+    _copy_metadata_from_basetseries, or a caller who cleared the attribute)
+    handed the None to every object derived from it, where `.config` is read
+    unguarded by get_outlier_filter_params, info and filter_outliers alike.
+
+    `signal_name` and `last_process` are coerced to strings for the same
+    reason: plotting builds every title, axis label and legend entry with
+    `signal_name + " " + last_process`, so a propagated None raises TypeError
+    there instead of AttributeError. See normalise_label.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
+    if getattr(obj, 'outlier_filter', None) is None:
+        object.__setattr__(obj, 'outlier_filter', LowessOutlierFilter())
+    for label in ('signal_name', 'last_process'):
+        object.__setattr__(obj, label,
+                           normalise_label(getattr(obj, label, None)))
     stored = getattr(obj, '_outlier_indices', None)
     if stored is not None and isinstance(stored[0], (list, np.ndarray)):
         # ndarray as well as list: the constructor types this parameter as
@@ -247,6 +265,27 @@ def normalise_history(history: Any) -> list:
         return list(history)
     # Deliberately not a bare `list(history)` fallback - see the docstring.
     return [history]
+
+
+def normalise_label(value: Any) -> str:
+    """Coerce a label attribute (`signal_name`, `last_process`) to a string.
+
+    The single definition of "the label metadata is always a string", so the
+    __finalize__ path and _copy_metadata_from_basetseries cannot drift apart.
+
+    None becomes the empty string, which is what both attributes are born with
+    and what every consumer already handles. Anything else is stringified
+    rather than blanked: a caller who set a number meant it to appear on the
+    plot, and `str(12)` keeps it there where `""` would silently lose it.
+
+    Unlike normalise_history there is no shared-mutable problem to solve here -
+    strings are immutable, so this is about type, not about isolation.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _freq_token(index: Any) -> tuple:
@@ -415,8 +454,13 @@ class TimeSeriesData(pd.Series):
         if freq is not None:
             self.freq = freq
 
-        # Set signal name
-        self.signal_name = signal_name.upper() if signal_name else ""
+        # Set signal name. Through normalise_label because this is the third
+        # door the label metadata arrives by, and the only one that used to
+        # call a str method on it: copy(deep=True) and _create_new_with_data
+        # both hand the parent's name back to this constructor, so a name that
+        # was not a string reached `.upper()` and died there rather than at the
+        # assignment that set it.
+        self.signal_name = normalise_label(signal_name).upper()
         
         # Initialize or update history
         if not hasattr(self, 'history') or self.history is None:
@@ -450,13 +494,28 @@ class TimeSeriesData(pd.Series):
                 # Set default if attribute doesn't exist
                 if attr == 'history':
                     self.history = [f"Converted from baseTs with {len(self)} samples"]
-                elif attr in ['is_filtered', 'is_interpolated', 'is_uniform_grid', 'has_timestamp_offset']:
+                elif attr in ['is_filtered', 'is_interpolated', 'is_uniform_grid',
+                              'is_outlier_filtered', 'has_timestamp_offset']:
+                    # is_outlier_filtered was missing from this list, so the
+                    # one boolean flag that names the outlier filter fell to
+                    # the bare `else` and landed as None - on the same objects,
+                    # and by the same omission, as the filter itself. Nothing
+                    # downstream normalises it, so it propagated.
                     setattr(self, attr, False)
                 elif attr in ['ts_offset']:
                     setattr(self, attr, 0)
                 elif attr in ['signal_name', 'last_process']:
                     setattr(self, attr, "")
                 else:
+                    # What reaches here is None-tolerant by design:
+                    # _lowess_fit and _outlier_indices carry the index they
+                    # describe (#20), and _freq_declaration is absent until
+                    # someone declares a rate (#29/#31/#23). outlier_filter is
+                    # not - but it needs no arm of its own, because the
+                    # _detach_shared_metadata call at the end of this method
+                    # restores a default for exactly that name. An arm here
+                    # would be unreachable in effect: neutralising it leaves
+                    # every test in test_metadata_defaults.py green.
                     setattr(self, attr, None)
 
         _detach_shared_metadata(self)
