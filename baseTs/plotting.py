@@ -4,6 +4,8 @@ Created on Oct 19 2024
 @author: stan@sympaticog.com
 """
 
+import math
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
@@ -11,7 +13,7 @@ from typing import Union, Optional, Tuple
 
 # local imports
 #sys.path.append('/Users/stan/Projects/cpCST_MoBI/baseTs')
-from .utils import shift_timeseries
+from .utils import coerce_real_scalar, shift_timeseries
 
 def zscale(x: np.ndarray) -> np.ndarray:
     """Standardize data by removing the mean and scaling to unit variance."""
@@ -218,6 +220,73 @@ def plot_series(base_ts,
         
     return ax
 
+def _validate_display_rate(value, name: str, nan_means_default: bool = False) -> float:
+    """Coerce a frequency bound to a float matplotlib can use as an axis limit.
+
+    The type rules are delegated to utils.coerce_real_scalar, shared with
+    validate_sampling_freq: a display bound and a sampling rate disagree about
+    which *values* are acceptable, but not about what counts as a number, and
+    a second copy of the latter would drift (#28).
+
+    Args:
+        value: The bound as the caller passed it
+        name: The parameter's name, for the error message
+        nan_means_default: If True, NaN is passed through as the caller's
+            "use the default" sentinel rather than rejected
+
+    Returns:
+        The bound as a plain float, NaN only when `nan_means_default`
+
+    Raises:
+        ValueError: If the bound is not a real scalar, or is not finite
+    """
+    rate = coerce_real_scalar(value, f"Invalid {name}")
+    if math.isnan(rate) and nan_means_default:
+        return rate
+    if not math.isfinite(rate):
+        raise ValueError(
+            f"Invalid {name}: {value!r} is not finite. Axis limits cannot be "
+            f"NaN or Inf."
+        )
+    return rate
+
+
+def _validate_highlight_band(highlight_band) -> Tuple[float, float]:
+    """Unpack and coerce a (low, high) band, or raise ValueError naming it.
+
+    Both edges go through the same door as the display bounds, which closes a
+    hole the ordering check could not: `band_low >= band_high` is False when
+    either edge is NaN, since every comparison against NaN is False - so
+    (nan, 0.5) was silently shaded and legended as though it were a valid
+    band. The same shape of defect as #30, where `max(hp_hz, lp_hz)` let
+    argument position decide which edge got checked.
+
+    Args:
+        highlight_band: The band as the caller passed it
+
+    Returns:
+        `(band_low, band_high)` as plain finite floats - the coerced values,
+        which the caller must then use: validating one object and drawing with
+        another is what #30 found in the filter family.
+
+    Raises:
+        ValueError: If the band is not a pair, or either edge is not a finite
+            real scalar
+    """
+    try:
+        band_low, band_high = highlight_band
+    except (TypeError, ValueError) as exc:
+        # Unpacking raises TypeError for a non-iterable and ValueError for the
+        # wrong length; both are the same caller mistake and both are outside
+        # the ValueError contract this function's docstring promises.
+        raise ValueError(
+            f"highlight_band must be a (low, high) pair of frequencies in Hz, "
+            f"got {highlight_band!r}"
+        ) from exc
+    return (_validate_display_rate(band_low, 'highlight_band low'),
+            _validate_display_rate(band_high, 'highlight_band high'))
+
+
 def plot_fft_power(ts,
                    max_rate: float = np.nan,
                    min_rate: float = 0.0,
@@ -252,11 +321,19 @@ def plot_fft_power(ts,
 
     Raises:
         TypeError: If `ts` is not a baseTs
-        ValueError: If the sampling rate is unusable (NaN, zero or negative),
-            if the data contains NaN or Inf, if `window` names an unknown
-            window function, if the spectrum comes back empty, if
-            [min_rate, max_rate] selects no frequency bins, or if
-            `highlight_band` is not strictly increasing
+        ValueError: For every other rejected input, so that one `except
+            ValueError` covers the whole function:
+
+            - the sampling rate is unusable (NaN, zero or negative)
+            - the data contains NaN or Inf (fill gaps first, e.g. with
+              `interpolate_gaps()`)
+            - `window` names an unknown window function
+            - the spectrum comes back empty
+            - `min_rate` or `max_rate` is not a real finite scalar; `max_rate`
+              additionally accepts NaN, its documented "use Nyquist" sentinel
+            - [min_rate, max_rate] selects no frequency bins
+            - `highlight_band` is not a pair of real finite frequencies, or is
+              not strictly increasing
 
     A rejected call draws nothing: no figure is created, and a caller-supplied
     `ax` is returned to them untouched.
@@ -276,8 +353,21 @@ def plot_fft_power(ts,
     # with a success exit code. Narrowing that except would not have been
     # enough - setup_plot ran above it, so each rejected call still leaked a
     # figure into pyplot's registry.
+    #
+    # The display bounds are checked here rather than left to matplotlib
+    # because they end up in ax.set_xlim, which rejects NaN and Inf - and does
+    # so from the draw phase, after a figure exists. An infinite max_rate
+    # passes the frequency mask below (the mask is non-empty), so nothing else
+    # would stop it before then, and the guarantee above would be false for
+    # exactly one input.
+    min_rate = _validate_display_rate(min_rate, 'min_rate')
+    # NaN is max_rate's documented public sentinel for "use Nyquist", so it is
+    # the one non-finite value allowed through; it is resolved below, once
+    # there is a spectrum to take the top bin from.
+    max_rate = _validate_display_rate(max_rate, 'max_rate', nan_means_default=True)
+
     if highlight_band is not None:
-        band_low, band_high = highlight_band
+        band_low, band_high = _validate_highlight_band(highlight_band)
         if band_low >= band_high:
             raise ValueError(
                 f"highlight_band low ({band_low} Hz) must be less than "

@@ -75,12 +75,70 @@ to `compute_fft_power`, `get_frequency_content`, `relative_band_power`,
 `get_peaks` and `filters.validate_filter_params`; this wrapper undid all of them
 on what is, for interactive users, the main path to a spectrum.
 
-**Behaviour change:** `plot_fft_power` and `ts.plot_fft_power()` now raise
-`ValueError` for an unusable sampling rate, data containing NaN or Inf, an
-unknown `window`, an empty spectrum, a `[min_rate, max_rate]` window selecting
-no bins, and a `highlight_band` that is not strictly increasing. Gappy data
-needs an `interpolate_gaps()` first — since #36 `filter_outliers` leaves the
-gaps it did not create as NaN, and since #28 the spectral guards reject them.
+**Behaviour change: 29 of a 30-case census change outcome**, generated against
+a `main` worktree rather than written from memory, and pinned by
+`test_every_rejected_input_raises_valueerror_and_draws_nothing`. Every one of
+them now raises `ValueError` — one `except ValueError` covers the function —
+where before they drew. The census splits in two:
+
+**26 drew the error as text.** An unusable sampling rate, data containing NaN
+or Inf, an unknown `window`, a `[min_rate, max_rate]` window selecting no bins,
+a reversed or equal-edged `highlight_band`, and every malformed bound or band
+(`max_rate=None`, `'abc'`, `±Inf`, a list; `min_rate=NaN`, `Inf`, `None`; a
+band that is a 1- or 3-tuple, a non-iterable, or has a `None` edge). Several of
+these were not even `ValueError` underneath: `np.isnan(None)` raised `TypeError:
+ufunc 'isnan' not supported for the input types`, and a malformed band died on
+tuple unpacking — but the bare `except` meant no caller ever saw either.
+
+**4 drew a silently wrong plot**, which is the worse half and was not in the
+issue report:
+
+| Input | Before | Now |
+|---|---|---|
+| `max_rate=True` | plotted, silently taken as 1.0 Hz | raises |
+| `min_rate=True` | plotted, silently taken as 1.0 Hz | raises |
+| `highlight_band=(nan, 0.5)` | band shaded and legended — `nan >= 0.5` is `False` | raises |
+| `highlight_band='ab'` | band shaded — `'a' >= 'b'` is `False` | raises |
+
+The NaN-edge hole is **pre-existing** (`main`'s ordering check has it too, just
+positioned after the plot instead of before it) and is the same shape as #30,
+where `max(hp_hz, lp_hz)` let argument *position* decide which edge was checked.
+It is closed here rather than filed because this change moves and re-documents
+that exact check, and shipping "raises if not strictly increasing" over a known
+NaN hole would make the new docstring false.
+
+Gappy data needs an `interpolate_gaps()` first — since #36 `filter_outliers`
+leaves the gaps it did not create as NaN, and since #28 the spectral guards
+reject them.
+
+The one case that did **not** change: a `highlight_band` outside the plotted
+range still draws, which is legitimate.
+
+### Added — `utils.coerce_real_scalar`, the shared type door
+
+The bounds needed the type rules `validate_sampling_freq` already had — reject
+`str`/`bool`/`np.bool_`/`bytes` before `float()` (since `float('30')` succeeds
+and `True` is a `Real`), reject multi-element arrays rather than unwrap them
+(`float()` accepts them on numpy 1.x and raises on 2.x, so allowing them would
+make the accept set differ across the CI matrix), and translate `TypeError`/
+`ValueError`/`OverflowError` into one `ValueError`.
+
+Those rules are now `utils.coerce_real_scalar`, which `validate_sampling_freq`
+calls instead of owning, and which the new `plotting._validate_display_rate`
+and `_validate_highlight_band` call too. They are shared rather than copied
+because the *type* rules are common while the *range* rules genuinely differ: a
+sampling rate must be finite and positive, `max_rate` takes NaN as its "use
+Nyquist" sentinel, `min_rate` may be zero. Copying them is what let the four
+spectral entry points drift apart before #28.
+
+`validate_sampling_freq`'s own behaviour is unchanged, including its messages;
+the 933-test suite passing across the extraction is what says so.
+
+**A hole mutation testing found in the moved code:** the multi-element-array
+branch was unpinned — deleting it left the suite green on `main` as well as
+here, because `float()` on such an array raises `TypeError` on numpy 2.x and
+the shared door translates it to `ValueError` regardless, so only the *message*
+degrades. Now pinned from both sides.
 
 **Fixed by reordering, not by narrowing the `except`.** Everything that can
 fail on the caller's input now runs *before* `setup_plot`, so a rejected call
@@ -102,11 +160,12 @@ asking for it, and the wrapper's whole failure mode was that it applied
 unconditionally; if notebook ergonomics want it back it can be added then, with
 a use case behind it.
 
-**Not in scope:** `lag_plot` has a bare `except Exception` of the same shape
-around `ts.signal_name.upper()`. It is a weaker case — `shift_timeseries` is
-already called outside it, so #32's guards do propagate, and since #33
-`signal_name` is a string on every derived object — so it is filed separately
-rather than widening this change.
+**Not in scope, filed as #61:** `lag_plot` has a bare `except Exception` of the
+same shape around `ts.signal_name.upper()`, which prints to stdout and labels
+the plot `Signal`. It is a weaker case — `shift_timeseries` is already called
+outside it, so #32's guards do propagate; since #33 `signal_name` is a string
+on every derived object, so it needs a hand-assigned non-string to fire; and
+the consequence is a mislabelled plot, not a wrong one.
 
 ## [Unreleased] — conversion stops resetting what it converts (#57)
 

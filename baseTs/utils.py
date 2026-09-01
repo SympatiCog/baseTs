@@ -15,6 +15,65 @@ from scipy.signal import find_peaks
 # if TYPE_CHECKING:
 #     from .core import baseTs
 
+def coerce_real_scalar(value: Any, description: str) -> float:
+    """Coerce a scalar argument to a float, or raise ValueError naming it.
+
+    The type half of validate_sampling_freq, shared rather than copied so a
+    second caller with different *range* rules does not carry a second copy of
+    the *type* rules. Local copies of a shared check are exactly what let the
+    four spectral entry points drift apart before #28, and the reasoning below
+    is subtle enough that a copy would drift quietly.
+
+    The returned value may be NaN or infinite: this decides only whether the
+    argument is a real scalar at all. Each caller applies its own range rule,
+    because they genuinely differ - a sampling rate must be finite and
+    positive, a plot's `max_rate` takes NaN as its "use Nyquist" sentinel, and
+    a plot's `min_rate` may be zero.
+
+    Args:
+        value: The argument to coerce
+        description: How to name the argument in the error, e.g.
+            "Invalid sampling frequency" or "Invalid max_rate". Used as a
+            prefix, so it should read as a noun phrase.
+
+    Returns:
+        The value as a plain float, which may be NaN or infinite
+
+    Raises:
+        ValueError: If the value is not a real scalar
+    """
+    # Converted via float() rather than gated on numbers.Real: Fraction, int
+    # >= 2**63 and np.timedelta64 are all Real and all satisfy `> 0`, but
+    # np.isfinite has no object-dtype loop and raises TypeError on them -
+    # which would break the ValueError promise this docstring makes, and
+    # escape the `except ValueError` translation in filters. float() accepts
+    # everything np.fft.fftfreq can actually use, including 0-d arrays and
+    # Decimal, and raises for multi-element arrays.
+    #
+    # str and bool are excluded first: float("30") succeeds, and a bool is a
+    # Real, so True would otherwise be accepted as 1.0 Hz. np.bool_ is listed
+    # explicitly because it is NOT a subclass of Python bool, and it is what
+    # every numpy comparison yields (`arr.mean() > 0`, `np.any(...)`).
+    if isinstance(value, (bool, np.bool_, str, bytes)):
+        raise ValueError(f"{description}: {value!r} is not a real number.")
+    # A size-1 ndarray is rejected rather than unwrapped: float() accepts it on
+    # numpy 1.x (with a DeprecationWarning) and raises on 2.x, so allowing it
+    # would make this guard's accept/reject set differ across the CI matrix -
+    # the same version-sensitivity that produced the objs/input_objs bug in
+    # PR #25. 0-d arrays convert identically on both majors and stay allowed.
+    if isinstance(value, np.ndarray) and value.ndim > 0:
+        raise ValueError(
+            f"{description}: {value!r} is not a scalar. Pass a "
+            f"single number, e.g. float(arr[0])."
+        )
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError, not just TypeError/ValueError: float(10**400) raises
+        # it, and it is neither - so it would escape both this contract and
+        # the `except ValueError` translation in filters.
+        raise ValueError(f"{description}: {value!r} is not a real number.") from exc
+
 def validate_sampling_freq(freq: Any) -> float:
     """Reject a sampling rate that cannot produce meaningful frequency bins.
 
@@ -44,41 +103,9 @@ def validate_sampling_freq(freq: Any) -> float:
         ValueError: If the frequency is not a real scalar, or is NaN,
             infinite, zero, or negative
     """
-    # Converted via float() rather than gated on numbers.Real: Fraction, int
-    # >= 2**63 and np.timedelta64 are all Real and all satisfy `> 0`, but
-    # np.isfinite has no object-dtype loop and raises TypeError on them -
-    # which would break the ValueError promise this docstring makes, and
-    # escape the `except ValueError` translation in filters. float() accepts
-    # everything np.fft.fftfreq can actually use, including 0-d arrays and
-    # Decimal, and raises for multi-element arrays.
-    #
-    # str and bool are excluded first: float("30") succeeds, and a bool is a
-    # Real, so True would otherwise be accepted as 1.0 Hz. np.bool_ is listed
-    # explicitly because it is NOT a subclass of Python bool, and it is what
-    # every numpy comparison yields (`arr.mean() > 0`, `np.any(...)`).
-    if isinstance(freq, (bool, np.bool_, str, bytes)):
-        raise ValueError(
-            f"Invalid sampling frequency: {freq!r} is not a real number."
-        )
-    # A size-1 ndarray is rejected rather than unwrapped: float() accepts it on
-    # numpy 1.x (with a DeprecationWarning) and raises on 2.x, so allowing it
-    # would make this guard's accept/reject set differ across the CI matrix -
-    # the same version-sensitivity that produced the objs/input_objs bug in
-    # PR #25. 0-d arrays convert identically on both majors and stay allowed.
-    if isinstance(freq, np.ndarray) and freq.ndim > 0:
-        raise ValueError(
-            f"Invalid sampling frequency: {freq!r} is not a scalar. Pass a "
-            f"single number, e.g. float(arr[0])."
-        )
-    try:
-        value = float(freq)
-    except (TypeError, ValueError, OverflowError) as exc:
-        # OverflowError, not just TypeError/ValueError: float(10**400) raises
-        # it, and it is neither - so it would escape both this contract and
-        # the `except ValueError` translation in filters.
-        raise ValueError(
-            f"Invalid sampling frequency: {freq!r} is not a real number."
-        ) from exc
+    # The type rules live in coerce_real_scalar, shared with the plotting
+    # bounds; only the range rule below is specific to a sampling rate.
+    value = coerce_real_scalar(freq, "Invalid sampling frequency")
 
     if not (value > 0) or not math.isfinite(value):
         # The degenerate-time-base hint applies to NaN only; a zero, negative

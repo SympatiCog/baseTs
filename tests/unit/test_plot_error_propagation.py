@@ -124,6 +124,165 @@ def test_a_reversed_highlight_band_is_rejected_before_anything_is_drawn(good_ts)
     assert ax.get_title() == ""
 
 
+class TestTheDisplayBoundsAreValidatedBeforeDrawing:
+    """The frequency bounds reach ax.set_xlim, which rejects NaN and Inf.
+
+    An infinite max_rate passes the frequency mask (the mask is non-empty), so
+    it used to reach the draw phase and die inside set_xlim - after setup_plot
+    had already minted a figure and titled the caller's axes. That is exactly
+    the guarantee this change claims, so the bounds have to be checked in the
+    compute phase alongside everything else.
+
+    A non-numeric bound was worse than undocumented: it died on np.isnan with
+    "ufunc 'isnan' not supported for the input types", and max_rate=None is a
+    call docs/API.md's own legacy section still shows.
+    """
+
+    @pytest.mark.parametrize("max_rate", [np.inf, -np.inf])
+    def test_a_non_finite_max_rate_leaks_no_figure(self, good_ts, max_rate):
+        before = set(plt.get_fignums())
+        with pytest.raises(ValueError, match="max_rate"):
+            plot_fft_power(good_ts, max_rate=max_rate)
+        assert set(plt.get_fignums()) == before
+
+    def test_a_non_finite_max_rate_leaves_a_supplied_axes_untouched(self, good_ts):
+        _, ax = plt.subplots()
+        with pytest.raises(ValueError, match="max_rate"):
+            plot_fft_power(good_ts, max_rate=np.inf, ax=ax)
+        assert ax.get_title() == ""
+        assert list(ax.get_lines()) == []
+
+    def test_a_non_finite_min_rate_is_rejected(self, good_ts):
+        before = set(plt.get_fignums())
+        with pytest.raises(ValueError, match="min_rate"):
+            plot_fft_power(good_ts, min_rate=np.inf)
+        assert set(plt.get_fignums()) == before
+
+    @pytest.mark.parametrize("bad", [None, "abc", "30", True, [1.0, 2.0]])
+    def test_a_non_numeric_max_rate_raises_valueerror_not_typeerror(self, good_ts, bad):
+        """ValueError, matching every other bound failure in this function.
+
+        '30' and True are rejected rather than coerced, following
+        validate_sampling_freq: float('30') succeeds and bool is a Real, so
+        both would otherwise slip through a bare float() call.
+        """
+        with pytest.raises(ValueError, match="max_rate"):
+            plot_fft_power(good_ts, max_rate=bad)
+
+    def test_a_nan_max_rate_still_means_nyquist(self, good_ts):
+        """NaN is the documented public sentinel for max_rate - not an error."""
+        ax = plot_fft_power(good_ts, max_rate=np.nan)
+        drawn = np.asarray(ax.get_lines()[0].get_xdata(), float)
+        # The top bin, not Nyquist itself: fftfreq's highest positive bin for
+        # an even-length series is rate/2 - rate/n, so 4.975 Hz here.
+        expected, _ = good_ts.get_frequency_content()
+        assert drawn.max() == expected.max()
+        assert 4.9 < drawn.max() <= 5.0
+
+    def test_a_nan_min_rate_is_rejected(self, good_ts):
+        """min_rate has no sentinel, so NaN is simply invalid there."""
+        with pytest.raises(ValueError, match="min_rate"):
+            plot_fft_power(good_ts, min_rate=np.nan)
+
+    def test_a_multi_element_array_bound_is_named_as_not_a_scalar(self, good_ts):
+        """Pins the shared door's ndarray branch, which mutation testing found bare.
+
+        Deleting that branch leaves the suite green, because float() on a
+        multi-element array raises TypeError on numpy 2.x and the shared door
+        translates it to ValueError anyway - so only the *message* degrades,
+        from "is not a scalar. Pass a single number" to "is not a real number".
+        The branch exists precisely because that distinction is what tells a
+        caller what to do, and because float() accepts such an array on numpy
+        1.x, which would make the accept set differ across the CI matrix.
+        """
+        with pytest.raises(ValueError, match="is not a scalar"):
+            plot_fft_power(good_ts, max_rate=np.array([1.0, 2.0]))
+
+    def test_a_zero_dim_array_bound_is_still_accepted(self, good_ts):
+        """The other half of that branch: 0-d arrays convert alike on both majors."""
+        ax = plot_fft_power(good_ts, max_rate=np.array(2.0))
+        assert ax.get_xlim() == (0.0, 2.0)
+
+
+class TestTheHighlightBandIsValidatedBeforeDrawing:
+    """`band_low >= band_high` is False for NaN, so a NaN edge passed the guard.
+
+    Pre-existing - the same check let it through on main, just positioned after
+    the plot rather than before it. Closed here because this change moves and
+    re-documents that check, and shipping "raises if not strictly increasing"
+    over a known NaN hole would make the new docstring false.
+    """
+
+    @pytest.mark.parametrize(
+        "band", [(np.nan, 0.5), (0.1, np.nan), (np.nan, np.nan), (np.inf, 0.5)]
+    )
+    def test_a_non_finite_band_edge_is_rejected(self, good_ts, band):
+        before = set(plt.get_fignums())
+        with pytest.raises(ValueError, match="highlight_band"):
+            plot_fft_power(good_ts, highlight_band=band)
+        assert set(plt.get_fignums()) == before
+
+    @pytest.mark.parametrize("band", [(0.1, 0.2, 0.3), (0.1,), 5, "ab"])
+    def test_a_malformed_band_raises_valueerror(self, good_ts, band):
+        """Wrong length or non-iterable died on tuple unpacking before."""
+        with pytest.raises(ValueError, match="highlight_band"):
+            plot_fft_power(good_ts, highlight_band=band)
+
+    def test_a_non_numeric_band_edge_raises_valueerror(self, good_ts):
+        with pytest.raises(ValueError, match="highlight_band"):
+            plot_fft_power(good_ts, highlight_band=(None, 0.5))
+
+
+BAD_INPUTS = [
+    ("unknown window", dict(window="bartlett")),
+    ("range selects no bins", dict(min_rate=100.0, max_rate=200.0)),
+    ("min_rate above max_rate", dict(min_rate=3.0, max_rate=1.0)),
+    ("max_rate +Inf", dict(max_rate=np.inf)),
+    ("max_rate -Inf", dict(max_rate=-np.inf)),
+    ("max_rate None", dict(max_rate=None)),
+    ("max_rate 'abc'", dict(max_rate="abc")),
+    ("max_rate '30'", dict(max_rate="30")),
+    ("max_rate True", dict(max_rate=True)),
+    ("max_rate list", dict(max_rate=[1.0, 2.0])),
+    ("min_rate Inf", dict(min_rate=np.inf)),
+    ("min_rate NaN", dict(min_rate=np.nan)),
+    ("min_rate None", dict(min_rate=None)),
+    ("min_rate True", dict(min_rate=True)),
+    ("band reversed", dict(highlight_band=(0.4, 0.1))),
+    ("band equal edges", dict(highlight_band=(0.2, 0.2))),
+    ("band (NaN, 0.5)", dict(highlight_band=(np.nan, 0.5))),
+    ("band (0.1, NaN)", dict(highlight_band=(0.1, np.nan))),
+    ("band (NaN, NaN)", dict(highlight_band=(np.nan, np.nan))),
+    ("band (Inf, 0.5)", dict(highlight_band=(np.inf, 0.5))),
+    ("band (0.1, Inf)", dict(highlight_band=(0.1, np.inf))),
+    ("band (None, 0.5)", dict(highlight_band=(None, 0.5))),
+    ("band 3-tuple", dict(highlight_band=(0.1, 0.2, 0.3))),
+    ("band 1-tuple", dict(highlight_band=(0.1,))),
+    ("band non-iterable", dict(highlight_band=5)),
+    ("band string", dict(highlight_band="ab")),
+]
+
+
+@pytest.mark.parametrize("label,kwargs", BAD_INPUTS, ids=[c[0] for c in BAD_INPUTS])
+def test_every_rejected_input_raises_valueerror_and_draws_nothing(good_ts, label, kwargs):
+    """One contract for the whole function, generated from a census against main.
+
+    Uniform ValueError is the point. Several of these used to escape as
+    TypeError - `np.isnan(None)` gave "ufunc 'isnan' not supported for the
+    input types", and a malformed band died on tuple unpacking - which the bare
+    except then drew as text, so no caller ever saw the type either way.
+
+    Four of them did not even produce error text on main, they produced a
+    silently wrong plot: `max_rate=True` and `min_rate=True` were taken as
+    1.0 Hz, `highlight_band='ab'` passed the ordering check because 'a' >= 'b'
+    is False, and a NaN band edge passed it for the same reason.
+    """
+    before = set(plt.get_fignums())
+    with pytest.raises(ValueError):
+        plot_fft_power(good_ts, **kwargs)
+    assert set(plt.get_fignums()) == before, "a rejected call minted a figure"
+
+
 def test_the_filter_outliers_path_raises_and_interpolate_gaps_is_the_remedy():
     """The consequence users actually meet, and the fix the docs name.
 
