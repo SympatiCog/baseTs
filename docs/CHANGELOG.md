@@ -81,7 +81,7 @@ a `main` worktree rather than written from memory, and pinned by
 them now raises `ValueError` — one `except ValueError` covers the function —
 where before they drew. The census splits in two:
 
-**26 drew the error as text.** An unusable sampling rate, data containing NaN
+**22 drew the error as text.** An unusable sampling rate, data containing NaN
 or Inf, an unknown `window`, a `[min_rate, max_rate]` window selecting no bins,
 a reversed or equal-edged `highlight_band`, and every malformed bound or band
 (`max_rate=None`, `'abc'`, `±Inf`, a list; `min_rate=NaN`, `Inf`, `None`; a
@@ -90,15 +90,22 @@ these were not even `ValueError` underneath: `np.isnan(None)` raised `TypeError:
 ufunc 'isnan' not supported for the input types`, and a malformed band died on
 tuple unpacking — but the bare `except` meant no caller ever saw either.
 
-**4 drew a silently wrong plot**, which is the worse half and was not in the
-issue report:
+**7 drew a silently wrong plot**, which is the worse half and was not in the
+issue report. Two distinct mechanisms, not one:
 
-| Input | Before | Now |
+| Input | Before | Why it passed |
 |---|---|---|
-| `max_rate=True` | plotted, silently taken as 1.0 Hz | raises |
-| `min_rate=True` | plotted, silently taken as 1.0 Hz | raises |
-| `highlight_band=(nan, 0.5)` | band shaded and legended — `nan >= 0.5` is `False` | raises |
-| `highlight_band='ab'` | band shaded — `'a' >= 'b'` is `False` | raises |
+| `max_rate=True` | plotted, silently taken as 1.0 Hz | `bool` is a `Real` |
+| `min_rate=True` | plotted, silently taken as 1.0 Hz | `bool` is a `Real` |
+| `highlight_band=(nan, 0.5)` | shaded and legended | every comparison against NaN is `False` |
+| `highlight_band=(0.1, nan)` | shaded, legend `0.1-nan Hz` | as above |
+| `highlight_band=(nan, nan)` | shaded, legend `nan-nan Hz` | as above |
+| `highlight_band=(0.1, inf)` | shaded **to infinity**, legend `0.1-inf Hz` | `0.1 >= inf` is legitimately `False` |
+| `highlight_band='ab'` | shaded | `'a' >= 'b'` is `False` |
+
+The infinite upper edge is worth separating from the rest: it is *not* the NaN
+quirk. `0.1 >= inf` is honestly `False`, so an ordering check alone could never
+have caught it — only a finiteness check does.
 
 The NaN-edge hole is **pre-existing** (`main`'s ordering check has it too, just
 positioned after the plot instead of before it) and is the same shape as #30,
@@ -106,6 +113,15 @@ where `max(hp_hz, lp_hz)` let argument *position* decide which edge was checked.
 It is closed here rather than filed because this change moves and re-documents
 that exact check, and shipping "raises if not strictly increasing" over a known
 NaN hole would make the new docstring false.
+
+### Also newly *accepted*, in the opposite direction
+
+The census enumerates inputs that were already bad, so it misses this: a
+`Decimal` or `Fraction` `max_rate`/`min_rate` now **works**, where `main` died
+on `np.isnan(Decimal('2.0'))` with `ufunc 'isnan' not supported for the input
+types` and drew that as text. The shared door accepts whatever `float()` does,
+which is what `np.fft.fftfreq` can actually use. Pinned, since nothing else
+would have caught a widening of the accepted set.
 
 Gappy data needs an `interpolate_gaps()` first — since #36 `filter_outliers`
 leaves the gaps it did not create as NaN, and since #28 the spectral guards
@@ -118,34 +134,46 @@ range still draws, which is legitimate.
 reasonably have gone the other way:**
 
 *Geometry uses the validated values; presentation does not.* `axvspan` is drawn
-from the coerced floats — drawing with the caller's originals after validating
-copies is the hole #30 found in the filter family. But routing the **legend
-label** through them too turned `highlight_band=(1, 2)` into a legend reading
-`"1.0-2.0 Hz"` where it had always read `"1-2 Hz"`. That is a silent
+from the coerced floats, the **legend label** from the caller's originals.
+Routing the label through the floats turned `highlight_band=(1, 2)` into a
+legend reading `"1.0-2.0 Hz"` where it had always read `"1-2 Hz"` — a silent
 presentation change on the success path, which is exactly what this change was
-supposed not to make. The label is now built from the originals, and pinned.
+supposed not to make.
+
+The band is **unpacked exactly once**, and both halves returned together. An
+earlier revision unpacked it a second time at draw time to build that label,
+which broke one-shot iterables: `highlight_band=(x for x in (0.1, 0.4))` plots
+on the previous release and raised `not enough values to unpack` here — from
+the draw phase, after a figure existed and a supplied `ax` had been titled,
+falsifying the one guarantee this change is built on. Both directions are
+pinned: a generator band plots, an exhausted one is rejected cleanly.
 
 *The bounds are validated before the series.* A call that is wrong in both ways
 reports the bound, not the rate. Deliberate: the bounds are arguments the caller
 can fix immediately, and checking them is far cheaper than running the FFT that
 would otherwise precede the complaint.
 
-*Bounds and band edges are now widened to `float64` before use.* Previously the
-caller's original object was used directly. Two measured consequences, both
-sub-epsilon and both accepted:
+*Bounds and band edges are now widened to `float64` before use.* One measured
+consequence, accepted: a `Fraction` carrying more precision than IEEE-754 could
+sit within ~1e-18 of a bin edge and fall on the other side of the frequency
+mask. The bins are `float64` themselves, so comparing the bounds at the same
+precision is the more honest of the two, and the difference is unreachable
+without deliberately constructing such a bound.
 
-- A `Fraction` carrying more precision than IEEE-754 could sit within ~1e-18 of
-  a bin edge and fall on the other side of the frequency mask. The bins are
-  `float64` themselves, so comparing the bounds at the same precision is the
-  more honest of the two, and the difference is unreachable without
-  deliberately constructing such a bound.
-- A `float32` `highlight_band`'s shaded **width** changes in the 8th decimal
-  place (`0.300000011921` → `0.30000000447` for `(float32(0.1), float32(0.4))`).
-  The edges are identical; only the subtraction moved, from float32 arithmetic
-  to float64. The widening is lossless, so the new figure is the more accurate
-  one. This was the sole difference across a sweep of nine band types
-  (int, float, mixed, `float32`, `int64`, `Fraction`, `Decimal`) comparing
-  legend text and span geometry against `main`.
+The shaded span's *rendered* geometry is unchanged for every band type swept
+(int, float, mixed, `float32`, `int64`, `Fraction`, `Decimal`), because
+matplotlib coerces through `float()` itself. So drawing from the validated
+values rather than the caller's originals is a principle here, not an
+observable difference — kept because relying on a consumer to repeat your
+coercion is what #30 found in the filter family, not because it moves a pixel.
+
+The one visible trace is an attribute rather than a rendering: for a `float32`
+band, `Rectangle.get_width()` returns `0.30000000447` where `main` returned
+`0.300000011921`, the difference between doing the subtraction in float64 and
+in float32. On `main` that stored width was inconsistent with `main`'s own
+drawn right edge (`x + width` = `0.4000000134`, rendered `0.4000000059`),
+because matplotlib renders from the two edges and not from the width. The new
+value is the one that agrees with the picture.
 
 **Known gap, filed as #62 and documented in the docstring rather than patched
 here:** an **empty** series raises `ZeroDivisionError`, not `ValueError`, so

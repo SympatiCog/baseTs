@@ -17,6 +17,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+from decimal import Decimal  # noqa: E402
+from fractions import Fraction  # noqa: E402
+
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
@@ -242,7 +245,13 @@ class TestTheHighlightBandIsValidatedBeforeDrawing:
 
     @pytest.mark.parametrize("band", [(0.1, 0.2, 0.3), (0.1,), 5, "ab"])
     def test_a_malformed_band_raises_valueerror(self, good_ts, band):
-        """Wrong length or non-iterable died on tuple unpacking before."""
+        """One ValueError for every malformed band, from two different doors.
+
+        The 1- and 3-tuples and the non-iterable die on unpacking; "ab" unpacks
+        happily to ('a', 'b') and is caught one step later by the string guard
+        in the shared door. The point of the parametrization is that the caller
+        cannot tell which door fired.
+        """
         with pytest.raises(ValueError, match="highlight_band"):
             plot_fft_power(good_ts, highlight_band=band)
 
@@ -364,6 +373,64 @@ def test_the_legend_label_keeps_the_callers_own_formatting(good_ts, band, expect
     low, high = _span_x_extent(ax.patches[0])
     assert low == pytest.approx(float(band[0]))
     assert high == pytest.approx(float(band[1]))
+
+
+def test_a_one_shot_iterable_band_is_unpacked_exactly_once(good_ts):
+    """A generator band worked before; unpacking it twice broke it.
+
+    An earlier revision validated the band, then re-unpacked the caller's
+    original object at draw time to build the legend label. For a generator or
+    iter([...]) the second unpack sees an exhausted object, so a band that
+    plots fine on the previous release raised "not enough values to unpack" -
+    and did so from the draw phase, after a figure existed and a supplied ax
+    had been titled, which is the one guarantee this whole change is built on.
+    """
+    _, ax = plt.subplots()
+    before = set(plt.get_fignums())
+    plot_fft_power(good_ts, max_rate=3.0, ax=ax,
+                   highlight_band=(edge for edge in (0.1, 0.4)))
+    assert set(plt.get_fignums()) == before
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["0.1-0.4 Hz"]
+    assert _span_x_extent(ax.patches[0]) == pytest.approx((0.1, 0.4))
+
+
+def test_an_exhausted_iterable_band_is_still_rejected_cleanly(good_ts):
+    """The other side of unpacking once: a genuinely empty iterable still raises."""
+    spent = iter([])
+    with pytest.raises(ValueError, match="highlight_band"):
+        plot_fft_power(good_ts, highlight_band=spent)
+
+
+@pytest.mark.parametrize("bound", [Decimal("2.0"), Fraction(2, 1)])
+def test_high_precision_bounds_are_now_accepted(good_ts, bound):
+    """Newly accepted, in the opposite direction to the rest of the census.
+
+    On main these died on `np.isnan(Decimal(...))` with "ufunc 'isnan' not
+    supported for the input types" and were drawn as error text. The shared
+    door accepts anything float() can take, which is what np.fft.fftfreq can
+    actually use, so they now plot. Pinned because the census enumerates only
+    inputs that were already bad and would not have caught this direction.
+    """
+    ax = plot_fft_power(good_ts, max_rate=bound)
+    assert ax.get_xlim() == (0.0, 2.0)
+
+
+def test_a_value_error_from_a_custom_float_is_translated_not_leaked():
+    """Pins coerce_real_scalar's ValueError arm, which mutation testing found bare.
+
+    float() raises TypeError for most bad types, so the ValueError entry in the
+    except tuple needs an object whose __float__ itself fails that way - the
+    same shape of unpinned branch as the multi-element-array case above, and
+    the same fix.
+    """
+    class Awkward:
+        def __float__(self):
+            raise ValueError("no float for you")
+
+    t = np.arange(400) / 10.0
+    ts = baseTs(np.sin(t), t, freq=10.0)
+    with pytest.raises(ValueError, match="is not a real number"):
+        plot_fft_power(ts, max_rate=Awkward())
 
 
 def test_an_empty_series_raises_zerodivisionerror_as_documented():
