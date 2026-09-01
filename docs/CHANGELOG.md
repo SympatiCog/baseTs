@@ -54,6 +54,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `plot_fft_power` raises instead of drawing the error (#34)
+
+### Fixed — a bare `except Exception` neutralised every spectral guard
+
+`plotting.plot_fft_power` wrapped its whole body in `except Exception`, rendered
+the message as text on the axes, and returned a normal `Axes`. Its docstring's
+`Raises: ValueError ... invalid frequency` was simply false.
+
+```python
+deg = baseTs(np.sin(np.arange(400) / 10.0), np.zeros(400))   # freq is NaN
+ax = plot_fft_power(deg)        # no exception
+ax.texts                        # ['Error plotting FFT: Invalid sampling frequency: nan Hz. ...']
+```
+
+A batch pipeline doing `ax = plot_fft_power(ts); fig.savefig(...)` got a
+silently-bogus figure and a **success exit code** — the silent-failure mode #24
+was written to eliminate, one layer up. #24 and #28 added rate and data guards
+to `compute_fft_power`, `get_frequency_content`, `relative_band_power`,
+`get_peaks` and `filters.validate_filter_params`; this wrapper undid all of them
+on what is, for interactive users, the main path to a spectrum.
+
+**Behaviour change:** `plot_fft_power` and `ts.plot_fft_power()` now raise
+`ValueError` for an unusable sampling rate, data containing NaN or Inf, an
+unknown `window`, an empty spectrum, a `[min_rate, max_rate]` window selecting
+no bins, and a `highlight_band` that is not strictly increasing. Gappy data
+needs an `interpolate_gaps()` first — since #36 `filter_outliers` leaves the
+gaps it did not create as NaN, and since #28 the spectral guards reject them.
+
+**Fixed by reordering, not by narrowing the `except`.** Everything that can
+fail on the caller's input now runs *before* `setup_plot`, so a rejected call
+has built nothing. Narrowing alone would not have been enough: `setup_plot` ran
+above the `try`, so every rejected call **leaked a figure** into pyplot's
+registry (`plt.get_fignums()` went from `[]` to `[1]`) — in a batch loop those
+accumulate. Two consequences, both pinned by tests and both verified to fail if
+the reorder is reverted:
+
+- no figure is created by a call that raises
+- a caller-supplied `ax` comes back **untouched**, where it was previously
+  titled, labelled, gridded and annotated with the error text
+
+The `highlight_band` ordering check moved with them, so a reversed band is now
+rejected before the spectrum goes on the axes rather than after.
+
+No `on_error='annotate'` escape hatch was added. The on-plot text has no caller
+asking for it, and the wrapper's whole failure mode was that it applied
+unconditionally; if notebook ergonomics want it back it can be added then, with
+a use case behind it.
+
+**Not in scope:** `lag_plot` has a bare `except Exception` of the same shape
+around `ts.signal_name.upper()`. It is a weaker case — `shift_timeseries` is
+already called outside it, so #32's guards do propagate, and since #33
+`signal_name` is a string on every derived object — so it is filed separately
+rather than widening this change.
+
 ## [Unreleased] — conversion stops resetting what it converts (#57)
 
 ### Fixed — `baseTs(ts)` reset eleven of thirteen `_metadata` names
@@ -741,6 +795,11 @@ all-NaN spectrum. The message names the remedy: *"Fill gaps first, e.g. with
 the new error as on-plot text instead, because of its bare `except Exception`
 (issue #34, unchanged here) — so on gappy data it now draws the message where
 it previously drew a blank spectrum.
+
+> **Superseded by #34.** `plot_fft_power` now raises like its siblings, so the
+> exemption described in the paragraph above no longer holds. The account is
+> left standing because it is what this change did; see the #34 entry for what
+> replaced it.
 
 Raising rather than dropping the bad samples is deliberate: dropping would
 change the sample spacing, so the resulting bins would no longer be the

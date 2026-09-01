@@ -251,13 +251,63 @@ def plot_fft_power(ts,
         Matplotlib axes object
 
     Raises:
-        ValueError: If the time series is empty or has invalid frequency
+        TypeError: If `ts` is not a baseTs
+        ValueError: If the sampling rate is unusable (NaN, zero or negative),
+            if the data contains NaN or Inf, if `window` names an unknown
+            window function, if the spectrum comes back empty, if
+            [min_rate, max_rate] selects no frequency bins, or if
+            `highlight_band` is not strictly increasing
+
+    A rejected call draws nothing: no figure is created, and a caller-supplied
+    `ax` is returned to them untouched.
     """
     from baseTs import baseTs  # Import inside the function to avoid circular import
-    
+
     if not isinstance(ts, baseTs):
         raise TypeError("ts must be an instance of baseTs")
-    
+
+    # Compute first, draw second (issue #34). Everything that can fail on the
+    # caller's input runs before setup_plot, so a rejected call has built
+    # nothing: no figure is minted and a caller-supplied `ax` is untouched.
+    #
+    # This replaces a bare `except Exception` that rendered the message as text
+    # on the axes and returned a normal Axes, which neutralised every rate and
+    # data guard #24 and #28 added and handed batch pipelines a bogus figure
+    # with a success exit code. Narrowing that except would not have been
+    # enough - setup_plot ran above it, so each rejected call still leaked a
+    # figure into pyplot's registry.
+    if highlight_band is not None:
+        band_low, band_high = highlight_band
+        if band_low >= band_high:
+            raise ValueError(
+                f"highlight_band low ({band_low} Hz) must be less than "
+                f"high ({band_high} Hz)"
+            )
+
+    # Use the enhanced get_frequency_content method
+    freqs, power = ts.get_frequency_content(window=window)
+
+    if len(freqs) == 0 or len(power) == 0:
+        raise ValueError("FFT computation resulted in empty frequency or power arrays")
+
+    # Apply frequency range filtering
+    if np.isnan(max_rate):
+        max_rate = np.max(freqs)  # Use Nyquist frequency as default
+
+    # Create frequency mask for the specified range
+    freq_mask = (freqs >= min_rate) & (freqs <= max_rate)
+    freqs_filtered = freqs[freq_mask]
+    power_filtered = power[freq_mask]
+
+    if len(freqs_filtered) == 0:
+        raise ValueError(f"No frequencies found in range [{min_rate}, {max_rate}] Hz")
+
+    # Apply power scaling if requested
+    if scale_power:
+        power_max = np.max(power_filtered)
+        if power_max > 0:
+            power_filtered = power_filtered / power_max
+
     # Set up title with window information
     window_str = f" ({window} window)" if window else ""
     if title is None:
@@ -268,66 +318,28 @@ def plot_fft_power(ts,
         ylabel = "Power"
     if scale_power:
         ylabel = "Scaled " + ylabel
-    
-    _, ax = setup_plot(ax=ax, title=title, xlabel=xlabel, ylabel=ylabel, show=False)
-    
-    try:
-        # Use the enhanced get_frequency_content method
-        freqs, power = ts.get_frequency_content(window=window)
-        
-        if len(freqs) == 0 or len(power) == 0:
-            raise ValueError("FFT computation resulted in empty frequency or power arrays")
-        
-        # Apply frequency range filtering
-        if np.isnan(max_rate):
-            max_rate = np.max(freqs)  # Use Nyquist frequency as default
-        
-        # Create frequency mask for the specified range
-        freq_mask = (freqs >= min_rate) & (freqs <= max_rate)
-        freqs_filtered = freqs[freq_mask]
-        power_filtered = power[freq_mask]
-        
-        if len(freqs_filtered) == 0:
-            raise ValueError(f"No frequencies found in range [{min_rate}, {max_rate}] Hz")
-        
-        # Apply power scaling if requested
-        if scale_power:
-            power_max = np.max(power_filtered)
-            if power_max > 0:
-                power_filtered = power_filtered / power_max
-            
-        # Plotting
-        ax.plot(freqs_filtered, power_filtered, linewidth=1.2)
-        ax.set_xlim(min_rate, max_rate)
 
-        # Shade the band of interest, if requested
-        if highlight_band is not None:
-            band_low, band_high = highlight_band
-            if band_low >= band_high:
-                raise ValueError(
-                    f"highlight_band low ({band_low} Hz) must be less than "
-                    f"high ({band_high} Hz)"
-                )
-            ax.axvspan(band_low, band_high, alpha=0.15, color='tab:orange',
-                       label=f"{band_low}-{band_high} Hz")
-            ax.legend()
-        
-        # Add grid for better readability
-        ax.grid(True, alpha=0.3)
-        
-        # Set y-axis to start at 0 for power spectra
-        ax.set_ylim(bottom=0)
-        
-        if show:
-            plt.show()
-            
-    except Exception as e:
-        ax.text(0.5, 0.5, f"Error plotting FFT: {str(e)}", 
-                horizontalalignment='center', verticalalignment='center',
-                transform=ax.transAxes)
-        if show:
-            plt.show()
-    
+    _, ax = setup_plot(ax=ax, title=title, xlabel=xlabel, ylabel=ylabel, show=False)
+
+    # Plotting
+    ax.plot(freqs_filtered, power_filtered, linewidth=1.2)
+    ax.set_xlim(min_rate, max_rate)
+
+    # Shade the band of interest, if requested
+    if highlight_band is not None:
+        ax.axvspan(band_low, band_high, alpha=0.15, color='tab:orange',
+                   label=f"{band_low}-{band_high} Hz")
+        ax.legend()
+
+    # Add grid for better readability
+    ax.grid(True, alpha=0.3)
+
+    # Set y-axis to start at 0 for power spectra
+    ax.set_ylim(bottom=0)
+
+    if show:
+        plt.show()
+
     return ax
 
 def lag_plot(ts,

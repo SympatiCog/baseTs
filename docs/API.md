@@ -939,6 +939,22 @@ Plot FFT power spectrum with enhanced windowing and frequency range control.
 **Returns:**
 - `matplotlib.axes.Axes`: The plot axes
 
+**Raises:**
+- `ValueError`: If the sampling rate is unusable (NaN, zero or negative), if the data contains
+  NaN or Inf, if `window` names an unknown window function, if `[min_rate, max_rate]` selects no
+  frequency bins, or if `highlight_band` is not strictly increasing
+
+A rejected call draws nothing — no figure is created, and a caller-supplied `ax` is returned
+untouched. Until #34 these errors were swallowed and drawn as text on the axes, so a failing call
+returned a normal `Axes` and a batch pipeline saved a bogus figure with a success exit code.
+
+Gappy data needs an `interpolate_gaps()` first: since #36 `filter_outliers` leaves the gaps it did
+not create as NaN, and since #28 the spectral guards reject them.
+
+```python
+ts.filter_outliers().interpolate_gaps().plot_fft_power()
+```
+
 **Example:**
 ```python
 # Basic FFT plot
