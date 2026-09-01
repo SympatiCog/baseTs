@@ -27,7 +27,8 @@ from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak
                     validate_finite_data)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
-                     normalise_label)
+                     normalise_label, _UNSET, _UnsetType,
+                     _carries_metadata)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -165,16 +166,16 @@ class baseTs(TimeSeriesData):
                  times: np.array = None,
                  freq: float = np.nan,
                  ts_offset: float = np.nan,
-                 is_filtered: bool = False,
-                 is_interpolated: bool = False,
-                 is_uniform_grid: bool = False,
-                 is_outlier_filtered: bool = False,
-                 has_timestamp_offset: bool = False,
-                 outlier_indices: np.array = None,
-                 lowess_fit: np.array = None,
-                 signal_name: str = "",
-                 history: list = None,
-                 last_process: str = "",
+                 is_filtered: Union[bool, _UnsetType] = _UNSET,
+                 is_interpolated: Union[bool, _UnsetType] = _UNSET,
+                 is_uniform_grid: Union[bool, _UnsetType] = _UNSET,
+                 is_outlier_filtered: Union[bool, _UnsetType] = _UNSET,
+                 has_timestamp_offset: Union[bool, _UnsetType] = _UNSET,
+                 outlier_indices: Union[np.ndarray, None, _UnsetType] = _UNSET,
+                 lowess_fit: Union[np.ndarray, None, _UnsetType] = _UNSET,
+                 signal_name: Union[str, _UnsetType] = _UNSET,
+                 history: Union[list, None, _UnsetType] = _UNSET,
+                 last_process: Union[str, _UnsetType] = _UNSET,
                  index: np.array = None,
                  **pandas_kwargs):
         """
@@ -214,18 +215,33 @@ class baseTs(TimeSeriesData):
             data=data,
             index=times,
             freq=None if _is_unset(freq) else freq,
-            signal_name=signal_name,
+            signal_name=signal_name,   # the sentinel rides through
             **pandas_kwargs
         )
         
-        # Set metadata attributes
-        self.is_filtered = is_filtered
-        self.is_interpolated = is_interpolated
-        self.is_uniform_grid = is_uniform_grid
-        self.is_outlier_filtered = is_outlier_filtered
-        self.has_timestamp_offset = has_timestamp_offset
-        self.outlier_indices = outlier_indices
-        self.lowess_fit = lowess_fit
+        # Set metadata attributes - only the ones the caller actually named.
+        #
+        # Assigned unconditionally, these overwrote whatever
+        # _copy_metadata_from_basetseries had just copied off the source, so
+        # baseTs(ts) reset eleven of thirteen names to parameter
+        # defaults, and a converted series reported itself as freshly
+        # created (#57). #15 fixed
+        # exactly this for `outlier_filter` with a per-attribute guard, which
+        # is why that one name survived; the guard does not scale to thirteen,
+        # so the constructor tells "supplied" from "defaulted" instead.
+        #
+        # Nothing is copied when the data is an array, so the defaults still
+        # arrive there - from _initialize_default_metadata, which is where
+        # they belong.
+        for _name, _value in (('is_filtered', is_filtered),
+                              ('is_interpolated', is_interpolated),
+                              ('is_uniform_grid', is_uniform_grid),
+                              ('is_outlier_filtered', is_outlier_filtered),
+                              ('has_timestamp_offset', has_timestamp_offset),
+                              ('outlier_indices', outlier_indices),
+                              ('lowess_fit', lowess_fit)):
+            if not isinstance(_value, _UnsetType):
+                setattr(self, _name, _value)
         # The one label door that does not pass through
         # TimeSeriesData.__init__:
         # signal_name is handed to the superclass and normalised there, while
@@ -233,19 +249,56 @@ class baseTs(TimeSeriesData):
         # baseTs(..., last_process=None) returned an object whose every plot
         # label raised TypeError, from a supported keyword and with nothing
         # mutated afterwards.
-        self.last_process = normalise_label(last_process)
-        
-        # Handle timestamp offset
+        if not isinstance(last_process, _UnsetType):
+            self.last_process = normalise_label(last_process)
+
+        # Handle timestamp offset. The `else` used to zero both names
+        # unconditionally, which is how a converted series lost an offset it
+        # was carrying: not supplying an offset is not the same as declaring
+        # there is none. Untouched now unless one is given - and the array
+        # path still gets its zero from _initialize_default_metadata.
         if not _is_unset(ts_offset):
             self.ts_offset = ts_offset
             self.has_timestamp_offset = True
-        else:
+        elif (not isinstance(has_timestamp_offset, _UnsetType)
+              and not has_timestamp_offset):
+            # Explicitly cleared, with no offset named. Truthiness, not
+            # `is False`: np.False_ is what `arr.any()` and any comparison
+            # result give, and it is not the False singleton, so an identity
+            # test let through exactly the pair this exists to prevent.
+            #
+            # One direction only. The reverse - asserting the flag without an
+            # offset - is a caller's own assertion, and rejecting it would
+            # break a call that works today.
+            #
+            # The `else` this
+            # replaces zeroed the pair unconditionally, which is how a
+            # conversion lost an offset it was carrying - but it also kept the
+            # two coherent, and "no offset applied, offset 1.5" is a state
+            # nothing downstream expects. __finalize__ copies the pair onward,
+            # so an incoherent one would ride into every derived object.
             self.ts_offset = 0
-            self.has_timestamp_offset = False
-        
-        # Initialize history
-        if history is None:
-            self.history = [f"Created baseTs object with {len(self)} samples"]
+
+        # Initialize history. Only when the caller named one, or when nothing
+        # was carried across - a conversion keeps the source's history
+        # verbatim, where this used to replace it with a single "Created"
+        # entry and leave the object claiming to be new.
+        if isinstance(history, _UnsetType):
+            # Not supplied. Keep whatever was carried across, and mint the
+            # creation entry only when there was no source to carry from -
+            # asked of the data, not of the result, because a source whose
+            # history is legitimately empty is indistinguishable from an
+            # absent one by falsiness alone.
+            if not _carries_metadata(data):
+                self.history = [
+                    f"Created baseTs object with {len(self)} samples"]
+        elif history is None:
+            # Supplied as None: the documented request for a fresh entry.
+            # Folded into the branch above, it became the one nullable
+            # keyword that preserved rather than cleared, disagreeing with
+            # the signature and with every sibling argument.
+            self.history = [
+                f"Created baseTs object with {len(self)} samples"]
         else:
             # normalise_history, not a bare list(): this is the first place a
             # history enters the system, and list('note') would explode a str

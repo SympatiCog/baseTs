@@ -54,6 +54,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — conversion stops resetting what it converts (#57)
+
+### Fixed — `baseTs(ts)` reset eleven of thirteen `_metadata` names
+
+```python
+ts = baseTs(data, times, signal_name='ECG')
+ts.set_outlier_filter(frac=0.42); ts.set_timestamp_offset(1.5)
+
+baseTs(ts).signal_name   # '' — was 'ECG'
+baseTs(ts).ts_offset     # 0  — was 1.5
+baseTs(ts).history       # ['Created baseTs object with 200 samples']
+```
+
+`TimeSeriesData.__init__` copies the source's metadata whenever the argument
+looks like a baseTs, and `baseTs.__init__` then assigned its own keyword
+defaults straight over the top — `False` for every flag, `""` for the strings,
+a fresh list for `history`, `None` for both positional slots.
+
+`outlier_filter` was the one name that survived, and only because #15 added a
+guard for it alone. The comment above that guard describes the bug for every
+other name: *"baseTs(ts) takes the conversion branch in
+TimeSeriesData.__init__, which copies the source's filter, and this used to
+overwrite it with a default."* A per-attribute guard does not scale to
+thirteen, so the constructor now distinguishes **"the caller passed this"**
+from **"this is the parameter default"** and assigns only what was supplied.
+
+**The history loss was the sharpest edge.** A converted series reported
+`Created baseTs object with N samples` as its entire provenance while the
+flags that would have contradicted it — `is_filtered`, `is_outlier_filtered`,
+`has_timestamp_offset` — were cleared in the same breath. Nothing raised; the
+object simply claimed to be something it was not. History is now preserved
+verbatim, with no "converted from" entry appended: a conversion is a copy, and
+editorialising it would make the provenance less true, not more.
+
+**`TimeSeriesData(ts)` lost one name** when the source was a `baseTs` —
+`signal_name`, assigned unconditionally after the copy. Same fix, same
+sentinel.
+
+**The count is eleven, not the nine the issue reports.** `outlier_indices` and
+`lowess_fit` were being reset too — assigned `None` through their public
+properties, which clears the value and its index stamp together — and they are
+invisible to a comparison that only walks the flags. Only `outlier_filter`
+(via #15's guard) and `_freq_declaration` survived. Counted against a `main`
+worktree with all thirteen names moved off their defaults, not from reading
+the constructor.
+
+**A `TimeSeriesData` source was not recognised as a source at all.** The
+conversion branch was gated on `.times` and `.data`, which are baseTs'
+spelling; the superclass has neither, so `baseTs(tsd)` and
+`TimeSeriesData(tsd)` fell through to the plain-pandas arm and reset all
+thirteen. Both constructors now ask one shared predicate,
+`_carries_metadata`, which is also what tells an absent `history` from an
+empty one.
+
+### Changed — the constructor keywords default to a sentinel
+
+`is_filtered`, `is_interpolated`, `is_uniform_grid`, `is_outlier_filtered`,
+`has_timestamp_offset`, `outlier_indices`, `lowess_fit`, `signal_name`,
+`history` and `last_process` now default to `_UNSET` rather than to
+`False`/`""`/`None`. Visible in `help(baseTs)` and `inspect.signature`, where
+the defaults now read `<unset>`.
+
+`None` could not serve as the sentinel: it is already a meaningful argument —
+`baseTs(..., last_process=None)` is documented since #33 to produce `""` — so
+reusing it would have changed what a supported call means. `np.nan` stays as
+the *public* sentinel for `freq` and `ts_offset` via `_is_unset`.
+
+**An explicit argument still wins, including one equal to the old default.**
+`baseTs(ts, is_filtered=False)` clears the flag the source was carrying;
+only *omitting* it preserves. Asserted for all ten names, because a sentinel
+that swallowed explicit arguments would merely have moved the bug.
+
+**`history=None` still asks for a fresh entry**, as the signature has always
+meant. An earlier revision of this branch folded a supplied `None` into the
+"not supplied" case, which made `history` the one nullable keyword that
+preserved rather than cleared — disagreeing with `signal_name=None` and
+`last_process=None`, both of which clear to `""`.
+
+**Clearing the offset flag clears the offset.** Dropping the `else` that
+zeroed `ts_offset` and `has_timestamp_offset` together is what stops a
+conversion losing an offset, but it also made `has_timestamp_offset=False`
+alongside a non-zero `ts_offset` reachable for the first time — and
+`__finalize__` copies the pair onward, so it would ride into every derived
+object. Clearing the flag now clears the offset with it, on *truthiness*:
+`np.False_` is what `arr.any()` and any comparison yield, and it is not the
+`False` singleton, so an identity test would have let the same pair through.
+
+The rule runs one way only, and deliberately. `has_timestamp_offset=True` with
+no offset named is a caller asserting that one was applied without saying what
+— odd, but theirs to assert, and rejecting it would break a call that works
+today. Pinned by a test rather than left to be discovered.
+
+**An index given alongside a source is refused, not ignored.** The conversion
+branch takes its index from the source, so `baseTs(ts_200, times=arange(5))`
+returned a 200-sample object and said nothing. Recognising `TimeSeriesData` as
+a source extended that silence to a case that had at least been loud before —
+it used to reindex to all-NaN — so the constructor now raises when the two
+disagree. It does not raise when `baseTs.__init__` derived `times` from the
+source itself, which is the common path.
+
+**An empty history is a history.** The "was anything carried across?" test asks
+the *source*, not the result's truthiness, so a series whose history is
+legitimately `[]` no longer comes back claiming to have just been created —
+the same failure this change exists to remove, one layer down.
+
+**Construction from arrays is unchanged.** Nothing is copied on that path, so
+every default still arrives — now from `_initialize_default_metadata`, which
+gained `signal_name` for the purpose. The internal callers in `series.py` and
+`core.py` all construct from ndarrays and are unaffected.
+
+### Not changed
+
+`_create_new_with_data` still upper-cases the signal name it passes back
+through the constructor, so `ts.zscale()` turns `'Heart Rate'` into
+`'HEART RATE'` while `ts.iloc[:5]` preserves it. That is **#56**, and it needs
+a decision about which behaviour is intended rather than a fix.
+
 ## [Unreleased] — the metadata defaults survive a derivation (#33)
 
 ### Fixed — a `None` filter reached every derived object
