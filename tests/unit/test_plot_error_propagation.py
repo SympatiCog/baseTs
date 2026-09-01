@@ -31,6 +31,24 @@ def _close_figures():
     plt.close("all")
 
 
+def _span_x_extent(patch):
+    """The data-space x range of an axvspan patch, on any matplotlib.
+
+    axvspan returned a Polygon before matplotlib 3.10 and returns a Rectangle
+    after, and the two disagree on everything convenient: Rectangle has
+    get_x()/get_width() and a unit-square path, Polygon has neither and carries
+    data coordinates in its vertices. Composing the path with the patch's own
+    transform is the one reading that is correct for both, which matters
+    because CI runs Python 3.9 through 3.11 and so spans that change.
+
+    Only x is meaningful - axvspan puts y through a blended transform in axes
+    coordinates.
+    """
+    vertices = patch.get_patch_transform().transform(patch.get_path().vertices)
+    xs = np.asarray(vertices, float)[:, 0]
+    return xs.min(), xs.max()
+
+
 @pytest.fixture
 def good_ts():
     """A series with a usable rate and finite data."""
@@ -343,11 +361,9 @@ def test_the_legend_label_keeps_the_callers_own_formatting(good_ts, band, expect
     """
     ax = plot_fft_power(good_ts, max_rate=3.0, highlight_band=band)
     assert [t.get_text() for t in ax.get_legend().get_texts()] == [expected]
-    # axvspan's patch carries x in data coordinates (y goes through a blended
-    # transform in axes coordinates, so only x is meaningful here).
-    patch = ax.patches[0]
-    assert patch.get_x() == pytest.approx(float(band[0]))
-    assert patch.get_x() + patch.get_width() == pytest.approx(float(band[1]))
+    low, high = _span_x_extent(ax.patches[0])
+    assert low == pytest.approx(float(band[0]))
+    assert high == pytest.approx(float(band[1]))
 
 
 def test_an_empty_series_raises_zerodivisionerror_as_documented():
