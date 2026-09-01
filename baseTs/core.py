@@ -260,8 +260,18 @@ class baseTs(TimeSeriesData):
         if not _is_unset(ts_offset):
             self.ts_offset = ts_offset
             self.has_timestamp_offset = True
-        elif has_timestamp_offset is False:
-            # Explicitly cleared, with no offset named. The `else` this
+        elif (not isinstance(has_timestamp_offset, _UnsetType)
+              and not has_timestamp_offset):
+            # Explicitly cleared, with no offset named. Truthiness, not
+            # `is False`: np.False_ is what `arr.any()` and any comparison
+            # result give, and it is not the False singleton, so an identity
+            # test let through exactly the pair this exists to prevent.
+            #
+            # One direction only. The reverse - asserting the flag without an
+            # offset - is a caller's own assertion, and rejecting it would
+            # break a call that works today.
+            #
+            # The `else` this
             # replaces zeroed the pair unconditionally, which is how a
             # conversion lost an offset it was carrying - but it also kept the
             # two coherent, and "no offset applied, offset 1.5" is a state

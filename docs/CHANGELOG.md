@@ -132,12 +132,27 @@ meant. An earlier revision of this branch folded a supplied `None` into the
 preserved rather than cleared — disagreeing with `signal_name=None` and
 `last_process=None`, both of which clear to `""`.
 
-**The offset pair cannot be made incoherent.** Dropping the `else` that zeroed
-`ts_offset` and `has_timestamp_offset` together is what stops a conversion
-losing an offset, but it also made `has_timestamp_offset=False` with a
-non-zero `ts_offset` reachable for the first time — and `__finalize__` copies
-the pair onward, so it would ride into every derived object. Clearing the flag
-explicitly now clears the offset with it.
+**Clearing the offset flag clears the offset.** Dropping the `else` that
+zeroed `ts_offset` and `has_timestamp_offset` together is what stops a
+conversion losing an offset, but it also made `has_timestamp_offset=False`
+alongside a non-zero `ts_offset` reachable for the first time — and
+`__finalize__` copies the pair onward, so it would ride into every derived
+object. Clearing the flag now clears the offset with it, on *truthiness*:
+`np.False_` is what `arr.any()` and any comparison yield, and it is not the
+`False` singleton, so an identity test would have let the same pair through.
+
+The rule runs one way only, and deliberately. `has_timestamp_offset=True` with
+no offset named is a caller asserting that one was applied without saying what
+— odd, but theirs to assert, and rejecting it would break a call that works
+today. Pinned by a test rather than left to be discovered.
+
+**An index given alongside a source is refused, not ignored.** The conversion
+branch takes its index from the source, so `baseTs(ts_200, times=arange(5))`
+returned a 200-sample object and said nothing. Recognising `TimeSeriesData` as
+a source extended that silence to a case that had at least been loud before —
+it used to reindex to all-NaN — so the constructor now raises when the two
+disagree. It does not raise when `baseTs.__init__` derived `times` from the
+source itself, which is the common path.
 
 **An empty history is a history.** The "was anything carried across?" test asks
 the *source*, not the result's truthiness, so a series whose history is

@@ -179,6 +179,55 @@ class TestTheOffsetPairStaysCoherent:
         assert conv.ts_offset == 1.5
         assert conv.has_timestamp_offset is True
 
+    @pytest.mark.parametrize("falsy", [False, np.False_, 0],
+                             ids=["bool", "numpy_bool", "int"])
+    def test_any_falsy_flag_clears_the_offset(self, falsy):
+        """`is False` matches one object; numpy booleans are not it.
+
+        `arr.any()`, a comparison result, a column read out of a DataFrame -
+        all produce `np.False_`, which is falsy but not the `False` singleton,
+        so an identity test let exactly the incoherent pair through.
+        """
+        conv = baseTs(self._offset_source(), has_timestamp_offset=falsy)
+        assert conv.ts_offset == 0
+
+    def test_asserting_the_flag_without_an_offset_is_the_callers_business(self):
+        """The coherence rule runs one way, deliberately, and this pins it.
+
+        Clearing the flag clears the offset, because "no offset applied, offset
+        1.5" is a state nothing downstream expects. The reverse is a caller
+        asserting an offset was applied without saying what it was, which is
+        odd but is their assertion to make - and turning it into an error would
+        reject a call that works today.
+        """
+        conv = baseTs(np.arange(10.0), np.arange(10) / 10.0,
+                      has_timestamp_offset=True)
+        assert conv.has_timestamp_offset is True
+        assert conv.ts_offset == 0
+
+
+class TestAnIgnoredIndexIsRefused:
+    """The conversion branch takes its index from the source, so a `times`
+    argument passed alongside was silently dropped.
+
+    On `main` this was visible for a `TimeSeriesData` source - it reindexed to
+    all-NaN, wrong but loud. Recognising that type as a source (which is the
+    #57 fix) made it quiet instead, which is the wrong direction of travel for
+    a change that exists to stop objects lying about themselves.
+    """
+
+    @pytest.mark.parametrize("source", ["basets", "timeseriesdata"])
+    def test_a_conflicting_index_raises(self, source):
+        src = baseTs(np.arange(200.0), np.arange(200) / 10.0)
+        if source == "timeseriesdata":
+            src = TimeSeriesData(np.arange(200.0), np.arange(200) / 10.0)
+        with pytest.raises(ValueError, match="index"):
+            baseTs(src, times=np.arange(5.0))
+
+    def test_converting_without_an_index_is_unaffected(self):
+        src = baseTs(np.arange(200.0), np.arange(200) / 10.0)
+        assert len(baseTs(src)) == 200
+
 
 class TestAnExplicitArgumentStillWins:
     """Preserving what was not passed must not ignore what was.

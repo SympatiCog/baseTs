@@ -486,8 +486,28 @@ class TimeSeriesData(pd.Series):
             # so gating on them alone sent the superclass down the plain-pandas
             # arm and reset all thirteen names on the way (#57).
             values = data.data if hasattr(data, 'data') else data.values
-            idx = data.times if hasattr(data, 'times') else data.index
-            super().__init__(values, index=pd.Index(idx), **kwargs)
+            idx = pd.Index(data.times if hasattr(data, 'times')
+                           else data.index)
+            # An index given alongside a source was silently dropped: this
+            # branch takes the source's. `baseTs.__init__` legitimately derives
+            # `times` FROM the source when the caller named none, so the test
+            # is whether the two disagree, not whether one was passed.
+            #
+            # Refusing rather than ignoring, because ignoring is how
+            # `baseTs(ts_200, times=arange(5))` returned a 200-sample object
+            # and said nothing. Before TimeSeriesData counted as a source that
+            # case at least reindexed to all-NaN - wrong, but visible - so
+            # staying silent would have traded a loud wrong answer for a quiet
+            # one, in a change that exists to stop objects misreporting
+            # themselves.
+            if index is not None and not pd.Index(index).equals(idx):
+                raise ValueError(
+                    "index/times was given alongside a source that "
+                    "carries its own index, and the two differ. The "
+                    "source's index is the one a conversion keeps, so "
+                    "the argument would be ignored. Reindex the source "
+                    "first, or drop the argument.")
+            super().__init__(values, index=idx, **kwargs)
             self._copy_metadata_from_basetseries(data)
         elif isinstance(data, np.ndarray) and isinstance(index, np.ndarray):
             # Legacy numpy array initialization
