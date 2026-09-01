@@ -105,6 +105,81 @@ class TestTimeSeriesDataConversionPreservesMetadata:
         assert lost == []
 
 
+class TestATimeSeriesDataSourceConvertsToo:
+    """The conversion branch was gated on `.times` and `.data`.
+
+    Only `baseTs` defines those two properties, so a `TimeSeriesData` source
+    fell through to the plain-pandas arm and had every name reset - by both
+    constructors. The fix has to recognise the superclass as a source, or it
+    covers `baseTs(basets)` alone while the docs claim more.
+    """
+
+    @staticmethod
+    def _carrying_tsd():
+        tsd = TimeSeriesData(np.arange(10.0), np.arange(10) / 10.0)
+        tsd.signal_name = "X"
+        tsd.is_filtered = True
+        tsd.last_process = "_thing"
+        return tsd
+
+    def test_basets_from_a_timeseriesdata(self):
+        conv = baseTs(self._carrying_tsd())
+        assert conv.signal_name == "X"
+        assert conv.is_filtered is True
+        assert conv.last_process == "_thing"
+
+    def test_timeseriesdata_from_a_timeseriesdata(self):
+        conv = TimeSeriesData(self._carrying_tsd())
+        assert conv.signal_name == "X"
+        assert conv.is_filtered is True
+
+
+class TestAnEmptyHistoryIsAHistory:
+    """An empty carried history must not become a fabricated creation entry.
+
+    The condition tested falsiness rather than absence, so a source whose
+    history is `[]` came back claiming "Created baseTs object with N samples" -
+    the same "claims to be something it is not" failure this change exists to
+    remove, one layer down.
+    """
+
+    def test_an_empty_history_stays_empty(self):
+        src = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        src.history = []
+        assert baseTs(src).history == []
+
+
+class TestTheOffsetPairStaysCoherent:
+    """`has_timestamp_offset` False with a non-zero `ts_offset` was unreachable.
+
+    The `else` branch that zeroed both together enforced it. Removing that
+    branch - which is what stopped a conversion losing its offset - also made
+    the incoherent pair reachable, and `__finalize__` copies the pair onward,
+    so it would propagate through every derivation.
+    """
+
+    @staticmethod
+    def _offset_source():
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        ts.set_timestamp_offset(1.5)
+        return ts
+
+    def test_clearing_the_flag_clears_the_offset(self):
+        conv = baseTs(self._offset_source(), has_timestamp_offset=False)
+        assert conv.has_timestamp_offset is False
+        assert conv.ts_offset == 0
+
+    def test_supplying_an_offset_still_sets_the_flag(self):
+        conv = baseTs(self._offset_source(), ts_offset=2.5)
+        assert conv.ts_offset == 2.5
+        assert conv.has_timestamp_offset is True
+
+    def test_omitting_both_preserves_both(self):
+        conv = baseTs(self._offset_source())
+        assert conv.ts_offset == 1.5
+        assert conv.has_timestamp_offset is True
+
+
 class TestAnExplicitArgumentStillWins:
     """Preserving what was not passed must not ignore what was.
 
@@ -129,6 +204,16 @@ class TestAnExplicitArgumentStillWins:
 
     def test_explicit_history_overrides_the_source(self, carrying):
         assert baseTs(carrying, history=["fresh"]).history == ["fresh"]
+
+    def test_explicit_none_history_is_not_the_same_as_omitting_it(self, carrying):
+        """`history=None` is the documented way to ask for a fresh entry.
+
+        Folding it into the "not supplied" case made it the one nullable
+        keyword that preserves rather than clears, silently disagreeing with
+        both the signature and every sibling argument.
+        """
+        assert baseTs(carrying, history=None).history == [
+            "Created baseTs object with 200 samples"]
 
 
 class TestConstructionFromArraysIsUnchanged:

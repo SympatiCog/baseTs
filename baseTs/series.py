@@ -29,10 +29,10 @@ class _UnsetType:
 #: value happens to equal the default".
 #:
 #: The constructors copy a source object's metadata and then assign their own
-#: keyword defaults over the top, which reset nine names on every conversion
-#: (#57). Telling the two apart is what makes "assign only what the caller
-#: actually passed" expressible: `False` and `""` cannot do it, because they
-#: are also values a caller may legitimately mean.
+#: keyword defaults over the top, which reset eleven of thirteen names on
+#: every conversion (#57). Telling the two apart is what makes "assign only
+#: what the caller actually passed" expressible: `False` and `""` cannot do
+#: it, because they are also values a caller may legitimately mean.
 #:
 #: `None` cannot serve either. It is already a meaningful argument in places -
 #: `baseTs(..., last_process=None)` is documented to produce `""` - so reusing
@@ -41,6 +41,26 @@ class _UnsetType:
 #: `np.nan` serves the numeric arguments through `_is_unset`, and stays: it is
 #: the constructor's *public* sentinel for `freq`, documented as such.
 _UNSET = _UnsetType()
+
+
+def _carries_metadata(data: Any) -> bool:
+    """True if `data` is a source whose metadata a constructor should copy.
+
+    Both constructors need the same answer: `TimeSeriesData.__init__` to know
+    whether to copy, and `baseTs.__init__` to know whether an absent `history`
+    means "nothing was carried across" or "the source's history is empty".
+    Two spellings of the question drifted apart once already.
+
+    A `TimeSeriesData` qualifies even though it has neither `.times` nor
+    `.data` - those are baseTs' names, and gating on them alone meant
+    converting a TimeSeriesData reset every one of its thirteen names.
+
+    A plain `pd.Series` does not qualify: it carries no metadata to preserve,
+    so the defaults are the right starting point for it.
+    """
+    if isinstance(data, TimeSeriesData):
+        return True
+    return hasattr(data, 'times') and hasattr(data, 'data')
 
 
 #: The private slots behind the positional properties, paired with the public
@@ -460,9 +480,14 @@ class TimeSeriesData(pd.Series):
             **kwargs: Additional Series initialization parameters
         """
         # Handle different input formats
-        if hasattr(data, 'times') and hasattr(data, 'data'):
-            # baseTs object conversion
-            super().__init__(data.data, index=pd.Index(data.times), **kwargs)
+        if _carries_metadata(data):
+            # Conversion from something that already holds metadata. `.times`
+            # and `.data` are baseTs' spelling; a TimeSeriesData has neither,
+            # so gating on them alone sent the superclass down the plain-pandas
+            # arm and reset all thirteen names on the way (#57).
+            values = data.data if hasattr(data, 'data') else data.values
+            idx = data.times if hasattr(data, 'times') else data.index
+            super().__init__(values, index=pd.Index(idx), **kwargs)
             self._copy_metadata_from_basetseries(data)
         elif isinstance(data, np.ndarray) and isinstance(index, np.ndarray):
             # Legacy numpy array initialization

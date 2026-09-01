@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — conversion stops resetting what it converts (#57)
 
-### Fixed — `baseTs(ts)` reset ten of thirteen `_metadata` names
+### Fixed — `baseTs(ts)` reset eleven of thirteen `_metadata` names
 
 ```python
 ts = baseTs(data, times, signal_name='ECG')
@@ -88,12 +88,25 @@ object simply claimed to be something it was not. History is now preserved
 verbatim, with no "converted from" entry appended: a conversion is a copy, and
 editorialising it would make the provenance less true, not more.
 
-**`TimeSeriesData(ts)` lost exactly one name**, `signal_name`, assigned
-unconditionally after the copy. Same fix, same sentinel.
+**`TimeSeriesData(ts)` lost one name** when the source was a `baseTs` —
+`signal_name`, assigned unconditionally after the copy. Same fix, same
+sentinel.
 
-**The positional slots were the tenth and eleventh names**, which the issue's
-count of nine missed: `outlier_indices` and `lowess_fit` were assigned `None`
-through their public properties, clearing both the value and the index stamp.
+**The count is eleven, not the nine the issue reports.** `outlier_indices` and
+`lowess_fit` were being reset too — assigned `None` through their public
+properties, which clears the value and its index stamp together — and they are
+invisible to a comparison that only walks the flags. Only `outlier_filter`
+(via #15's guard) and `_freq_declaration` survived. Counted against a `main`
+worktree with all thirteen names moved off their defaults, not from reading
+the constructor.
+
+**A `TimeSeriesData` source was not recognised as a source at all.** The
+conversion branch was gated on `.times` and `.data`, which are baseTs'
+spelling; the superclass has neither, so `baseTs(tsd)` and
+`TimeSeriesData(tsd)` fell through to the plain-pandas arm and reset all
+thirteen. Both constructors now ask one shared predicate,
+`_carries_metadata`, which is also what tells an absent `history` from an
+empty one.
 
 ### Changed — the constructor keywords default to a sentinel
 
@@ -112,6 +125,24 @@ the *public* sentinel for `freq` and `ts_offset` via `_is_unset`.
 `baseTs(ts, is_filtered=False)` clears the flag the source was carrying;
 only *omitting* it preserves. Asserted for all ten names, because a sentinel
 that swallowed explicit arguments would merely have moved the bug.
+
+**`history=None` still asks for a fresh entry**, as the signature has always
+meant. An earlier revision of this branch folded a supplied `None` into the
+"not supplied" case, which made `history` the one nullable keyword that
+preserved rather than cleared — disagreeing with `signal_name=None` and
+`last_process=None`, both of which clear to `""`.
+
+**The offset pair cannot be made incoherent.** Dropping the `else` that zeroed
+`ts_offset` and `has_timestamp_offset` together is what stops a conversion
+losing an offset, but it also made `has_timestamp_offset=False` with a
+non-zero `ts_offset` reachable for the first time — and `__finalize__` copies
+the pair onward, so it would ride into every derived object. Clearing the flag
+explicitly now clears the offset with it.
+
+**An empty history is a history.** The "was anything carried across?" test asks
+the *source*, not the result's truthiness, so a series whose history is
+legitimately `[]` no longer comes back claiming to have just been created —
+the same failure this change exists to remove, one layer down.
 
 **Construction from arrays is unchanged.** Nothing is copied on that path, so
 every default still arrives — now from `_initialize_default_metadata`, which

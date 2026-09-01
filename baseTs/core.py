@@ -27,7 +27,8 @@ from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak
                     validate_finite_data)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
-                     normalise_label, _UNSET, _UnsetType)
+                     normalise_label, _UNSET, _UnsetType,
+                     _carries_metadata)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -222,8 +223,9 @@ class baseTs(TimeSeriesData):
         #
         # Assigned unconditionally, these overwrote whatever
         # _copy_metadata_from_basetseries had just copied off the source, so
-        # baseTs(ts) reset nine of thirteen names to parameter defaults and a
-        # converted series reported itself as freshly created (#57). #15 fixed
+        # baseTs(ts) reset eleven of thirteen names to parameter
+        # defaults, and a converted series reported itself as freshly
+        # created (#57). #15 fixed
         # exactly this for `outlier_filter` with a per-attribute guard, which
         # is why that one name survived; the guard does not scale to thirteen,
         # so the constructor tells "supplied" from "defaulted" instead.
@@ -258,15 +260,35 @@ class baseTs(TimeSeriesData):
         if not _is_unset(ts_offset):
             self.ts_offset = ts_offset
             self.has_timestamp_offset = True
+        elif has_timestamp_offset is False:
+            # Explicitly cleared, with no offset named. The `else` this
+            # replaces zeroed the pair unconditionally, which is how a
+            # conversion lost an offset it was carrying - but it also kept the
+            # two coherent, and "no offset applied, offset 1.5" is a state
+            # nothing downstream expects. __finalize__ copies the pair onward,
+            # so an incoherent one would ride into every derived object.
+            self.ts_offset = 0
 
         # Initialize history. Only when the caller named one, or when nothing
         # was carried across - a conversion keeps the source's history
         # verbatim, where this used to replace it with a single "Created"
         # entry and leave the object claiming to be new.
-        if isinstance(history, _UnsetType) or history is None:
-            if not getattr(self, 'history', None):
+        if isinstance(history, _UnsetType):
+            # Not supplied. Keep whatever was carried across, and mint the
+            # creation entry only when there was no source to carry from -
+            # asked of the data, not of the result, because a source whose
+            # history is legitimately empty is indistinguishable from an
+            # absent one by falsiness alone.
+            if not _carries_metadata(data):
                 self.history = [
                     f"Created baseTs object with {len(self)} samples"]
+        elif history is None:
+            # Supplied as None: the documented request for a fresh entry.
+            # Folded into the branch above, it became the one nullable
+            # keyword that preserved rather than cleared, disagreeing with
+            # the signature and with every sibling argument.
+            self.history = [
+                f"Created baseTs object with {len(self)} samples"]
         else:
             # normalise_history, not a bare list(): this is the first place a
             # history enters the system, and list('note') would explode a str
