@@ -266,8 +266,12 @@ def _validate_highlight_band(highlight_band) -> Tuple[float, float]:
 
     Returns:
         `(band_low, band_high)` as plain finite floats - the coerced values,
-        which the caller must then use: validating one object and drawing with
-        another is what #30 found in the filter family.
+        which the caller must then use to *draw*: validating one object and
+        drawing with another is what #30 found in the filter family. The
+        legend label is the exception, and is built from the caller's
+        originals, so an integer band still reads "1-2 Hz" rather than
+        "1.0-2.0 Hz". Geometry uses what was checked; presentation does not
+        silently reformat what the caller wrote.
 
     Raises:
         ValueError: If the band is not a pair, or either edge is not a finite
@@ -283,8 +287,8 @@ def _validate_highlight_band(highlight_band) -> Tuple[float, float]:
             f"highlight_band must be a (low, high) pair of frequencies in Hz, "
             f"got {highlight_band!r}"
         ) from exc
-    return (_validate_display_rate(band_low, 'highlight_band low'),
-            _validate_display_rate(band_high, 'highlight_band high'))
+    return (_validate_display_rate(band_low, "highlight_band's lower edge"),
+            _validate_display_rate(band_high, "highlight_band's upper edge"))
 
 
 def plot_fft_power(ts,
@@ -334,6 +338,18 @@ def plot_fft_power(ts,
             - [min_rate, max_rate] selects no frequency bins
             - `highlight_band` is not a pair of real finite frequencies, or is
               not strictly increasing
+
+        ZeroDivisionError: If the series is empty. Pre-existing and not
+            specific to plotting - `get_frequency_content`, `get_peak_freq`,
+            `relative_band_power` and `falff` all divide by a zero-length
+            index, while only `compute_fft_power` guards it (issue #62). It is
+            listed here rather than guarded here because the fix belongs in
+            the shared spectral door, not in one of its five callers.
+
+    The bounds are validated before the series, so a call that is wrong in both
+    ways reports the bound first. That is deliberate: the bounds are arguments
+    the caller can fix immediately, and checking them is far cheaper than the
+    FFT that would otherwise run before the complaint.
 
     A rejected call draws nothing: no figure is created, and a caller-supplied
     `ax` is returned to them untouched.
@@ -417,8 +433,15 @@ def plot_fft_power(ts,
 
     # Shade the band of interest, if requested
     if highlight_band is not None:
+        # The span is drawn from the validated floats - drawing with the
+        # caller's original objects would shade something other than what was
+        # checked, the hole #30 found in the filter family. The *label* is
+        # built from the originals, because it is presentation rather than
+        # geometry: coercing there turned highlight_band=(1, 2) into a legend
+        # reading "1.0-2.0 Hz" where it had always read "1-2 Hz".
+        label_low, label_high = highlight_band
         ax.axvspan(band_low, band_high, alpha=0.15, color='tab:orange',
-                   label=f"{band_low}-{band_high} Hz")
+                   label=f"{label_low}-{label_high} Hz")
         ax.legend()
 
     # Add grid for better readability

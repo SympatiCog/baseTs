@@ -114,6 +114,49 @@ reject them.
 The one case that did **not** change: a `highlight_band` outside the plotted
 range still draws, which is legitimate.
 
+**Three decisions the review rounds forced, recorded because each could
+reasonably have gone the other way:**
+
+*Geometry uses the validated values; presentation does not.* `axvspan` is drawn
+from the coerced floats — drawing with the caller's originals after validating
+copies is the hole #30 found in the filter family. But routing the **legend
+label** through them too turned `highlight_band=(1, 2)` into a legend reading
+`"1.0-2.0 Hz"` where it had always read `"1-2 Hz"`. That is a silent
+presentation change on the success path, which is exactly what this change was
+supposed not to make. The label is now built from the originals, and pinned.
+
+*The bounds are validated before the series.* A call that is wrong in both ways
+reports the bound, not the rate. Deliberate: the bounds are arguments the caller
+can fix immediately, and checking them is far cheaper than running the FFT that
+would otherwise precede the complaint.
+
+*Bounds and band edges are now widened to `float64` before use.* Previously the
+caller's original object was used directly. Two measured consequences, both
+sub-epsilon and both accepted:
+
+- A `Fraction` carrying more precision than IEEE-754 could sit within ~1e-18 of
+  a bin edge and fall on the other side of the frequency mask. The bins are
+  `float64` themselves, so comparing the bounds at the same precision is the
+  more honest of the two, and the difference is unreachable without
+  deliberately constructing such a bound.
+- A `float32` `highlight_band`'s shaded **width** changes in the 8th decimal
+  place (`0.300000011921` → `0.30000000447` for `(float32(0.1), float32(0.4))`).
+  The edges are identical; only the subtraction moved, from float32 arithmetic
+  to float64. The widening is lossless, so the new figure is the more accurate
+  one. This was the sole difference across a sweep of nine band types
+  (int, float, mixed, `float32`, `int64`, `Fraction`, `Decimal`) comparing
+  legend text and span geometry against `main`.
+
+**Known gap, filed as #62 and documented in the docstring rather than patched
+here:** an **empty** series raises `ZeroDivisionError`, not `ValueError`, so
+the "one `except ValueError`" contract has exactly one hole. It is pre-existing
+and family-wide — `get_frequency_content`, `get_peak_freq`,
+`relative_band_power` and `falff` all divide by a zero-length index inside
+`np.fft.fftfreq`, and only `compute_fft_power` guards it. `main` hid it here in
+the same bare `except`. The fix belongs in the shared spectral door, the way
+#28 replaced four drifted local copies, not in a sixth local guard — so it is
+pinned by a test that will have to be updated when #62 closes.
+
 ### Added — `utils.coerce_real_scalar`, the shared type door
 
 The bounds needed the type rules `validate_sampling_freq` already had — reject

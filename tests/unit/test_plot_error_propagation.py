@@ -327,6 +327,49 @@ def test_the_happy_path_still_shades_a_highlight_band(good_ts):
     assert ax.get_legend() is not None
 
 
+@pytest.mark.parametrize(
+    "band,expected",
+    [((1, 2), "1-2 Hz"),
+     ((0.01, 0.1), "0.01-0.1 Hz"),
+     ((0.5, 1), "0.5-1 Hz")],
+)
+def test_the_legend_label_keeps_the_callers_own_formatting(good_ts, band, expected):
+    """Validation coerces to float; the label must not inherit that.
+
+    Routing the label through the validated floats turned an integer band's
+    legend from "1-2 Hz" into "1.0-2.0 Hz" - a silent presentation change on
+    the success path, which is exactly the kind the reorder was supposed not
+    to make. The span itself is still drawn from the validated values.
+    """
+    ax = plot_fft_power(good_ts, max_rate=3.0, highlight_band=band)
+    assert [t.get_text() for t in ax.get_legend().get_texts()] == [expected]
+    # axvspan's patch carries x in data coordinates (y goes through a blended
+    # transform in axes coordinates, so only x is meaningful here).
+    patch = ax.patches[0]
+    assert patch.get_x() == pytest.approx(float(band[0]))
+    assert patch.get_x() + patch.get_width() == pytest.approx(float(band[1]))
+
+
+def test_an_empty_series_raises_zerodivisionerror_as_documented():
+    """Pins the one documented hole in the "all ValueError" contract.
+
+    Pre-existing and family-wide (issue #62): get_frequency_content,
+    get_peak_freq, relative_band_power and falff all divide by a zero-length
+    index, and only compute_fft_power guards it. Not fixed here because the
+    fix belongs in the shared spectral door rather than in one of its callers,
+    and this test exists so that closing #62 has to come back and update the
+    docstring that currently promises ZeroDivisionError.
+
+    The draws-nothing guarantee still holds, which is what this pins hardest:
+    the failure happens in the compute phase, before setup_plot.
+    """
+    empty = baseTs(np.array([]), np.array([]), freq=10.0)
+    before = set(plt.get_fignums())
+    with pytest.raises(ZeroDivisionError):
+        plot_fft_power(empty)
+    assert set(plt.get_fignums()) == before
+
+
 def test_scale_power_still_normalises(good_ts):
     ax = plot_fft_power(good_ts, max_rate=2.0, scale_power=True)
     power = np.asarray(ax.get_lines()[0].get_ydata(), float)
