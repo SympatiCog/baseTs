@@ -16,6 +16,33 @@ from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
 
 
+class _UnsetType:
+    """The type of `_UNSET`. Distinct so it can be annotated and matched."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+#: "This keyword was not supplied", as opposed to "it was supplied and its
+#: value happens to equal the default".
+#:
+#: The constructors copy a source object's metadata and then assign their own
+#: keyword defaults over the top, which reset nine names on every conversion
+#: (#57). Telling the two apart is what makes "assign only what the caller
+#: actually passed" expressible: `False` and `""` cannot do it, because they
+#: are also values a caller may legitimately mean.
+#:
+#: `None` cannot serve either. It is already a meaningful argument in places -
+#: `baseTs(..., last_process=None)` is documented to produce `""` - so reusing
+#: it here would make a supported call mean something new.
+#:
+#: `np.nan` serves the numeric arguments through `_is_unset`, and stays: it is
+#: the constructor's *public* sentinel for `freq`, documented as such.
+_UNSET = _UnsetType()
+
+
 #: The private slots behind the positional properties, paired with the public
 #: names they back. Each holds either None or `(value, index_it_describes)`.
 _POSITION_INDEXED_SLOTS = (('lowess_fit', '_lowess_fit'),
@@ -420,8 +447,8 @@ class TimeSeriesData(pd.Series):
         'outlier_indices', '_outlier_indices',
         "Positions of the samples filter_outliers rejected.")
 
-    def __init__(self, data=None, index=None, freq: Optional[float] = None, 
-                 signal_name: str = "", **kwargs):
+    def __init__(self, data=None, index=None, freq: Optional[float] = None,
+                 signal_name: Union[str, _UnsetType] = _UNSET, **kwargs):
         """
         Initialize TimeSeriesData object.
         
@@ -454,13 +481,19 @@ class TimeSeriesData(pd.Series):
         if freq is not None:
             self.freq = freq
 
-        # Set signal name. Through normalise_label because this is the third
-        # door the label metadata arrives by, and the only one that used to
-        # call a str method on it: copy(deep=True) and _create_new_with_data
-        # both hand the parent's name back to this constructor, so a name that
-        # was not a string reached `.upper()` and died there rather than at the
+        # Set signal name, but only when one was given. Assigned
+        # unconditionally, this overwrote the name
+        # _copy_metadata_from_basetseries had just copied off the source, so
+        # TimeSeriesData(ts) returned an unnamed series (#57).
+        #
+        # Through normalise_label because this is the third door the label
+        # metadata arrives by, and the only one that used to call a str method
+        # on it: copy(deep=True) and _create_new_with_data both hand the
+        # parent's name back to this constructor, so a name that was not a
+        # string reached `.upper()` and died there rather than at the
         # assignment that set it.
-        self.signal_name = normalise_label(signal_name).upper()
+        if not isinstance(signal_name, _UnsetType):
+            self.signal_name = normalise_label(signal_name).upper()
         
         # Initialize or update history
         if not hasattr(self, 'history') or self.history is None:
@@ -477,6 +510,10 @@ class TimeSeriesData(pd.Series):
         self._lowess_fit = None
         self.last_process = ""
         self.history = []
+        # Listed in _metadata, and now that the constructor only assigns a
+        # name when one is given, this is where the default comes from for a
+        # series built from arrays.
+        self.signal_name = ""
         # _metadata declares these two; without them any derived object
         # inherited None and clobbered the default it was born with.
         self.is_outlier_filtered = False

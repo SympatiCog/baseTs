@@ -54,6 +54,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — conversion stops resetting what it converts (#57)
+
+### Fixed — `baseTs(ts)` reset ten of thirteen `_metadata` names
+
+```python
+ts = baseTs(data, times, signal_name='ECG')
+ts.set_outlier_filter(frac=0.42); ts.set_timestamp_offset(1.5)
+
+baseTs(ts).signal_name   # '' — was 'ECG'
+baseTs(ts).ts_offset     # 0  — was 1.5
+baseTs(ts).history       # ['Created baseTs object with 200 samples']
+```
+
+`TimeSeriesData.__init__` copies the source's metadata whenever the argument
+looks like a baseTs, and `baseTs.__init__` then assigned its own keyword
+defaults straight over the top — `False` for every flag, `""` for the strings,
+a fresh list for `history`, `None` for both positional slots.
+
+`outlier_filter` was the one name that survived, and only because #15 added a
+guard for it alone. The comment above that guard describes the bug for every
+other name: *"baseTs(ts) takes the conversion branch in
+TimeSeriesData.__init__, which copies the source's filter, and this used to
+overwrite it with a default."* A per-attribute guard does not scale to
+thirteen, so the constructor now distinguishes **"the caller passed this"**
+from **"this is the parameter default"** and assigns only what was supplied.
+
+**The history loss was the sharpest edge.** A converted series reported
+`Created baseTs object with N samples` as its entire provenance while the
+flags that would have contradicted it — `is_filtered`, `is_outlier_filtered`,
+`has_timestamp_offset` — were cleared in the same breath. Nothing raised; the
+object simply claimed to be something it was not. History is now preserved
+verbatim, with no "converted from" entry appended: a conversion is a copy, and
+editorialising it would make the provenance less true, not more.
+
+**`TimeSeriesData(ts)` lost exactly one name**, `signal_name`, assigned
+unconditionally after the copy. Same fix, same sentinel.
+
+**The positional slots were the tenth and eleventh names**, which the issue's
+count of nine missed: `outlier_indices` and `lowess_fit` were assigned `None`
+through their public properties, clearing both the value and the index stamp.
+
+### Changed — the constructor keywords default to a sentinel
+
+`is_filtered`, `is_interpolated`, `is_uniform_grid`, `is_outlier_filtered`,
+`has_timestamp_offset`, `outlier_indices`, `lowess_fit`, `signal_name`,
+`history` and `last_process` now default to `_UNSET` rather than to
+`False`/`""`/`None`. Visible in `help(baseTs)` and `inspect.signature`, where
+the defaults now read `<unset>`.
+
+`None` could not serve as the sentinel: it is already a meaningful argument —
+`baseTs(..., last_process=None)` is documented since #33 to produce `""` — so
+reusing it would have changed what a supported call means. `np.nan` stays as
+the *public* sentinel for `freq` and `ts_offset` via `_is_unset`.
+
+**An explicit argument still wins, including one equal to the old default.**
+`baseTs(ts, is_filtered=False)` clears the flag the source was carrying;
+only *omitting* it preserves. Asserted for all ten names, because a sentinel
+that swallowed explicit arguments would merely have moved the bug.
+
+**Construction from arrays is unchanged.** Nothing is copied on that path, so
+every default still arrives — now from `_initialize_default_metadata`, which
+gained `signal_name` for the purpose. The internal callers in `series.py` and
+`core.py` all construct from ndarrays and are unaffected.
+
+### Not changed
+
+`_create_new_with_data` still upper-cases the signal name it passes back
+through the constructor, so `ts.zscale()` turns `'Heart Rate'` into
+`'HEART RATE'` while `ts.iloc[:5]` preserves it. That is **#56**, and it needs
+a decision about which behaviour is intended rather than a fix.
+
 ## [Unreleased] — the metadata defaults survive a derivation (#33)
 
 ### Fixed — a `None` filter reached every derived object
