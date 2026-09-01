@@ -939,6 +939,26 @@ Plot FFT power spectrum with enhanced windowing and frequency range control.
 **Returns:**
 - `matplotlib.axes.Axes`: The plot axes
 
+**Raises:**
+- `ValueError`: If the sampling rate is unusable (NaN, zero or negative), if the data contains
+  NaN or Inf, if `window` names an unknown window function, if `min_rate` or `max_rate` is not a
+  real finite scalar (`max_rate` also accepts `np.nan`, its "use Nyquist" sentinel), if
+  `[min_rate, max_rate]` selects no frequency bins, or if `highlight_band` is not a strictly
+  increasing pair of real finite frequencies
+
+Every rejected input raises `ValueError`, so one `except ValueError` covers the function.
+
+A rejected call draws nothing — no figure is created, and a caller-supplied `ax` is returned
+untouched. Until #34 these errors were swallowed and drawn as text on the axes, so a failing call
+returned a normal `Axes` and a batch pipeline saved a bogus figure with a success exit code.
+
+Gappy data needs an `interpolate_gaps()` first: since #36 `filter_outliers` leaves the gaps it did
+not create as NaN, and since #28 the spectral guards reject them.
+
+```python
+ts.filter_outliers().interpolate_gaps().plot_fft_power()
+```
+
 **Example:**
 ```python
 # Basic FFT plot
@@ -982,9 +1002,13 @@ def filter_outliers(self):
 def plot(self, show=True, ax=None, **kwargs):
     """Plot the time series."""
 
-def plot_fft_power(self, max_rate=None, show=True, ax=None):
+def plot_fft_power(self, max_rate=np.nan, show=False, ax=None):
     """Plot FFT power spectrum."""
 ```
+
+> The `max_rate=None` default shown here previously was never the real
+> signature, and since #34 that call raises: `np.nan` is the sentinel for "use
+> Nyquist". See the current entry above for the full parameter list.
 
 ---
 

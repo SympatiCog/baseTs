@@ -54,6 +54,190 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `plot_fft_power` raises instead of drawing the error (#34)
+
+### Fixed — a bare `except Exception` neutralised every spectral guard
+
+`plotting.plot_fft_power` wrapped its whole body in `except Exception`, rendered
+the message as text on the axes, and returned a normal `Axes`. Its docstring's
+`Raises: ValueError ... invalid frequency` was simply false.
+
+```python
+deg = baseTs(np.sin(np.arange(400) / 10.0), np.zeros(400))   # freq is NaN
+ax = plot_fft_power(deg)        # no exception
+ax.texts                        # ['Error plotting FFT: Invalid sampling frequency: nan Hz. ...']
+```
+
+A batch pipeline doing `ax = plot_fft_power(ts); fig.savefig(...)` got a
+silently-bogus figure and a **success exit code** — the silent-failure mode #24
+was written to eliminate, one layer up. #24 and #28 added rate and data guards
+to `compute_fft_power`, `get_frequency_content`, `relative_band_power`,
+`get_peaks` and `filters.validate_filter_params`; this wrapper undid all of them
+on what is, for interactive users, the main path to a spectrum.
+
+**Behaviour change: 29 of a 30-case census change outcome**, generated against
+a `main` worktree rather than written from memory, and pinned by
+`test_every_rejected_input_raises_valueerror_and_draws_nothing`. Every one of
+them now raises `ValueError` — one `except ValueError` covers the function —
+where before they drew. The census splits in two:
+
+**22 drew the error as text.** An unusable sampling rate, data containing NaN
+or Inf, an unknown `window`, a `[min_rate, max_rate]` window selecting no bins,
+a reversed or equal-edged `highlight_band`, and every malformed bound or band
+(`max_rate=None`, `'abc'`, `±Inf`, a list; `min_rate=NaN`, `Inf`, `None`; a
+band that is a 1- or 3-tuple, a non-iterable, or has a `None` edge). Several of
+these were not even `ValueError` underneath: `np.isnan(None)` raised `TypeError:
+ufunc 'isnan' not supported for the input types`, and a malformed band died on
+tuple unpacking — but the bare `except` meant no caller ever saw either.
+
+**7 drew a silently wrong plot**, which is the worse half and was not in the
+issue report. Two distinct mechanisms, not one:
+
+| Input | Before | Why it passed |
+|---|---|---|
+| `max_rate=True` | plotted, silently taken as 1.0 Hz | `bool` is a `Real` |
+| `min_rate=True` | plotted, silently taken as 1.0 Hz | `bool` is a `Real` |
+| `highlight_band=(nan, 0.5)` | shaded and legended | every comparison against NaN is `False` |
+| `highlight_band=(0.1, nan)` | shaded, legend `0.1-nan Hz` | as above |
+| `highlight_band=(nan, nan)` | shaded, legend `nan-nan Hz` | as above |
+| `highlight_band=(0.1, inf)` | shaded **to infinity**, legend `0.1-inf Hz` | `0.1 >= inf` is legitimately `False` |
+| `highlight_band='ab'` | shaded | `'a' >= 'b'` is `False` |
+
+The infinite upper edge is worth separating from the rest: it is *not* the NaN
+quirk. `0.1 >= inf` is honestly `False`, so an ordering check alone could never
+have caught it — only a finiteness check does.
+
+The NaN-edge hole is **pre-existing** (`main`'s ordering check has it too, just
+positioned after the plot instead of before it) and is the same shape as #30,
+where `max(hp_hz, lp_hz)` let argument *position* decide which edge was checked.
+It is closed here rather than filed because this change moves and re-documents
+that exact check, and shipping "raises if not strictly increasing" over a known
+NaN hole would make the new docstring false.
+
+### Also newly *accepted*, in the opposite direction
+
+The census enumerates inputs that were already bad, so it misses this: a
+`Decimal` or `Fraction` `max_rate`/`min_rate` now **works**, where `main` died
+on `np.isnan(Decimal('2.0'))` with `ufunc 'isnan' not supported for the input
+types` and drew that as text. The shared door accepts whatever `float()` does,
+which is what `np.fft.fftfreq` can actually use. Pinned, since nothing else
+would have caught a widening of the accepted set.
+
+Gappy data needs an `interpolate_gaps()` first — since #36 `filter_outliers`
+leaves the gaps it did not create as NaN, and since #28 the spectral guards
+reject them.
+
+The one case that did **not** change: a `highlight_band` outside the plotted
+range still draws, which is legitimate.
+
+**Three decisions the review rounds forced, recorded because each could
+reasonably have gone the other way:**
+
+*Geometry uses the validated values; presentation does not.* `axvspan` is drawn
+from the coerced floats, the **legend label** from the caller's originals.
+Routing the label through the floats turned `highlight_band=(1, 2)` into a
+legend reading `"1.0-2.0 Hz"` where it had always read `"1-2 Hz"` — a silent
+presentation change on the success path, which is exactly what this change was
+supposed not to make.
+
+The band is **unpacked exactly once**, and both halves returned together. An
+earlier revision unpacked it a second time at draw time to build that label,
+which broke one-shot iterables: `highlight_band=(x for x in (0.1, 0.4))` plots
+on the previous release and raised `not enough values to unpack` here — from
+the draw phase, after a figure existed and a supplied `ax` had been titled,
+falsifying the one guarantee this change is built on. Both directions are
+pinned: a generator band plots, an exhausted one is rejected cleanly.
+
+*The bounds are validated before the series.* A call that is wrong in both ways
+reports the bound, not the rate. Deliberate: the bounds are arguments the caller
+can fix immediately, and checking them is far cheaper than running the FFT that
+would otherwise precede the complaint.
+
+*Bounds and band edges are now widened to `float64` before use.* One measured
+consequence, accepted: a `Fraction` carrying more precision than IEEE-754 could
+sit within ~1e-18 of a bin edge and fall on the other side of the frequency
+mask. The bins are `float64` themselves, so comparing the bounds at the same
+precision is the more honest of the two, and the difference is unreachable
+without deliberately constructing such a bound.
+
+The shaded span's *rendered* geometry is unchanged for every band type swept
+(int, float, mixed, `float32`, `int64`, `Fraction`, `Decimal`), because
+matplotlib coerces through `float()` itself. So drawing from the validated
+values rather than the caller's originals is a principle here, not an
+observable difference — kept because relying on a consumer to repeat your
+coercion is what #30 found in the filter family, not because it moves a pixel.
+
+The one visible trace is an attribute rather than a rendering: for a `float32`
+band, `Rectangle.get_width()` returns `0.30000000447` where `main` returned
+`0.300000011921`, the difference between doing the subtraction in float64 and
+in float32. On `main` that stored width was inconsistent with `main`'s own
+drawn right edge (`x + width` = `0.4000000134`, rendered `0.4000000059`),
+because matplotlib renders from the two edges and not from the width. The new
+value is the one that agrees with the picture.
+
+**Known gap, filed as #62 and documented in the docstring rather than patched
+here:** an **empty** series raises `ZeroDivisionError`, not `ValueError`, so
+the "one `except ValueError`" contract has exactly one hole. It is pre-existing
+and family-wide — `get_frequency_content`, `get_peak_freq`,
+`relative_band_power` and `falff` all divide by a zero-length index inside
+`np.fft.fftfreq`, and only `compute_fft_power` guards it. `main` hid it here in
+the same bare `except`. The fix belongs in the shared spectral door, the way
+#28 replaced four drifted local copies, not in a sixth local guard — so it is
+pinned by a test that will have to be updated when #62 closes.
+
+### Added — `utils.coerce_real_scalar`, the shared type door
+
+The bounds needed the type rules `validate_sampling_freq` already had — reject
+`str`/`bool`/`np.bool_`/`bytes` before `float()` (since `float('30')` succeeds
+and `True` is a `Real`), reject multi-element arrays rather than unwrap them
+(`float()` accepts them on numpy 1.x and raises on 2.x, so allowing them would
+make the accept set differ across the CI matrix), and translate `TypeError`/
+`ValueError`/`OverflowError` into one `ValueError`.
+
+Those rules are now `utils.coerce_real_scalar`, which `validate_sampling_freq`
+calls instead of owning, and which the new `plotting._validate_display_rate`
+and `_validate_highlight_band` call too. They are shared rather than copied
+because the *type* rules are common while the *range* rules genuinely differ: a
+sampling rate must be finite and positive, `max_rate` takes NaN as its "use
+Nyquist" sentinel, `min_rate` may be zero. Copying them is what let the four
+spectral entry points drift apart before #28.
+
+`validate_sampling_freq`'s own behaviour is unchanged, including its messages;
+the 933-test suite passing across the extraction is what says so.
+
+**A hole mutation testing found in the moved code:** the multi-element-array
+branch was unpinned — deleting it left the suite green on `main` as well as
+here, because `float()` on such an array raises `TypeError` on numpy 2.x and
+the shared door translates it to `ValueError` regardless, so only the *message*
+degrades. Now pinned from both sides.
+
+**Fixed by reordering, not by narrowing the `except`.** Everything that can
+fail on the caller's input now runs *before* `setup_plot`, so a rejected call
+has built nothing. Narrowing alone would not have been enough: `setup_plot` ran
+above the `try`, so every rejected call **leaked a figure** into pyplot's
+registry (`plt.get_fignums()` went from `[]` to `[1]`) — in a batch loop those
+accumulate. Two consequences, both pinned by tests and both verified to fail if
+the reorder is reverted:
+
+- no figure is created by a call that raises
+- a caller-supplied `ax` comes back **untouched**, where it was previously
+  titled, labelled, gridded and annotated with the error text
+
+The `highlight_band` ordering check moved with them, so a reversed band is now
+rejected before the spectrum goes on the axes rather than after.
+
+No `on_error='annotate'` escape hatch was added. The on-plot text has no caller
+asking for it, and the wrapper's whole failure mode was that it applied
+unconditionally; if notebook ergonomics want it back it can be added then, with
+a use case behind it.
+
+**Not in scope, filed as #61:** `lag_plot` has a bare `except Exception` of the
+same shape around `ts.signal_name.upper()`, which prints to stdout and labels
+the plot `Signal`. It is a weaker case — `shift_timeseries` is already called
+outside it, so #32's guards do propagate; since #33 `signal_name` is a string
+on every derived object, so it needs a hand-assigned non-string to fire; and
+the consequence is a mislabelled plot, not a wrong one.
+
 ## [Unreleased] — conversion stops resetting what it converts (#57)
 
 ### Fixed — `baseTs(ts)` reset eleven of thirteen `_metadata` names
@@ -741,6 +925,11 @@ all-NaN spectrum. The message names the remedy: *"Fill gaps first, e.g. with
 the new error as on-plot text instead, because of its bare `except Exception`
 (issue #34, unchanged here) — so on gappy data it now draws the message where
 it previously drew a blank spectrum.
+
+> **Superseded by #34.** `plot_fft_power` now raises like its siblings, so the
+> exemption described in the paragraph above no longer holds. The account is
+> left standing because it is what this change did; see the #34 entry for what
+> replaced it.
 
 Raising rather than dropping the bad samples is deliberate: dropping would
 change the sample spacing, so the resulting bins would no longer be the

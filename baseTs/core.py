@@ -2280,7 +2280,22 @@ class baseTs(TimeSeriesData):
 
         Returns:
             matplotlib.axes.Axes: The Axes object with the plot.
-            
+
+        Raises:
+            ValueError: If the sampling rate is unusable (NaN, zero or negative),
+                if the data contains NaN or Inf, if `window` names an unknown
+                window function, if `min_rate`/`max_rate` is not a real finite
+                scalar (`max_rate` also takes NaN, its "use Nyquist" sentinel),
+                if [min_rate, max_rate] selects no frequency bins, or if
+                `highlight_band` is not a strictly increasing pair of real
+                finite frequencies. A rejected call draws nothing.
+
+            Until issue #34 these were swallowed and drawn as text on the axes,
+            so a failing call returned a normal Axes. Gappy data needs an
+            `interpolate_gaps()` first - since #36 `filter_outliers` leaves the
+            gaps it did not create as NaN, and since #28 the spectral guards
+            reject them.
+
         Examples:
             # Basic power spectrum
             ts.plot_fft_power()
