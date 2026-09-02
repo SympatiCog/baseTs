@@ -29,7 +29,8 @@ from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      normalise_label, _UNSET, _UnsetType,
                      _carries_metadata, _carry_identity,
-                     _apply_duplicate_label_declaration)
+                     _apply_duplicate_label_declaration,
+                     _refuse_undeclarable_index)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -391,6 +392,13 @@ class baseTs(TimeSeriesData):
         # test, which is what mutation testing showed when both did.
         attrs = dict(getattr(self, 'attrs', {}) or {})
         allows_duplicates = self.flags.allows_duplicate_labels
+
+        # Before the re-initialisation, so this method is all-or-nothing.
+        # Checked afterwards, a refused declaration left the object holding
+        # the new data and index with its duplicate-label protection reset to
+        # pandas' permissive default - a failure report over a mutated,
+        # silently unprotected object.
+        _refuse_undeclarable_index(allows_duplicates, new_index)
 
         preserved = {attr: getattr(self, attr)
                      for attr in self._metadata if hasattr(self, attr)}

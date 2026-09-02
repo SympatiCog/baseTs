@@ -281,6 +281,42 @@ def _carry_identity(target, source):
     return target
 
 
+def _refuse_undeclarable_index(declared, index):
+    """Reject an index the declaration could not survive, before anything moves.
+
+    Called *before* a re-initialisation commits, not after. Setting
+    `allows_duplicate_labels = False` is a validation pandas performs against
+    the live index, so restoring a declaration afterwards can fail - and by
+    then the new data and index are already in place and the flag has been
+    reset to pandas' permissive default. The object was left mutated, with
+    the protection it declared silently switched off, by an operation that
+    had just reported failure. A caller catching the error has every reason
+    to assume nothing changed.
+
+    Checking the prospective index first makes the operation atomic: either
+    it raises having touched nothing, or the restore afterwards cannot fail.
+    """
+    if declared:
+        return
+    candidate = index if isinstance(index, pd.Index) else pd.Index(index)
+    if candidate.has_duplicates:
+        _raise_duplicate_label_refusal(candidate)
+
+
+def _raise_duplicate_label_refusal(index, cause=None):
+    """The one wording for both the pre-check and the restore arm."""
+    from .utils import ValidationError
+
+    duplicated = index[index.duplicated()].unique().tolist()
+    error = ValidationError(
+        "this object declares allows_duplicate_labels=False, but the "
+        f"operation produced duplicate time labels {duplicated!r}, so that "
+        "declaration cannot be carried to the result. Either drop the "
+        "declaration or give the result a unique index."
+    )
+    raise error from cause
+
+
 def _apply_duplicate_label_declaration(target, declared):
     """Carry `allows_duplicate_labels`, diagnosing pandas' refusal.
 
@@ -302,20 +338,18 @@ def _apply_duplicate_label_declaration(target, declared):
     right and is filed separately; this arm only ensures it is reported as
     something a caller can act on.
     """
-    from .utils import ValidationError
-
     try:
         target.flags.allows_duplicate_labels = declared
     except Exception as exc:
+        # Matched by name rather than by class. pandas.errors.DuplicateLabelError
+        # is the public spelling, but this arm exists to avoid swallowing
+        # anything else the setter may raise on a version that words it
+        # differently, and importing a symbol to compare against would make
+        # the import itself the version dependency. Anything else re-raises
+        # untouched.
         if type(exc).__name__ != 'DuplicateLabelError':
             raise
-        duplicated = target.index[target.index.duplicated()].unique().tolist()
-        raise ValidationError(
-            "this object declares allows_duplicate_labels=False, but the "
-            f"operation produced duplicate time labels {duplicated!r}, so "
-            "that declaration cannot be carried to the result. Either drop "
-            "the declaration or give the result a unique index."
-        ) from exc
+        _raise_duplicate_label_refusal(target.index, cause=exc)
 
 
 def _detach_shared_metadata(obj):
@@ -569,8 +603,23 @@ class TimeSeriesData(pd.Series):
         Normalising here rather than guarding each reader is the same move
         _detach_shared_metadata makes for `history` and `outlier_filter`,
         applied to the one door that rebuilds an object out of bytes.
+
+        The registry shadow has to go first, and healing `_name` without it
+        was worse than not healing at all. pandas writes `_metadata` into the
+        pickle and its `__setstate__` installs whatever it finds as an
+        *instance* attribute, permanently shadowing the class's. Every pickle
+        gets that shadow; for one written since this change it is identical to
+        the class list and harmless, but a legacy blob carries the old,
+        `_name`-less registry - so the object would come back healed, work
+        once, and then lose the name again the moment anything iterated
+        `self._metadata`: `__getstate__` on the next pickle, or
+        `_adopt_data_inplace`'s snapshot on the next `ts.data = x`. Deleting
+        the shadow lets the class attribute govern, which is where the
+        registry is actually defined.
         """
         super().__setstate__(state)
+        if '_metadata' in self.__dict__:
+            object.__delattr__(self, '_metadata')
         if not hasattr(self, _IDENTITY_NAME_SLOT):
             object.__setattr__(self, _IDENTITY_NAME_SLOT, None)
 

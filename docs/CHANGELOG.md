@@ -102,6 +102,14 @@ normalise-at-the-door move `_detach_shared_metadata` makes for `history`,
 applied to the one door that rebuilds an object out of bytes. The original name
 is not recovered, because it is genuinely not in those bytes.
 
+It also drops the registry pandas restores onto the instance. `_metadata` is
+written into every pickle and installed as an *instance* attribute, shadowing
+the class's; for a blob written since this change the two are identical and it
+does not matter, but a legacy blob carries the old, `_name`-less list. Without
+dropping it the object came back healed, worked once, and lost the name again
+the moment anything iterated `self._metadata` — the next `pickle.dumps`, or the
+next `ts.data = x`.
+
 ### Changed — behaviour that was previously silent
 
 - **Derived objects now carry a name.** Code asserting `result.name is None`
@@ -116,13 +124,21 @@ is not recovered, because it is genuinely not in those bytes.
   2.x and deliberately differs from 3.x.
 - **Carrying that flag can now raise where nothing raised before.** If an
   operation produces duplicate time labels on an object that declared
-  `allows_duplicate_labels=False`, restoring the declaration is refused. This is
-  reachable: `_update_series_data` rebuilds the index as
-  `linspace(first, last, n)`, so on a single-sample series every replacement
-  timestamp is identical and `ts.data = [1., 2., 3.]` produces three duplicate
-  labels. The declaration is still carried — silently dropping one is the class
-  of failure this change exists to fix — but pandas' bare "Index has duplicates"
-  is re-raised as a `ValidationError` naming the operation and the remedy.
+  `allows_duplicate_labels=False`, it is refused. This is reachable:
+  `_update_series_data` rebuilds the index as `linspace(first, last, n)`, so on
+  a single-sample series every replacement timestamp is identical and
+  `ts.data = [1., 2., 3.]` produces three duplicate labels (filed as #65). The
+  declaration is still carried — silently dropping one is the class of failure
+  this change exists to fix — and pandas' bare "Index has duplicates" is
+  re-raised as a `ValidationError` naming the labels and the remedy.
+
+  **The refusal happens before anything is mutated.** Checked after the
+  re-initialisation, as it first was, the new data and index were already
+  committed and the flag had fallen back to pandas' permissive default — an
+  operation that reported failure left a mutated object with its declared
+  protection silently switched off, which is worse than the silent behaviour it
+  replaced. `ts.data = x` is now all-or-nothing: either it raises having
+  changed nothing, or it succeeds.
 
 ### Testing
 
@@ -140,13 +156,23 @@ The suite had no pickle round-trip test at all, which is why #39 survived; it
 now has one that asserts the unpickled object *works* rather than that `loads`
 returned.
 
-18 mutants, 18 killed, 0 survivors. Three lines that survived an earlier round
+22 mutants, 22 killed, 0 survivors. Three lines that survived an earlier round
 were removed rather than explained: two `_carry_identity` calls that pandas'
 own `__finalize__` had already made redundant, and a `_name` exclusion
-superseded by the call after it.
+superseded by the call after it. A fourth survivor — the arm that re-raises a
+non-duplicate error untouched — is unreachable through the public API now that
+the refusal happens before the mutation, so it is tested directly rather than
+deleted on the assumption that it can never fire.
+
+Both halves of the reflection guard were widened after review found holes in
+each: it keyed on the literal class name `baseTs`, missing anything defined on
+`TimeSeriesData`, and the AST scan required the two-argument
+`super(Cls, self)` form, missing a zero-argument `super().__init__()` in an
+ordinary method — equivalent at runtime and equally destructive. Both fixes
+were verified by injecting the exact site each used to miss.
 
 Verified on pandas 3.0.5/numpy 2.5.1, pandas 2.3.3/numpy 1.26.4 and pandas
-2.3.3/numpy 2.2.6 — 1099 tests green on all three.
+2.3.3/numpy 2.2.6 — 1105 tests green on all three.
 
 ## [Unreleased] — `plot_fft_power` raises instead of drawing the error (#34)
 

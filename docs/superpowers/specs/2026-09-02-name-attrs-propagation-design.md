@@ -147,11 +147,18 @@ Consequences, each handled deliberately:
   `self`'s.** `super().__add__` has already applied pandas' own rule —
   `ts_a + ts_b` with differing names yields `None`, not the left operand's
   name. Copying `self._name` over the top would silently diverge from pandas
-  on every two-operand operation. This site therefore excludes `_name` from
-  the loop the way it already excludes `signal_name`, and takes the name from
+  on every two-operand operation. This site therefore takes its identity from
   `result`. Confirmed by the panel against live pandas: `result.name` is
   already pandas-resolved whichever dunder produced it, including the
   reflected ones.
+
+  **As built, the loop is given no `_name` exclusion**, though this document
+  previously said it would get one alongside `signal_name`'s. The
+  `_carry_identity(new_basets, result)` call that follows overwrites whatever
+  the loop set, so the exclusion would be dead code that reads as a
+  safeguard. Mutation testing settled it — no test could tell the two
+  spellings apart — and the implementation review flagged the stale sentence
+  this replaces.
 - **Half A does nothing for sites 8 and 9**, which have no metadata loop to
   ride. This is why Group 2 needs its own mechanism rather than a wider
   registry.
@@ -386,6 +393,44 @@ because reading a test cannot tell you whether it would.
   name where they previously handed back `None`. Anything asserting
   `result.name is None` after a filter changes. CHANGELOG covers #35 and #39
   with that framing.
+
+## What the implementation review changed
+
+A `consensus-review` round against the code (codex ✓, agy ✓), the first not
+aimed at the design. Five findings, all reproduced against a `main` worktree
+before acting, all fixed in the same branch.
+
+- **`_adopt_data_inplace` was not atomic** (both models). On the refusal path
+  it had already committed the new data and index and let the flag fall back
+  to pandas' permissive default, so an operation that reported failure left a
+  mutated object with its declared protection silently switched off — and the
+  CHANGELOG claimed the opposite in the same breath. Fixed by checking the
+  prospective index *before* the re-initialisation
+  (`_refuse_undeclarable_index`), which makes the method all-or-nothing.
+- **A legacy pickle healed once and then re-broke.** pandas writes `_metadata`
+  into the blob and installs it as an *instance* attribute, so a pre-fix blob
+  permanently shadowed the class registry: the name came back, then vanished
+  again on the next re-pickle or `ts.data = x`, because both iterate
+  `self._metadata`. `__setstate__` now drops the shadow before healing.
+- **The legacy-pickle fixture could not see that**, because it deleted the
+  `_name` value but kept the *current* registry in the state dict. A real blob
+  carries the old one. This is why a full mutation round missed the defect —
+  the fixture was not the shape it claimed to be.
+- **`test_a_permissive_flag_is_not_turned_restrictive` was vacuous.** Its
+  target went through `.copy()`, which is always freshly constructed and
+  therefore permissive, so `_carry_identity`'s guard short-circuited and the
+  assign-vs-AND choice was never reached; the test passed with the whole flag
+  mechanism deleted. Rewritten against the helper directly.
+- **Both halves of the "derive, don't hand-list" guard had holes.** The
+  reflection filter keyed on the literal class name `baseTs`, so a method
+  defined on `TimeSeriesData` was invisible to it; and the AST scan required
+  the two-argument `super(Cls, self)` form, so a zero-argument
+  `super().__init__(...)` in an ordinary method — equivalent at runtime, and
+  equally destructive — slipped past. Both widened, and both fixes verified by
+  injecting the exact site each used to miss.
+
+Also corrected: this document's claim that `_wrap_result_as_basets` excludes
+`_name` from its loop, which the implementation deliberately does not do.
 
 ## What review round 2 changed
 

@@ -37,7 +37,10 @@ import pandas as pd
 import pytest
 
 from baseTs import baseTs
-from baseTs.series import TimeSeriesData, deepcopy_metadata_value
+from baseTs.series import (TimeSeriesData, deepcopy_metadata_value,
+                          _carry_identity,
+                          _apply_duplicate_label_declaration)
+from baseTs.utils import ValidationError
 
 NAME = "NAMEVAL"
 ATTRS = {"unit": "mV"}
@@ -150,15 +153,48 @@ class TestPickleWrittenBeforeTheFix:
 
     @staticmethod
     def _restored_without_a_name_key():
-        state = seeded().__getstate__()
+        """A state dict shaped like a blob written before `_name` was added.
+
+        Both edits matter, and an earlier version of this fixture made only
+        the first. Deleting the `_name` *value* reproduces the missing
+        attribute; leaving `state['_metadata']` as the current registry does
+        not reproduce a real legacy blob, whose registry predates `_name`.
+        pandas installs that stored list as an *instance* attribute, so the
+        stale one shadows the class's permanently - and a fixture that keeps
+        the current list cannot see it. That gap is exactly why the shadowing
+        defect survived a full mutation round here.
+        """
+        state = dict(seeded().__getstate__())
         assert '_name' in state, (
             "the fixture assumes __getstate__ writes _name; if it stopped, "
             "this test is no longer reproducing a pre-fix blob"
         )
         del state['_name']
+        state['_metadata'] = [name for name in state['_metadata']
+                              if name != '_name']
         revived = object.__new__(baseTs)
         revived.__setstate__(state)
         return revived
+
+    def test_the_stale_registry_does_not_shadow_the_class(self):
+        """The heal must survive the next operation, not just the load.
+
+        Without this, a legacy object came back working and then lost its
+        name again the first time anything iterated `self._metadata`.
+        """
+        revived = self._restored_without_a_name_key()
+        assert '_name' in revived._metadata
+
+    def test_a_name_set_after_loading_survives_a_re_pickle(self):
+        revived = self._restored_without_a_name_key()
+        revived.name = "healed"
+        assert pickle.loads(pickle.dumps(revived)).name == "healed"
+
+    def test_a_name_set_after_loading_survives_an_inplace_write(self):
+        revived = self._restored_without_a_name_key()
+        revived.name = "healed"
+        revived.data = np.arange(4.0)
+        assert revived.name == "healed"
 
     def test_a_pre_fix_blob_loads_without_the_key(self):
         assert hasattr(self._restored_without_a_name_key(), '_name')
@@ -359,14 +395,21 @@ INPLACE_KNOWN_BROKEN = {
 }
 
 
-def basets_owned_inplace_methods():
-    """Every public baseTs-defined method taking `inplace`, by reflection.
+#: The classes in this package that may define an `inplace=` method. Both,
+#: not just `baseTs`: a filter keyed on the literal name 'baseTs' cannot see a
+#: method defined one class up on `TimeSeriesData`, which is the same object
+#: with the same re-initialisation hazard. A guard whose whole purpose is to
+#: notice a site nobody enumerated must not be scoped by a name someone typed.
+OUR_CLASS_NAMES = frozenset({'baseTs', 'TimeSeriesData'})
 
-    Restricted to methods baseTs itself defines. The ones inherited from
-    pandas (`dropna`, `fillna`, `sort_values`, ...) route through
-    `_update_inplace`, which swaps `_mgr` and leaves the identity fields
-    alone - they were measured as already correct, and they are pandas'
-    responsibility rather than ours.
+
+def basets_owned_inplace_methods():
+    """Every public method this package defines that takes `inplace`.
+
+    Restricted to methods we define. The ones inherited from pandas
+    (`dropna`, `fillna`, `sort_values`, ...) route through `_update_inplace`,
+    which swaps `_mgr` and leaves the identity fields alone - measured as
+    already correct, and pandas' responsibility rather than ours.
     """
     found = {}
     for name, function in inspect.getmembers(baseTs,
@@ -379,7 +422,7 @@ def basets_owned_inplace_methods():
             continue
         if 'inplace' not in signature.parameters:
             continue
-        if function.__qualname__.split('.')[0] != 'baseTs':
+        if function.__qualname__.split('.')[0] not in OUR_CLASS_NAMES:
             continue
         found[name] = function
     return found
@@ -462,21 +505,22 @@ class TestReinitHasOneDoor:
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            # By where the call is, not by how `super` is spelled. An earlier
+            # version required the two-argument form, so a zero-argument
+            # `super().__init__(...)` in an ordinary method slipped past -
+            # and at runtime the two are equivalent, both re-initialising a
+            # live object and resetting name, attrs and flags. What actually
+            # distinguishes a legitimate call is that it is a constructor
+            # chaining to its base, which is to say it sits in `__init__`.
+            if node.name == '__init__':
+                continue
             for inner in ast.walk(node):
                 if (isinstance(inner, ast.Call)
                         and isinstance(inner.func, ast.Attribute)
                         and inner.func.attr == '__init__'
                         and isinstance(inner.func.value, ast.Call)
                         and isinstance(inner.func.value.func, ast.Name)
-                        and inner.func.value.func.id == 'super'
-                        # The two-argument form only. Zero-argument
-                        # `super().__init__` inside `__init__` is a
-                        # constructor chaining to its base on an object that
-                        # has no identity to lose yet; `super(Cls, self)` on a
-                        # live object is the re-initialisation this rule is
-                        # about. Matching both reported the constructor as a
-                        # violation.
-                        and inner.func.value.args):
+                        and inner.func.value.func.id == 'super'):
                     sites.append((node.name, inner.lineno))
         return sites
 
@@ -516,11 +560,97 @@ class TestFlagsAssignmentAssumption:
     def test_a_restrictive_flag_reaches_a_derived_object(self):
         assert seeded().copy().flags.allows_duplicate_labels is False
 
-    def test_a_permissive_flag_is_not_turned_restrictive(self):
-        """The direction an AND would silently break."""
-        ts = seeded()
-        ts.flags.allows_duplicate_labels = True
-        assert ts.copy().flags.allows_duplicate_labels is True
+    def test_a_permissive_source_relaxes_a_restrictive_target(self):
+        """Assignment, not AND - the direction only a direct call can reach.
+
+        Written against `_carry_identity` itself rather than through
+        `.copy()`. Every real target is freshly constructed and therefore
+        permissive, so the guard short-circuits and the assign-vs-AND choice
+        is never exercised: the version of this test that went through
+        `.copy()` passed with the whole flag mechanism deleted. Pinning a
+        helper's contract needs the helper.
+        """
+        target = seeded()
+        target.flags.allows_duplicate_labels = False
+        source = seeded()
+        source.flags.allows_duplicate_labels = True
+
+        _carry_identity(target, source)
+
+        assert target.flags.allows_duplicate_labels is True
+
+    def test_the_declaration_is_refused_before_anything_is_mutated(self):
+        """An operation that cannot keep the declaration must change nothing.
+
+        Checked after the fact, the re-initialisation had already committed
+        the new data and index and reset the flag to pandas' default, so a
+        caught error left a mutated object with its protection silently off.
+        """
+        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        ts.flags.allows_duplicate_labels = False
+        before = (ts.values.tolist(), ts.index.tolist(),
+                  ts.flags.allows_duplicate_labels)
+
+        with pytest.raises(ValidationError, match="duplicate time labels"):
+            ts.data = np.array([1.0, 2.0, 3.0])
+
+        assert (ts.values.tolist(), ts.index.tolist(),
+                ts.flags.allows_duplicate_labels) == before
+
+
+class TestDuplicateLabelRefusal:
+    """The restore arm, exercised directly.
+
+    Since the pre-commit check landed, no path through the public API reaches
+    this arm: `_adopt_data_inplace` refuses before mutating, and every
+    `_carry_identity` target takes its source's index. Mutation testing said
+    so plainly - neutering the arm left the whole suite green. An arm nothing
+    pins is one a later reader will trust wrongly, so it is tested where it
+    lives rather than deleted on the assumption that it can never fire.
+    """
+
+    class _RefusingTarget:
+        """A stand-in whose flag setter raises what the caller chooses."""
+
+        class _Flags:
+            def __init__(self, error):
+                self._error = error
+                self.allows_duplicate_labels = True
+
+            def __setattr__(self, name, value):
+                if name == 'allows_duplicate_labels' and self.__dict__.get(
+                        '_error') is not None and value is False:
+                    raise self.__dict__['_error']
+                object.__setattr__(self, name, value)
+
+        def __init__(self, error, index):
+            self.flags = self._Flags(error)
+            self.index = index
+
+    def test_a_duplicate_refusal_becomes_a_diagnosable_error(self):
+        error = type('DuplicateLabelError', (ValueError,), {})(
+            "Index has duplicates.")
+        target = self._RefusingTarget(error, pd.Index([5.0, 5.0, 6.0]))
+
+        with pytest.raises(ValidationError) as caught:
+            _apply_duplicate_label_declaration(target, False)
+
+        # The labels, so a caller can act; pandas' own message names none.
+        assert "[5.0]" in str(caught.value)
+        assert caught.value.__cause__ is error
+
+    def test_any_other_error_propagates_unchanged(self):
+        """Not everything the setter can raise is a duplicate-label refusal.
+
+        Converting every exception into "your index has duplicates" would
+        report a wrong diagnosis with total confidence, which is worse than
+        the bare error it replaces.
+        """
+        error = RuntimeError("something else entirely")
+        target = self._RefusingTarget(error, pd.Index([1.0, 2.0]))
+
+        with pytest.raises(RuntimeError, match="something else entirely"):
+            _apply_duplicate_label_declaration(target, False)
 
 
 class TestInplaceArithmeticIsUnaffected:
