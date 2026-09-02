@@ -223,6 +223,101 @@ def _drop_stale_positional_metadata(obj):
     return obj
 
 
+#: The Series `name`, read and written by its private slot.
+#:
+#: Never `source.name`. `NDFrame.__getstate__` serialises
+#: `{k: getattr(self, k, None) for k in self._metadata}` - the registry as it
+#: stood when the blob was written - so an object unpickled from a blob
+#: predating `_name`'s addition to `_metadata` has no such attribute, and the
+#: property raises rather than returning None. Reading through the property
+#: would make this helper raise on exactly the objects #39 is about.
+_IDENTITY_NAME_SLOT = '_name'
+
+
+def _carry_identity(target, source):
+    """Copy the three identity fields pandas' own __finalize__ carries.
+
+    `name`, `attrs` and `flags` are pandas', not baseTs'. `_metadata` covers
+    the first only because pandas declares `_name` there; the other two are
+    handled separately inside `__finalize__`, so any code that builds a new
+    object and replays `_metadata` onto it carries none of them.
+
+    This is that code's one door. It exists because six sites independently
+    rebuilt an object and six times forgot the same fields - see
+    `_adopt_data_inplace` for the self-mutating sites, which cannot use this
+    helper because their target *is* their source.
+
+    attrs is deep-copied under an emptiness guard, matching
+    `NDFrame.__finalize__` exactly rather than approximating it: pandas
+    deep-copies (so nested values are isolated, not shared) and skips the work
+    when `attrs` is empty, which its own comment justifies as a 50x cost. An
+    earlier revision of this helper copied shallowly and would have left two
+    objects sharing one nested value while looking correct at the top level.
+
+    `allows_duplicate_labels` is assigned, not AND-ed. pandas 2.x assigns and
+    pandas 3.x ANDs with the target's existing value; a derivation takes its
+    source's declaration, and AND-ing would let a target's incidental default
+    override an explicit False in one direction only. The divergence from
+    pandas 3.x is therefore deliberate. It is also the one field that can
+    refuse: see the DuplicateLabelError arm.
+    """
+    object.__setattr__(target, _IDENTITY_NAME_SLOT,
+                       getattr(source, _IDENTITY_NAME_SLOT, None))
+
+    source_attrs = getattr(source, 'attrs', None)
+    if source_attrs:
+        target.attrs = copy_module.deepcopy(source_attrs)
+
+    # Both getattrs are load-bearing, and for the same reason the name is
+    # read by slot: a source here is not always an NDFrame.
+    # `_copy_metadata_from_basetseries` accepts anything with `.times` and
+    # `.data`, so a duck-typed source has no `flags` at all and reading
+    # `source.flags` raised AttributeError on a call that works on `main`.
+    # A source that declares nothing declares the permissive default.
+    declared = getattr(getattr(source, 'flags', None),
+                       'allows_duplicate_labels', True)
+    if declared is not target.flags.allows_duplicate_labels:
+        _apply_duplicate_label_declaration(target, declared)
+    return target
+
+
+def _apply_duplicate_label_declaration(target, declared):
+    """Carry `allows_duplicate_labels`, diagnosing pandas' refusal.
+
+    Setting the flag to False is a validation, not a note: pandas checks the
+    index there and then. So an operation that produced duplicate labels on
+    an object whose owner declared it would have none fails *here*, at the
+    moment the declaration is restored, with a message that says only "Index
+    has duplicates" and names neither the object nor the declaration.
+
+    Carrying the flag anyway is deliberate. Silently dropping a declaration
+    the caller made is the class of failure this whole change exists to fix,
+    and a derived object that quietly permits what its parent forbade is
+    worse than a loud one. What is added is the diagnosis.
+
+    Reachable today, not hypothetical: `_update_series_data` rebuilds the
+    index as `linspace(first, last, n)`, so on a single-sample series every
+    replacement timestamp is identical and `ts.data = [1., 2., 3.]` produces
+    three duplicate labels. That degenerate index is a defect in its own
+    right and is filed separately; this arm only ensures it is reported as
+    something a caller can act on.
+    """
+    from .utils import ValidationError
+
+    try:
+        target.flags.allows_duplicate_labels = declared
+    except Exception as exc:
+        if type(exc).__name__ != 'DuplicateLabelError':
+            raise
+        duplicated = target.index[target.index.duplicated()].unique().tolist()
+        raise ValidationError(
+            "this object declares allows_duplicate_labels=False, but the "
+            f"operation produced duplicate time labels {duplicated!r}, so "
+            "that declaration cannot be carried to the result. Either drop "
+            "the declaration or give the result a unique index."
+        ) from exc
+
+
 def _detach_shared_metadata(obj):
     """
     Give `obj` its own `history` list and its own `outlier_indices` list.
@@ -444,12 +539,40 @@ class TimeSeriesData(pd.Series):
     # would be actively wrong: __finalize__ copies with object.__setattr__,
     # which honours data descriptors, so every propagation would run the
     # validating setter.
-    _metadata = [
+    #
+    # Composed from `pd.Series._metadata` rather than beginning at
+    # '_freq_declaration'. This list *replaced* pandas' own, which is
+    # ['_name'], so the Series name was carried by nothing: every
+    # __finalize__ path dropped it, and __getstate__ - which serialises
+    # exactly this registry - never wrote it, leaving unpickled objects
+    # without a `_name` attribute at all (#39). Extending rather than
+    # hardcoding '_name' keeps a future pandas that declares a second name
+    # working, since hardcoding a list pandas owns is the original mistake.
+    _metadata = pd.Series._metadata + [
         '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
         'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
+
+    def __setstate__(self, state):
+        """Restore from a pickle, healing a blob that predates `_name`.
+
+        Adding '_name' to `_metadata` fixes objects pickled from now on, and
+        nothing else: `__getstate__` wrote the registry as it stood at dump
+        time, so a blob written before this change carries no `_name` key and
+        pandas' restore loop has nothing to set it from. The object would
+        come back missing the attribute and raise on `.name`, `repr()`,
+        `iloc` and arithmetic - which is #39's symptom, unfixed, for every
+        pickle already on disk.
+
+        Normalising here rather than guarding each reader is the same move
+        _detach_shared_metadata makes for `history` and `outlier_filter`,
+        applied to the one door that rebuilds an object out of bytes.
+        """
+        super().__setstate__(state)
+        if not hasattr(self, _IDENTITY_NAME_SLOT):
+            object.__setattr__(self, _IDENTITY_NAME_SLOT, None)
 
     # What propagates is the (value, index) pair, not the bare value - so
     # pandas copying it verbatim is correct, because the child re-checks it
@@ -599,6 +722,13 @@ class TimeSeriesData(pd.Series):
                     # would be unreachable in effect: neutralising it leaves
                     # every test in test_metadata_defaults.py green.
                     setattr(self, attr, None)
+
+        # attrs and flags are not in _metadata, so the loop above cannot
+        # carry them and a conversion arrived without either. `_name` the
+        # loop does carry - but only when the source has the attribute, and a
+        # duck-typed source or one restored from a pre-#39 pickle does not,
+        # which is precisely what this helper's getattr is for.
+        _carry_identity(self, base_ts)
 
         _detach_shared_metadata(self)
 
@@ -771,6 +901,15 @@ class TimeSeriesData(pd.Series):
         # Ensure it's the right type
         if not isinstance(copied, TimeSeriesData):
             copied = TimeSeriesData(copied.values, index=copied.index)
+
+        # No _carry_identity call here, deliberately. `super().copy()` runs
+        # pandas' __finalize__, which carries attrs and flags, and the
+        # _metadata loop below carries `_name` now that the registry declares
+        # it - so all three arrive without help at both depths. Measured, not
+        # assumed: adding a call changed nothing, and deleting it again broke
+        # no test. The rebuild above is pre-existing dead code (`_constructor`
+        # guarantees the type), so putting the call inside it would only look
+        # load-bearing.
         
         # Copy metadata. The allow-list bounds what gets deep-copied: an
         # unguarded deepcopy turns any non-copyable metadata value into a hard
@@ -860,6 +999,12 @@ class TimeSeriesData(pd.Series):
         for attr in self._metadata:
             if hasattr(self, attr) and attr != 'signal_name':
                 setattr(base_ts, attr, getattr(self, attr))
+
+        # A conversion is a copy, so it keeps the source's identity. The loop
+        # above would carry `_name` on its own now that the registry declares
+        # it; attrs and flags have never been in the registry and still need
+        # this call.
+        _carry_identity(base_ts, self)
 
         return _detach_shared_metadata(base_ts)
 
@@ -1035,9 +1180,19 @@ class TimeSeriesData(pd.Series):
         # produces a union index, whose token will not match the declaration,
         # so the result re-derives. The explicit freq exclusion this loop used
         # to carry is what the token now does properly.
+        #
+        # `_name` is not excluded here, though it is tempting to: the
+        # `_carry_identity` call below supersedes whatever this loop sets, so
+        # an exclusion would be dead code that reads like a safeguard.
+        # Deleting one confirmed it - no test could tell the two apart.
         for attr in self._metadata:
             if hasattr(self, attr) and attr != 'signal_name':
                 setattr(new_basets, attr, getattr(self, attr))
+
+        # From `result`, not `self`: name, attrs and flags on the operation's
+        # own output are what pandas decided they should be, including for the
+        # reflected operators, where `self` is the right-hand operand.
+        _carry_identity(new_basets, result)
 
         # Before the history update, not after: the entry appended below would
         # otherwise land in the operand's own history list.

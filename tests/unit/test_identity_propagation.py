@@ -23,6 +23,7 @@ methods by reflection, so adding one without classifying it fails here. An
 earlier revision of this file listed the paths by hand, which is exactly how
 `interpolate_gaps(inplace=True)` and `shift_time(inplace=True)` went unfound.
 """
+import ast
 import copy as copy_module
 import inspect
 import pathlib
@@ -129,6 +130,57 @@ class TestUnpickledObjectIsUsable:
     def test_identity_survives_the_round_trip(self):
         back = pickle.loads(pickle.dumps(seeded()))
         assert identity_of(back) == SEEDED_IDENTITY
+
+
+class TestPickleWrittenBeforeTheFix:
+    """A blob already on disk must load too, and that needs more than #35.
+
+    Adding `_name` to `_metadata` fixes what is pickled *from now on*.
+    `__getstate__` writes the registry as it stood at dump time, so a blob
+    written by the old code has no `_name` key and pandas' restore loop has
+    nothing to set it from - the object comes back missing the attribute and
+    raises on every operation, which is #39 unfixed for every pickle that
+    already exists. `__setstate__` normalises it.
+
+    Reproduced by deleting the key from a state dict rather than by
+    committing a binary fixture: the shape being tested is exactly "this key
+    is absent", and a checked-in blob would additionally pin a pickle
+    protocol and a pandas version that this test does not mean to assert.
+    """
+
+    @staticmethod
+    def _restored_without_a_name_key():
+        state = seeded().__getstate__()
+        assert '_name' in state, (
+            "the fixture assumes __getstate__ writes _name; if it stopped, "
+            "this test is no longer reproducing a pre-fix blob"
+        )
+        del state['_name']
+        revived = object.__new__(baseTs)
+        revived.__setstate__(state)
+        return revived
+
+    def test_a_pre_fix_blob_loads_without_the_key(self):
+        assert hasattr(self._restored_without_a_name_key(), '_name')
+
+    @pytest.mark.parametrize("label, operation", [
+        ("name", lambda ts: ts.name),
+        ("repr", lambda ts: repr(ts)),
+        ("iloc", lambda ts: ts.iloc[:3]),
+        ("arithmetic", lambda ts: ts + 1),
+    ])
+    def test_a_pre_fix_blob_is_usable(self, label, operation):
+        operation(self._restored_without_a_name_key())
+
+    def test_the_absent_name_comes_back_as_none_not_invented(self):
+        """None, because the name genuinely is not in those bytes.
+
+        Healing the object must not mean guessing what it was called -
+        `signal_name` is a different field with a different meaning, and
+        substituting it here would make an unpickled object disagree with
+        every other derivation about what `name` holds.
+        """
+        assert self._restored_without_a_name_key().name is None
 
 
 # --------------------------------------------------------------------------
@@ -394,28 +446,58 @@ class TestReinitHasOneDoor:
 
     @staticmethod
     def _reinit_call_sites():
-        """Every `super(TimeSeriesData, self).__init__` line in core.py.
+        """Functions in core.py that re-initialise self through pandas.
+
+        Parsed, not grepped. A substring scan matched this rule's own
+        explanatory comment in `_adopt_data_inplace`, reporting the
+        docstring that documents the invariant as a violation of it - the
+        instrument has to distinguish a call from a mention.
 
         `inspect.getsourcefile` rather than `import baseTs.core`: the module
         and the class share the name `baseTs`, so importing the module inside
-        a test shadows the class it needs to look at two lines later.
+        a test shadows the class it needs.
         """
-        source = pathlib.Path(inspect.getsourcefile(baseTs)).read_text()
-        return [(number, line.strip())
-                for number, line in enumerate(source.splitlines(), 1)
-                if 'super(TimeSeriesData, self).__init__' in line]
+        tree = ast.parse(pathlib.Path(inspect.getsourcefile(baseTs)).read_text())
+        sites = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == '__init__'
+                        and isinstance(inner.func.value, ast.Call)
+                        and isinstance(inner.func.value.func, ast.Name)
+                        and inner.func.value.func.id == 'super'
+                        # The two-argument form only. Zero-argument
+                        # `super().__init__` inside `__init__` is a
+                        # constructor chaining to its base on an object that
+                        # has no identity to lose yet; `super(Cls, self)` on a
+                        # live object is the re-initialisation this rule is
+                        # about. Matching both reported the constructor as a
+                        # violation.
+                        and inner.func.value.args):
+                    sites.append((node.name, inner.lineno))
+        return sites
 
     def test_core_reinitialises_only_inside_the_primitive(self):
         sites = self._reinit_call_sites()
-        assert len(sites) == 1, (
+        assert [name for name, _ in sites] == ['_adopt_data_inplace'], (
             f"re-initialising `self` through pandas resets name/attrs/flags; "
             f"route it through baseTs._adopt_data_inplace. Found: {sites}"
         )
 
-    def test_the_one_site_is_the_primitive(self):
-        line_number = self._reinit_call_sites()[0][0]
+    def test_the_primitive_is_where_the_scan_says_it_is(self):
+        """Guards the scan itself against silently matching nothing.
+
+        An assertion that a list contains only X passes vacuously when the
+        list is empty, so a typo in the AST predicate would leave this class
+        green while checking nothing at all.
+        """
+        sites = self._reinit_call_sites()
+        assert len(sites) == 1
         source, start = inspect.getsourcelines(baseTs._adopt_data_inplace)
-        assert start <= line_number < start + len(source)
+        assert start <= sites[0][1] < start + len(source)
 
 
 class TestFlagsAssignmentAssumption:
