@@ -3,17 +3,22 @@
 Date: 2026-09-02
 Issues: #35 (primary), #39 (closed as a consequence)
 Branch: `fix/name-attrs-propagation`
-Baseline measured on: `main` @ `c82a162`, pandas 3.0.5, numpy 2.5.1
+Baselines: `main` @ `c82a162`, measured on pandas 3.0.5/numpy 2.5.1,
+pandas 2.3.3/numpy 1.26.4 and pandas 2.3.3/numpy 2.2.6
+
+Revision 2, after a `consensus-review` panel round (codex + agy). What that
+round changed is recorded in "What the review changed" at the end.
 
 ## Problem
 
-A `baseTs` is a `pd.Series`, so it has three pieces of identity that pandas
-itself defines and propagates: the Series `name`, the `attrs` dict, and
-`flags`. baseTs drops all three across most derivations. Plain `pd.Series`
-drops none of them on the same operations.
+A `baseTs` is a `pd.Series`, so it carries three pieces of identity that
+pandas itself defines and propagates: the Series `name`, the `attrs` dict,
+and `flags`. baseTs drops all three across most derivations. Plain
+`pd.Series` drops none of them on the same operations.
 
 Measured on `main`, seeding `ts.name = 'SIG'`, `ts.attrs['unit'] = 'mV'` and
-`ts.flags.allows_duplicate_labels = False`:
+`ts.flags.allows_duplicate_labels = False`. **Measured on pandas 3.0.5**;
+the one row that differs by pandas version is called out below the table.
 
 | path | `name` | `attrs` | `flags` |
 |---|---|---|---|
@@ -23,58 +28,89 @@ Measured on `main`, seeding `ts.name = 'SIG'`, `ts.attrs['unit'] = 'mV'` and
 | `ts + 1` and every arithmetic operator | **lost** | **lost** | **lost** |
 | `copy(deep=True)`, `copy.deepcopy`, `apply_function` | **lost** | **lost** | **lost** |
 | `copy(deep=False)` | **lost** | kept | kept |
-| `lowpass_filter`, `bandpass_at`, `zscale`, `detrend`, `sg_filter`, `lowess_detrend`, `filter_outliers`, `interpolate_gaps`, `interpto_hz` | **lost** | **lost** | **lost** |
+| `lowpass_filter`, `bandpass_at`, `zscale`, `detrend`, `sg_filter`, `lowess_detrend`, `filter_outliers`, `interpolate_gaps()` | **lost** | **lost** | **lost** |
+| `interpolate_gaps(inplace=True)`, `shift_time(inplace=True)`, `ts.data = x` | **lost** | **lost** | **lost** |
 | `baseTs(ts)`, `TimeSeriesData(ts)`, `to_basetseries()` | **lost** | **lost** | **lost** |
 
-`pickle.dumps(ts)` raises `AttributeError: 'baseTs' object has no attribute
-'_name'` on `main`. Pickling a baseTs does not work at all today.
+**Version divergence, one row only.** `head()` keeps all three on pandas
+2.3.3 and loses all three on 3.0.5, because pandas 3.0's `head()` is
+`self.iloc[:n].copy()` (`generic.py:5749`) and so reaches our rebuilding
+`copy()`, where 2.3.3's does not. Every other row is identical across
+2.3.3/numpy 1.26.4, 2.3.3/numpy 2.2.6 and 3.0.5/numpy 2.5.1.
+
+**Pickling produces a broken object.** Stated precisely, because two earlier
+attempts at this sentence were wrong: `pickle.dumps` succeeds,
+`pickle.loads` succeeds, and the object that comes back is unusable —
+`b.name`, `b.iloc[:3]`, `b.head(2)`, `b + 1` and even **`repr(b)`** all raise
+`AttributeError: 'baseTs' object has no attribute '_name'`. `b.mean()` still
+works. Identical on both pandas majors. This is #39's symptom, and `repr`
+raising is worse than #39 describes: you cannot look at the object to see
+what is wrong with it.
 
 ### The issue text and its correcting comment both undercount
 
-Issue #35 names one site (`copy(deep=True)`). The correcting comment on it
-raises that to two (adding `_create_new_with_data`). The real figure is
-**one missing registry entry plus six rebuild sites**, and the loss reaches
-plain pandas calls (`head()`, `dropna()`, `sort_values()`, arithmetic) that
-neither document mentions.
+Issue #35 names one site. The correcting comment on it raises that to two.
+The real figure is **one missing registry entry plus nine sites**, and the
+loss reaches plain pandas calls (`head()`, `dropna()`, `sort_values()`,
+arithmetic) that neither document mentions.
 
 ### Two independent causes
 
 **Cause A — `_name` is absent from `_metadata`.**
 `TimeSeriesData._metadata` *replaces* `pd.Series._metadata`, which is
 `['_name']`. Every pandas path that relies on `__finalize__` to carry the
-name therefore drops it, and `__getstate__`/`__setstate__` never round-trip
-`_name`, which is why pickling raises. This is issue **#39**'s root cause,
-and it is not baseTs-specific: a five-line `pd.Series` subclass that
-replaces `_metadata` reproduces the `head()`/`dropna()`/`round()` half
-exactly.
+name therefore drops it, and `__setstate__` never restores `_name`, which is
+why an unpickled object is broken. This is issue **#39**'s root cause, and it
+is not baseTs-specific: a five-line `pd.Series` subclass that replaces
+`_metadata` reproduces the `head()`/`dropna()`/`round()` half exactly.
 
 `iloc` keeps the name despite this because pandas' fast slice path carries
-`_name` through the constructor rather than through `__finalize__` — which
-is precisely why the loss looks arbitrary from the outside.
+`_name` through the constructor rather than through `__finalize__` — which is
+precisely why the loss looks arbitrary from the outside.
 
-**Cause B — six sites rebuild an object through the constructor** and
-restore only `_metadata` names. `attrs` and `flags` are not in `_metadata`
-(pandas handles them separately inside `__finalize__`), so no rebuild site
-carries them:
+**Cause B — nine sites rebuild or re-initialise an object** and restore only
+`_metadata` names. `attrs` and `flags` are not in `_metadata` (pandas handles
+them separately inside `__finalize__`), so no site carries them. The nine
+split into two groups that need **different mechanisms**, which is the main
+thing the review round changed:
+
+**Group 1 — rebuild sites.** A *new* object is constructed and the old one's
+metadata copied onto it. `target` and `source` are different objects.
 
 | # | site | file:line | copies |
 |---|---|---|---|
 | 1 | `baseTs.copy(deep=True)` | core.py:2347 | `_metadata` loop |
 | 2 | `baseTs.copy(deep=False)` fallback | core.py:2378 | `_metadata` loop |
 | 3 | `baseTs._create_new_with_data` | core.py:424 | **hand-curated list** |
-| 4 | `baseTs._update_series_data` | core.py:377 | `_metadata` loop |
-| 5 | `TimeSeriesData.copy` fallback | series.py:773 | `_metadata` loop |
-| 6 | `TimeSeriesData.to_basetseries` | series.py:851 | `_metadata` loop |
-| 7 | `TimeSeriesData._wrap_result_as_basets` | series.py:1027 | `_metadata` loop |
-| 8 | `TimeSeriesData._copy_metadata_from_basetseries` | series.py:572 | `_metadata` loop |
+| 4 | `TimeSeriesData.copy` fallback | series.py:773 | `_metadata` loop |
+| 5 | `TimeSeriesData.to_basetseries` | series.py:851 | `_metadata` loop |
+| 6 | `TimeSeriesData._wrap_result_as_basets` | series.py:1027 | `_metadata` loop |
 
-Site 7 is a *third* rebuild site that neither the issue nor its correcting
-comment names. Site 3 is the one Cause A cannot reach, because it iterates
-its own curated list rather than `_metadata`.
+Site 6 is a rebuild site neither the issue nor its correcting comment names.
+Site 3 is the one Cause A cannot reach, because it iterates its own curated
+list rather than `_metadata`.
+
+**Group 2 — self-mutating re-initialisation sites.** `super(TimeSeriesData,
+self).__init__(...)` is called on `self`. pandas' own `__init__` resets
+`name`, `attrs` and `flags` to defaults; `_metadata` fields survive only
+because they live in the instance `__dict__`, which `pd.Series.__init__` does
+not touch — an accident, not a mechanism.
+
+| # | site | file:line | saves/restores |
+|---|---|---|---|
+| 7 | `baseTs._update_series_data` (reached by `ts.data = x`) | core.py:382 | `_metadata` only |
+| 8 | `baseTs.interpolate_gaps(inplace=True)` | core.py:1758 | **nothing** |
+| 9 | `baseTs.shift_time(inplace=True)` | core.py:1824 | **nothing** |
+
+These three are the same three `pd.Series.__init__` doors #20 identified,
+where the round that went looking for exactly that pattern guarded two of
+three. `ts.times = x` is *not* one: it assigns `self.index` and never
+re-initialises, so it touches no identity field.
 
 `baseTs.copy` is not merely a user-facing method: **pandas calls it
-internally**. `head()` reaches it at `generic.py:5749` and `sort_values()` at
-`series.py:3759`, so the rebuild sits on ordinary pandas paths.
+internally**. `head()` reaches it at `generic.py:5749` on pandas 3.0 and
+`sort_values()` at `series.py:3759`, so a rebuild site sits on ordinary
+pandas paths.
 
 ## Decisions taken
 
@@ -82,12 +118,12 @@ internally**. `head()` reaches it at `generic.py:5749` and `sort_values()` at
 2. **`signal_name` and `name` stay independent**, and the docstrings say so.
    `name` is pandas': any hashable, kept verbatim. `signal_name` is baseTs'
    plot label: coerced to an uppercase string by `normalise_label`. Syncing
-   them would force one to break the other's contract, and it would smuggle
-   in a decision that belongs to #56.
+   them would force one to break the other's contract, and would smuggle in a
+   decision that belongs to #56.
 3. **`flags` is folded in**, not filed. It is dropped by exactly the same
    sites for exactly the same reason, and this change moves and re-documents
    that exact code. Filing it would guarantee a fourth pass over the same
-   eight loops.
+   loops.
 
 ## Design
 
@@ -105,30 +141,36 @@ mistake being fixed is exactly the hardcoding of a list pandas owns.
 
 Consequences, each handled deliberately:
 
-- **All eight `_metadata` loops start copying `_name`.** That is the intent
-  at sites 1, 2, 4, 5, 6, 8 and in `__finalize__`.
-- **Site 7 (`_wrap_result_as_basets`) must carry the *result's* name, not
+- **Every `_metadata` loop starts copying `_name`.** That is the intent at
+  sites 1, 2, 4, 5, 7 and in `__finalize__`.
+- **Site 6 (`_wrap_result_as_basets`) must carry the *result's* name, not
   `self`'s.** `super().__add__` has already applied pandas' own rule —
   `ts_a + ts_b` with differing names yields `None`, not the left operand's
   name. Copying `self._name` over the top would silently diverge from pandas
   on every two-operand operation. This site therefore excludes `_name` from
   the loop the way it already excludes `signal_name`, and takes the name from
-  `result`.
-- **`deepcopy_metadata_value` is reached with `_name`.** A Series name must
-  be hashable, so it cannot be a `list`/`dict`/`ndarray` and the isinstance
-  gate never matches it. No change needed; asserted by a test rather than
-  left as an assumption.
+  `result`. Confirmed by the panel against live pandas: `result.name` is
+  already pandas-resolved whichever dunder produced it, including the
+  reflected ones.
+- **Half A does nothing for sites 8 and 9**, which have no metadata loop to
+  ride. This is why Group 2 needs its own mechanism rather than a wider
+  registry.
+- **`deepcopy_metadata_value` is reached with `_name`.** A Series name must be
+  hashable, so it cannot be a `list`/`dict`/`ndarray` and the isinstance gate
+  never matches it. No change needed; asserted by a test rather than left as
+  an assumption.
 - **#27's `_metadata` census must classify the new field**: `_name` joins
   `PRESERVED_BY_OP`, the quoted counts go `(10, 3)` → `(11, 3)`, and
   `_seeded()` must set a non-default name or
   `test_seeding_leaves_no_metadata_field_vacuous` is toothless on it.
 
 Measured with `_metadata` monkeypatched at runtime: `name` becomes correct on
-every path except site 3's, pickling round-trips, and the suite is **968
-passed, 2 failed** — both failures being #27's census guard correctly
-demanding the new field be classified. No behavioural breakage.
+every path except site 3's, the unpickled object works, and the suite is
+**968 passed, 2 failed** — both failures being #27's census guard correctly
+demanding the new field be classified. No behavioural breakage. The panel
+re-ran this independently and reproduced the same two failures.
 
-### Half B — one door for the identity triple
+### Half B, Group 1 — one door for the identity triple
 
 A module-level helper in `series.py`, beside `_detach_shared_metadata`:
 
@@ -140,94 +182,178 @@ def _carry_identity(target, source):
 It copies:
 
 - **`name`** — `object.__setattr__(target, '_name', source.name)`, by the
-  private slot. This is the invariant #20 established: assigning through a
-  public property runs a setter, and `Series.name`'s setter validates
-  hashability, so a name that reached the object before that rule existed
-  would raise here rather than at its origin.
+  private slot. Same invariant as #20: assigning through a public property
+  runs a setter, and `Series.name`'s setter validates hashability, so a name
+  that predates that rule would raise here rather than at its origin.
 - **`attrs`** — `deepcopy(source.attrs)` when non-empty, else left alone.
-  **Verified against pandas' source, not assumed:** `NDFrame.__finalize__`
-  deep-copies attrs, guarded by an `if other.attrs:` emptiness check it
-  documents as a 50× performance concern. An earlier draft of this design
-  said "shallow copy, matching pandas" and was wrong. Matching pandas here
-  means `iloc` and `copy()` isolate nested attrs values identically.
-- **`flags.allows_duplicate_labels`** — the one flag pandas' `__finalize__`
-  propagates.
+  **Verified against pandas' source on both majors, not assumed:**
+  `NDFrame.__finalize__` deep-copies attrs, guarded by an `if other.attrs:`
+  emptiness check it documents as a 50× performance concern. An earlier draft
+  of this design said "shallow copy, matching pandas" and was wrong. Matching
+  pandas here means `iloc` and `copy()` isolate nested attrs values
+  identically.
+- **`flags.allows_duplicate_labels`** — by plain assignment.
 
-Called from all eight sites. Sites 1–2 and 5–8 could get `name` from Half A
-alone; they call the helper anyway, because a single door that carries all
-three is the point and per-site divergence is what produced this issue.
+  **A cross-version difference the panel surfaced, and why plain assignment
+  is still right.** pandas 2.3.3's `__finalize__` assigns
+  (`self.flags.adl = other.flags.adl`); pandas 3.0.5's ANDs
+  (`self.flags.adl = self.flags.adl and other.flags.adl`). The two agree
+  whenever the target is freshly constructed, because a fresh target's flag
+  is `True` and `True and x == x`. Every Group 1 site hands `_carry_identity`
+  a freshly-constructed target, so the choice is immaterial *today* — but
+  that is an assumption about call sites, not a property of the helper. It is
+  therefore pinned by a test asserting the target is fresh at every call
+  site, and the docstring says a non-fresh target would diverge between
+  pandas majors.
 
-### Making a ninth site fail loudly
+Called from all six Group 1 sites. Sites 1, 2, 4, 5 and 6 would get `name`
+from Half A alone; they call the helper anyway, because a single door
+carrying all three is the point and per-site divergence is what produced this
+issue.
 
-A helper called from eight places is still eight places that can forget. The
-repo's own record on this — #15, #20, #38, and #27's `PRESERVED_BY_OP`
-frozensets — says the guard has to be a test that fails when a new site
-appears, not a comment asking people to remember.
+### Half B, Group 2 — collapse three doors into one
 
-So: a census test in #27's shape. The path table above becomes
-`KEEPS_IDENTITY` / `DROPS_IDENTITY` frozensets, asserted against what the
-calls actually do, plus an assertion that the two sets exactly cover the
-enumerated paths. A derivation path added without classification fails the
-suite.
+The review's strongest point: `_carry_identity(target, source)` **cannot work
+as a post-hoc call** where `target is source`. By the time it could run, the
+re-initialisation has already reset the source's own identity fields, so
+`_carry_identity(self, self)` is a no-op dressed as a fix.
+
+So Group 2 does not get a call added to it — it gets **deleted as three
+separate doors**. A single primitive on `baseTs`:
+
+```python
+def _adopt_data_inplace(self, values, index):
+    """Re-initialise this object's data and index, keeping everything else."""
+```
+
+It snapshots `_metadata` *and* the identity triple, calls
+`super(TimeSeriesData, self).__init__(values, index=index)`, then restores
+both. Sites 7, 8 and 9 all call it; `_update_series_data` keeps its
+index-derivation logic and delegates the re-init, and the two `inplace=True`
+branches lose their hand-rolled `super().__init__` calls entirely.
+
+This is the move the repo has made at #15, #20, #38 and #27: when the same
+omission appears at N sites, delete the sites rather than instrument them.
+One door can be forgotten in one place; three cannot be kept in step. It also
+means a future `inplace=True` method that needs to re-initialise has an
+obvious thing to call, which is what sites 8 and 9 lacked.
+
+### Making a tenth site fail loudly
+
+The review's other strong point: the census test I first proposed was closed
+over the same hand-authored path table it was meant to police. It would fail
+if a *listed* path changed group, but could never fail for a path missing
+from the table — which is precisely how sites 7–9 went unfound in revision 1.
+
+The guard therefore derives its subjects instead of listing them:
+
+- **Every `inplace=True` branch**, enumerated by reflection over `baseTs`'s
+  public methods whose signature has an `inplace` parameter. Each is called
+  on a seeded object and asserted to preserve the identity triple. This is
+  the check that would have caught sites 8 and 9, and it catches the next one
+  for free.
+- **Every direct re-initialisation**, asserted by a source-level check that
+  `super(TimeSeriesData, self).__init__` appears in `core.py` only inside
+  `_adopt_data_inplace`. A tenth site re-introducing the pattern fails the
+  suite rather than waiting for someone to notice.
+- The enumerated derivation-path table is kept as well, in #27's
+  `KEEPS_IDENTITY` shape, for the pandas-native paths that reflection cannot
+  discover — but it is now the *supplement*, not the mechanism.
 
 ## Testing
 
 New `tests/unit/test_identity_propagation.py`:
 
-- the path census above, over `name`, `attrs` and `flags`;
-- **a pickle round-trip** — the suite has none at all today, which is why
-  #39 survived; it must cover `dumps`/`loads` and then a derivation off the
-  unpickled object, which is #39's stated symptom;
+- the reflection-derived `inplace` sweep and the source-level re-init check;
+- the enumerated derivation-path census over `name`, `attrs` and `flags`;
+- **a pickle round-trip** — the suite has none at all today, which is why #39
+  survived. It must assert the *unpickled object works*: `repr`, `.name`,
+  `iloc`, `head` and arithmetic, not merely that `loads` returned;
 - attrs isolation: mutating a derived object's `attrs`, including a nested
   value, must not reach the parent;
 - the two-operand arithmetic name rule (`a + b` with differing names → `None`,
-  matching pandas), which is the one place Half A could silently diverge;
+  matching pandas), the one place Half A could silently diverge;
+- the freshness assumption behind the `flags` assignment, per above;
 - `deepcopy_metadata_value` leaves a name untouched.
 
 Updated `tests/unit/test_core.py`: #27's census gains `_name`.
 
-TDD: every test above is written and seen to fail before the fix lands.
-Each fix is then mutation-tested — delete the line, confirm the test fails —
+TDD: every test above is written and seen to fail before the fix lands. Each
+fix is then mutation-tested — delete the line, confirm the test fails —
 because reading a test cannot tell you whether it would.
 
 ## Deliberately not in scope
 
 - **#56** (`_create_new_with_data` re-upper-cases `signal_name`, so `zscale`
   and `iloc` disagree). It needs a decision about which behaviour is
-  intended; this change does not touch it, and decision 2 above keeps the two
-  fields separable so #56 stays independently fixable.
+  intended; decision 2 keeps the two fields separable so #56 stays
+  independently fixable.
 - **Seeding `name` from `signal_name`** when unset, and `from_df` setting
   `name` from `data_col`. Both are the sync question decision 2 declined.
 - **`utils.add_constant` / `diff` / `dediff`** build a bare `baseTs` from
-  arrays and copy **no** metadata at all — thirteen fields, not three. That
-  is a different and wider defect. Checked for reachability: `diff` and
-  `dediff` are consumed for `.data`/`.times` only inside `diff_ts`/`dediff`,
+  arrays and copy **no** metadata at all — thirteen fields, not three. A
+  different and wider defect. Checked for reachability: `diff` and `dediff`
+  are consumed for `.data`/`.times` only inside `diff_ts`/`dediff`,
   `add_constant` has no caller, and none is in `__all__`, so no public API
-  returns one of these objects. Noted here; to be filed rather than widened
-  into.
+  returns one. To be filed, not widened into. The panel independently agreed
+  none of these exclusions leaves an incoherent state.
 
 ## Risk register
 
-- **Version matrix.** `_metadata` is version-sensitive machinery and
-  `__finalize__`'s attrs handling differs across pandas majors. Everything
-  above is measured on pandas 3.0.5 / numpy 2.5.1. Before merging: throwaway
-  venvs on pandas 2.3.3 with numpy 1.26 and numpy 2.x, per this project's own
-  `pandas>=2.0.0` floor and CI's Python 3.9/3.10 legs. The specific claims to
-  re-verify there are `pd.Series._metadata == ['_name']` and that
-  `__finalize__` deep-copies attrs under an emptiness guard.
+- **Version matrix — partly discharged already.** Verified on pandas 2.3.3
+  (numpy 1.26.4 and 2.2.6) as well as 3.0.5: `pd.Series._metadata ==
+  ['_name']`; `__finalize__` deep-copies attrs under an emptiness guard; the
+  `head()` divergence above; the `flags` AND-vs-assign difference above; and
+  the branch baseline suite at **970 passed** in both 2.3.3 venvs. The full
+  suite must be re-run in all three combos after implementation.
 - **`_update_inplace` and `_mgr` surgery.** #20's lesson: pandas mutates
-  objects without passing through anything this repo writes. Half A rides
-  `_metadata`, which pandas itself consults, so it is not exposed to this;
-  Half B's sites are all rebuilds, which are. The census test is what bounds
-  the claim.
+  objects without passing through anything this repo writes. The panel
+  checked `_inplace_arith`/`_update_inplace` specifically and found no defect:
+  `_update_inplace` swaps `_mgr` and leaves `name`/`attrs`/`flags` untouched,
+  so `ts += 1` keeps the target's own values — which is exactly what stock
+  `pd.Series` does. Verified, no fix needed, and worth a test so the next
+  reviewer does not re-raise it.
 - **Behaviour change, and it is user-visible.** Derived objects now carry a
   name where they previously handed back `None`. Anything asserting
-  `result.name is None` after a filter changes. CHANGELOG entry covers #35
-  and #39 with that framing.
+  `result.name is None` after a filter changes. CHANGELOG covers #35 and #39
+  with that framing.
+
+## What the review changed
+
+A `consensus-review` panel round (codex ✓, agy ✓; no finding raised by both,
+so everything was single-source and independently verified before acting).
+
+**Accepted and folded in:**
+
+- Sites 8 and 9 (`interpolate_gaps(inplace=True)`, `shift_time(inplace=True)`)
+  were missing from revision 1's inventory entirely — and Half A cannot reach
+  them, so revision 1 would have shipped claiming to close a bug class while
+  leaving two reachable public methods exhibiting it.
+- `_carry_identity(target, source)` is structurally wrong where
+  `target is source`; Group 2 needs a pre-reinit snapshot.
+- The census guard was closed over its own table and could not discover an
+  unenumerated site. Now reflection-derived.
+- The `flags` AND-vs-assignment difference between pandas majors.
+- The structural alternative for Group 2 — collapse the re-init sites onto
+  one primitive rather than add a call to each.
+
+**Corrected:**
+
+- The panel called sites 8 and 9 "two more sites" and credited
+  `_update_series_data` with handling this. It saves and restores `_metadata`
+  only, so it loses `name`/`attrs`/`flags` exactly like the other two, and
+  `ts.data = x` reaches it. **Three** sites, not two.
+- The panel's finding that `pickle.loads(data)` raises is not reproducible on
+  either pandas major: `dumps` succeeds, `loads` succeeds, and the *returned
+  object* raises on attribute access. Revision 1's own claim (that `dumps`
+  raises) was also wrong. The corrected statement is above.
+
+**Dropped:** the panel's own three dropped findings, including agy's
+`_inplace_arith` claim, which it verified as incorrect.
 
 ## Review gate
 
 `consensus-review` rounds until findings go trivial, every finding verified
-against a `main` worktree before acting, then a **different** harness as the
+against the `main` worktree before acting, then a **different** harness as the
 merge gate rather than another round of the same panel — the pattern that
 caught what converged panels missed on #20, #28 and #34.
