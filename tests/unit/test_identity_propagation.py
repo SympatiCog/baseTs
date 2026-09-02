@@ -661,6 +661,24 @@ class TestFlagsAssignmentAssumption:
     def test_a_restrictive_flag_reaches_a_derived_object(self):
         assert seeded().copy().flags.allows_duplicate_labels is False
 
+    def test_a_duck_typed_source_still_has_its_name_carried(self):
+        """`_copy_metadata_from_basetseries` accepts anything with
+        `.times`/`.data`, so a source can carry `.name` without the private
+        slot. Reading the slot alone dropped such a name silently, where
+        pandas' `__finalize__` - the model this follows - reads `name`.
+        """
+        class _Duck:
+            times = np.arange(3) / 10.0
+            data = np.arange(3.0)
+            name = 'DUCKNAME'
+            attrs = {'unit': 'mV'}
+
+        target = baseTs(np.arange(3.0), np.arange(3) / 10.0)
+
+        _carry_identity(target, _Duck())
+
+        assert target.name == 'DUCKNAME'
+
     def test_a_permissive_source_relaxes_a_restrictive_target(self):
         """Assignment, not AND - the direction only a direct call can reach.
 
@@ -729,8 +747,17 @@ class TestDuplicateLabelRefusal:
             self.index = index
 
     def test_a_duplicate_refusal_becomes_a_diagnosable_error(self):
-        error = type('DuplicateLabelError', (ValueError,), {})(
-            "Index has duplicates.")
+        """Raising pandas' real class, not a look-alike.
+
+        An earlier version of this test synthesised a class merely *named*
+        `DuplicateLabelError`, which passed only while the production code
+        matched on `type(exc).__name__`. Once that became a real `except`
+        clause the impostor sailed straight through - the test had been
+        pinning the string, not the behaviour.
+        """
+        from pandas.errors import DuplicateLabelError
+
+        error = DuplicateLabelError("Index has duplicates.")
         target = self._RefusingTarget(error, pd.Index([5.0, 5.0, 6.0]))
 
         with pytest.raises(ValidationError) as caught:
@@ -739,6 +766,44 @@ class TestDuplicateLabelRefusal:
         # The labels, so a caller can act; pandas' own message names none.
         assert "[5.0]" in str(caught.value)
         assert caught.value.__cause__ is error
+
+    def test_the_remedy_the_message_names_actually_works(self):
+        """An error that names a remedy is code; the remedy must run.
+
+        This repo shipped an error once whose advised cast reproduced the bug
+        it reported. Two halves, and the first is what stops this being
+        vacuous: assert the message *names* the remedy, then carry it out and
+        assert the operation succeeds. Without the first half the test passes
+        against any wording at all - including the earlier one that advised
+        giving the result a unique index, which no path here accepts.
+        """
+        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        ts.flags.allows_duplicate_labels = False
+
+        with pytest.raises(ValidationError) as caught:
+            ts.data = np.array([1.0, 2.0, 3.0])
+        assert "ts.flags.allows_duplicate_labels = True" in str(caught.value)
+
+        ts.flags.allows_duplicate_labels = True   # exactly what it says
+        ts.data = np.array([1.0, 2.0, 3.0])
+
+        assert len(ts) == 3
+
+    def test_the_message_does_not_offer_an_index_the_caller_cannot_give(self):
+        """The remedy that was there before, and why it was wrong.
+
+        `ts.data = ...`, `interpolate_gaps` and `shift_time` all derive the
+        result's index; none takes one from the caller. Advice to "give the
+        result a unique index" therefore named an action with no parameter
+        behind it.
+        """
+        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        ts.flags.allows_duplicate_labels = False
+
+        with pytest.raises(ValidationError) as caught:
+            ts.data = np.array([1.0, 2.0, 3.0])
+
+        assert "unique index" not in str(caught.value)
 
     def test_the_message_stays_bounded_for_a_large_index(self):
         """A diagnosis must not become the payload.

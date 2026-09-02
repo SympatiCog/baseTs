@@ -380,16 +380,17 @@ class baseTs(TimeSeriesData):
         copy have already been reset. The snapshot has to be taken *before*
         the re-initialisation, which only a wrapper around it can guarantee.
 
-        The `_metadata` snapshot looks redundant - those attributes live in
-        the instance `__dict__`, which `pd.Series.__init__` does not touch, so
-        they would survive untouched. It is kept because that is an accident
-        of where pandas stores things rather than a promise, and this method
-        is where the promise now lives.
+        The `_metadata` snapshot is load-bearing, and an earlier version of
+        this docstring wrongly called it redundant on the grounds that those
+        attributes live in the instance `__dict__` which `pd.Series.__init__`
+        does not touch. That is true of baseTs' own names and false of the one
+        that matters most: `_name` is in `_metadata` and pandas *does* reset
+        it here. Deleting the restore loop fails 40 tests.
         """
         # Split by who owns the field, with no overlap. `_name` is in
-        # `_metadata`, so the loop below restores it and this tuple must not -
-        # two mechanisms restoring one field means neither is pinned by a
-        # test, which is what mutation testing showed when both did.
+        # `_metadata`, so the loop below restores it and these locals must
+        # not - two mechanisms restoring one field means neither is pinned by
+        # a test, which is what mutation testing showed when both did.
         attrs = dict(getattr(self, 'attrs', {}) or {})
         allows_duplicates = self.flags.allows_duplicate_labels
 

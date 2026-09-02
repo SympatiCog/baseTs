@@ -255,14 +255,32 @@ def _carry_identity(target, source):
     objects sharing one nested value while looking correct at the top level.
 
     `allows_duplicate_labels` is assigned, not AND-ed. pandas 2.x assigns and
-    pandas 3.x ANDs with the target's existing value; a derivation takes its
-    source's declaration, and AND-ing would let a target's incidental default
-    override an explicit False in one direction only. The divergence from
-    pandas 3.x is therefore deliberate. It is also the one field that can
-    refuse: see the DuplicateLabelError arm.
+    pandas 3.x ANDs with the target's existing value. Stated precisely, since
+    an earlier version of this paragraph had the asymmetry backwards: the two
+    differ only when the target is already restrictive and the source is
+    permissive, where AND keeps the target's False and assignment takes the
+    source's True. AND can never let a target override an explicit False - it
+    is the other direction that differs. A derivation takes its source's
+    declaration, so assignment is what this helper means; the divergence from
+    pandas 3.x is deliberate and, because every target here is freshly built
+    and therefore permissive, currently unobservable. It is also the one
+    field that can refuse - see _apply_duplicate_label_declaration.
     """
+    # Read through the public name with a default; write through the slot.
+    # One `getattr` covers all three sources this sees, which a slot-only read
+    # did not: a Series (`.name` returns `_name`), a duck-typed source that
+    # `_copy_metadata_from_basetseries` accepts on `.times`/`.data` alone and
+    # which may carry `.name` and no slot - silently dropped before - and an
+    # object unpickled from a pre-fix blob, whose property raises
+    # AttributeError from inside, exactly what the default swallows. A
+    # slot-first version with a `hasattr` guard behaved identically and had a
+    # dead branch, which is how mutation testing found it.
+    #
+    # The *write* stays on the slot: `Series.name`'s setter validates
+    # hashability, so assigning through it would raise here rather than at the
+    # origin for a name that predates the rule (#20's invariant).
     object.__setattr__(target, _IDENTITY_NAME_SLOT,
-                       getattr(source, _IDENTITY_NAME_SLOT, None))
+                       getattr(source, 'name', None))
 
     source_attrs = getattr(source, 'attrs', None)
     if source_attrs:
@@ -326,6 +344,14 @@ def _raise_duplicate_label_refusal(index, cause=None):
     where a 200k-element list produced a 1.4 MB message that then lands in
     logs and tracebacks. A handful of labels and a count identify the
     mistake; the rest is payload.
+
+    The remedy it names has to be one the reader can actually carry out. An
+    earlier wording offered "give the result a unique index", which is not
+    available on any path that raises this: `ts.data = ...`,
+    `interpolate_gaps` and `shift_time` all *derive* the result's index, and
+    none of them takes one from the caller. Clearing the declaration is the
+    action that exists, so that is what is offered - and the derived index is
+    named as the thing to look at rather than as something to replace.
     """
     from .utils import ValidationError, _describe
 
@@ -334,10 +360,11 @@ def _raise_duplicate_label_refusal(index, cause=None):
     if len(duplicated) > _DUPLICATE_LABELS_SHOWN:
         shown += f" and {len(duplicated) - _DUPLICATE_LABELS_SHOWN} more"
     error = ValidationError(
-        "this object declares allows_duplicate_labels=False, but the "
-        f"operation produced duplicate time labels {shown}, so that "
-        "declaration cannot be carried to the result. Either drop the "
-        "declaration or give the result a unique index."
+        "this series declares allows_duplicate_labels=False, but the "
+        f"operation derived an index with duplicate time labels {shown}, so "
+        "that declaration cannot be carried to the result. Clear it with "
+        "`ts.flags.allows_duplicate_labels = True` to allow the result, or "
+        "avoid the operation that produced the repeated timestamps."
     )
     raise error from cause
 
@@ -356,24 +383,25 @@ def _apply_duplicate_label_declaration(target, declared):
     and a derived object that quietly permits what its parent forbade is
     worse than a loud one. What is added is the diagnosis.
 
-    Reachable today, not hypothetical: `_update_series_data` rebuilds the
-    index as `linspace(first, last, n)`, so on a single-sample series every
-    replacement timestamp is identical and `ts.data = [1., 2., 3.]` produces
-    three duplicate labels. That degenerate index is a defect in its own
-    right and is filed separately; this arm only ensures it is reported as
-    something a caller can act on.
+    **Not reachable through the re-initialisation path any more**, and the
+    docstring said otherwise until a review pointed at the contradiction.
+    `_refuse_undeclarable_index` now rejects a duplicate-bearing index before
+    `_adopt_data_inplace` commits anything, with this same wording, so
+    `ts.data = [1., 2., 3.]` on a single-sample series raises there and never
+    arrives here. What can still reach this arm is `_carry_identity`, which
+    has no pre-check because its target takes its source's index. The arm is
+    kept and unit-tested directly rather than deleted on that reasoning.
     """
+    from pandas.errors import DuplicateLabelError
+
     try:
         target.flags.allows_duplicate_labels = declared
-    except Exception as exc:
-        # Matched by name rather than by class. pandas.errors.DuplicateLabelError
-        # is the public spelling, but this arm exists to avoid swallowing
-        # anything else the setter may raise on a version that words it
-        # differently, and importing a symbol to compare against would make
-        # the import itself the version dependency. Anything else re-raises
-        # untouched.
-        if type(exc).__name__ != 'DuplicateLabelError':
-            raise
+    except DuplicateLabelError as exc:
+        # Caught by class. An earlier version matched `type(exc).__name__` and
+        # justified it by saying an import would itself become a version
+        # dependency - which is false: pandas has exported this from
+        # `pandas.errors` since 1.2, well below this project's `pandas>=2.0.0`
+        # floor, and it is importable on both majors the CI matrix covers.
         _raise_duplicate_label_refusal(target.index, cause=exc)
 
 

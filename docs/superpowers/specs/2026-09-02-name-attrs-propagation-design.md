@@ -394,6 +394,57 @@ because reading a test cannot tell you whether it would.
   `result.name is None` after a filter changes. CHANGELOG covers #35 and #39
   with that framing.
 
+## What the merge gate changed
+
+Run through `ollama`/`glm-5.3` prompted directly with the diff - the one seat
+neither `consensus-review` nor octo uses, so the first genuinely non-repeat
+vendor on this branch. It was pointed at the change's *prose* rather than its
+code, and that is where it earned its place: **six of its ten findings were
+claim defects, a class two consensus rounds never probed.** Four findings were
+wrong and were rejected against measurement.
+
+Accepted:
+
+- **The assign-vs-AND rationale was inverted.** The comment said AND-ing would
+  let a target's incidental default override an explicit `False`. AND can
+  never do that (`True and False` is `False`); the direction that actually
+  differs is a target's `False` surviving a source's `True`. Rewritten from
+  the truth table.
+- **A docstring contradicted the fix made one round earlier.** The restore
+  arm still claimed `ts.data = [1., 2., 3.]` reaches it - which the round-1
+  atomicity fix made false, since the pre-check now raises first.
+- **The error message named a remedy that does not exist.** "Give the result a
+  unique index" is unavailable on every path that raises it: `ts.data = ...`,
+  `interpolate_gaps` and `shift_time` all *derive* the index and take none
+  from the caller. Now it names the one action that exists, and a test asserts
+  the message contains that remedy *and* that following it verbatim works.
+- **The reason given for matching the exception by name was false.**
+  `pandas.errors.DuplicateLabelError` has been importable since 1.2, below
+  this project's floor and present on both CI majors - verified. Now caught by
+  class.
+- **`_adopt_data_inplace` called its own `_metadata` snapshot redundant**,
+  which stopped being true when `_name` joined the registry: pandas resets it,
+  and deleting the restore loop fails 40 tests.
+- **A comment referred to "this tuple"** after the tuple had become two
+  locals.
+- **A duck-typed source's `.name` was dropped silently.** Reading the private
+  slot alone missed a source carrying `.name` and no slot - which
+  `_copy_metadata_from_basetseries` accepts. One `getattr(source, 'name', None)`
+  covers all three source shapes including the pre-fix pickle, whose property
+  raises from inside and whose exception the default swallows.
+
+Rejected, each against measurement on both pandas majors: that
+`pd.Series._metadata` is `['name']` or `['name', 'attrs']` (it is `['_name']`
+on 2.3.3 and 3.0.5); that `pd.Index` refuses generators, which would have made
+round 2's drain finding impossible (it accepts both iterators and generators);
+that `attrs` rides in our `_metadata` and is restored twice (it does not);
+and a miscount of which sites forgot which fields.
+
+**The gate also caught a vacuous test I had just written.** The first version
+of "the remedy the message names actually works" carried the remedy out
+without asserting the message *named* it, so it passed against any wording -
+including the wording it existed to reject. Mutation testing found it.
+
 ## What implementation review round 2 changed
 
 Scoped deliberately away from the inventory and onto the round-1 fixes, on
