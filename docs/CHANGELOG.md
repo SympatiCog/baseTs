@@ -156,7 +156,7 @@ The suite had no pickle round-trip test at all, which is why #39 survived; it
 now has one that asserts the unpickled object *works* rather than that `loads`
 returned.
 
-22 mutants, 22 killed, 0 survivors. Three lines that survived an earlier round
+25 mutants, 25 killed, 0 survivors. Three lines that survived an earlier round
 were removed rather than explained: two `_carry_identity` calls that pandas'
 own `__finalize__` had already made redundant, and a `_name` exclusion
 superseded by the call after it. A fourth survivor — the arm that re-raises a
@@ -172,7 +172,7 @@ ordinary method — equivalent at runtime and equally destructive. Both fixes
 were verified by injecting the exact site each used to miss.
 
 Verified on pandas 3.0.5/numpy 2.5.1, pandas 2.3.3/numpy 1.26.4 and pandas
-2.3.3/numpy 2.2.6 — 1105 tests green on all three.
+2.3.3/numpy 2.2.6 — 1111 tests green on all three.
 
 ## [Unreleased] — `plot_fft_power` raises instead of drawing the error (#34)
 

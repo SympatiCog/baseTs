@@ -39,7 +39,8 @@ import pytest
 from baseTs import baseTs
 from baseTs.series import (TimeSeriesData, deepcopy_metadata_value,
                           _carry_identity,
-                          _apply_duplicate_label_declaration)
+                          _apply_duplicate_label_declaration,
+                          _refuse_undeclarable_index)
 from baseTs.utils import ValidationError
 
 NAME = "NAMEVAL"
@@ -135,6 +136,20 @@ class TestUnpickledObjectIsUsable:
         assert identity_of(back) == SEEDED_IDENTITY
 
 
+class _ExtendedForPickling(baseTs):
+    """A subclass adding a `_metadata` name, defined at module level.
+
+    Module level because pickle resolves a class by qualified name, and one
+    defined inside a test function cannot be found on load.
+    """
+
+    _metadata = baseTs._metadata + ['extra_field']
+
+    @property
+    def _constructor(self):
+        return _ExtendedForPickling
+
+
 class TestPickleWrittenBeforeTheFix:
     """A blob already on disk must load too, and that needs more than #35.
 
@@ -195,6 +210,45 @@ class TestPickleWrittenBeforeTheFix:
         revived.name = "healed"
         revived.data = np.arange(4.0)
         assert revived.name == "healed"
+
+    def test_a_deliberately_extended_instance_registry_is_kept(self):
+        """Only a *stale* shadow is dropped, not any shadow.
+
+        Deleting unconditionally also discarded a registry extended on one
+        instance: the extra names' values survived the round-trip, but
+        nothing tracked them afterwards, so they were dropped from every
+        later derivation. A shadow that still covers what the class declares
+        is not the legacy case.
+        """
+        ts = seeded()
+        object.__setattr__(ts, '_metadata', list(ts._metadata) + ['ad_hoc'])
+        object.__setattr__(ts, 'ad_hoc', 'kept')
+
+        back = pickle.loads(pickle.dumps(ts))
+
+        # Both, because the registry entry without the value would be a
+        # dangling name and the value without the entry is what the
+        # unconditional delete produced. Not asserted: that `back.iloc[:3]`
+        # also carries it - an instance-level registry never propagated to
+        # derived objects, on `main` or here, because __finalize__ reads the
+        # *new* object's `_metadata`, which is the class's.
+        assert 'ad_hoc' in back._metadata
+        assert back.ad_hoc == 'kept'
+
+    def test_a_subclass_that_extends_the_registry_round_trips(self):
+        """The class-level case, which must keep working either way."""
+        obj = _ExtendedForPickling(np.arange(5.0), np.arange(5) / 10.0)
+        obj.name = 'X'
+        obj.extra_field = 'kept'
+
+        back = pickle.loads(pickle.dumps(obj))
+
+        assert back.name == 'X'
+        assert back.extra_field == 'kept'
+        assert 'extra_field' in back._metadata
+        # Unlike the instance case above, a class-level entry does reach a
+        # derived object, because __finalize__ finds it on the child's class.
+        assert back.iloc[:3].extra_field == 'kept'
 
     def test_a_pre_fix_blob_loads_without_the_key(self):
         assert hasattr(self._restored_without_a_name_key(), '_name')
@@ -402,6 +456,26 @@ INPLACE_KNOWN_BROKEN = {
 #: notice a site nobody enumerated must not be scoped by a name someone typed.
 OUR_CLASS_NAMES = frozenset({'baseTs', 'TimeSeriesData'})
 
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _calls_in_own_scope(node):
+    """Yield the `ast.Call` nodes belonging to `node` itself.
+
+    A flat `ast.walk` descends into nested functions and classes, so a
+    perfectly ordinary `super().__init__()` inside a nested class's own
+    `__init__` was attributed to the *enclosing* method and reported as a
+    re-initialisation site. Nothing in this package nests a class inside a
+    method today, so the guard would have failed the suite on correct code
+    the first time someone did.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, _NESTED_SCOPES):
+            continue
+        if isinstance(child, ast.Call):
+            yield child
+        yield from _calls_in_own_scope(child)
+
 
 def basets_owned_inplace_methods():
     """Every public method this package defines that takes `inplace`.
@@ -514,9 +588,8 @@ class TestReinitHasOneDoor:
             # chaining to its base, which is to say it sits in `__init__`.
             if node.name == '__init__':
                 continue
-            for inner in ast.walk(node):
-                if (isinstance(inner, ast.Call)
-                        and isinstance(inner.func, ast.Attribute)
+            for inner in _calls_in_own_scope(node):
+                if (isinstance(inner.func, ast.Attribute)
                         and inner.func.attr == '__init__'
                         and isinstance(inner.func.value, ast.Call)
                         and isinstance(inner.func.value.func, ast.Name)
@@ -530,6 +603,34 @@ class TestReinitHasOneDoor:
             f"re-initialising `self` through pandas resets name/attrs/flags; "
             f"route it through baseTs._adopt_data_inplace. Found: {sites}"
         )
+
+    def test_a_nested_class_constructor_is_not_a_reinit_site(self):
+        """The scan must attribute a call to its *nearest* enclosing function.
+
+        A flat `ast.walk` descends into nested scopes, so an ordinary
+        `super().__init__()` in a nested class's own `__init__` was blamed on
+        the enclosing method. Nothing in the package nests a class in a method
+        today, so the guard would have failed on correct code the first time
+        someone did.
+        """
+        source = (
+            "class Foo:\n"
+            "    def bar(self):\n"
+            "        class Inner:\n"
+            "            def __init__(self):\n"
+            "                super().__init__()\n"
+            "        return Inner()\n"
+        )
+        tree = ast.parse(source)
+        blamed = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name != '__init__'
+            for call in _calls_in_own_scope(node)
+            if isinstance(call.func, ast.Attribute)
+            and call.func.attr == '__init__'
+        ]
+        assert blamed == []
 
     def test_the_primitive_is_where_the_scan_says_it_is(self):
         """Guards the scan itself against silently matching nothing.
@@ -638,6 +739,47 @@ class TestDuplicateLabelRefusal:
         # The labels, so a caller can act; pandas' own message names none.
         assert "[5.0]" in str(caught.value)
         assert caught.value.__cause__ is error
+
+    def test_the_message_stays_bounded_for_a_large_index(self):
+        """A diagnosis must not become the payload.
+
+        Naming every duplicated label built an 889,108-character exception
+        from 100,000 duplicated pairs. This repo already has `_describe` for
+        exactly that failure, after a 200k-element list produced a 1.4 MB
+        message.
+        """
+        index = pd.Index(np.repeat(np.arange(50_000.0), 2))
+
+        with pytest.raises(ValidationError) as caught:
+            _refuse_undeclarable_index(False, index)
+
+        assert len(str(caught.value)) < 500
+        assert "more" in str(caught.value)
+
+    def test_a_small_index_still_names_its_labels(self):
+        """Bounding the message must not stop it being useful."""
+        with pytest.raises(ValidationError) as caught:
+            _refuse_undeclarable_index(False, pd.Index([7.0, 7.0, 8.0]))
+
+        assert "7.0" in str(caught.value)
+        assert "more" not in str(caught.value)
+
+    def test_a_one_shot_index_is_not_consumed_by_the_check(self):
+        """The check must hand back what it built, not drain the caller's.
+
+        Building a `pd.Index` from a generator exhausts it, so a version that
+        checked one object and let the caller reuse the original turned a
+        working call into "Length of values (3) does not match length of
+        index (0)".
+        """
+        ts = seeded(n=3, rate=1.0)
+        ts.flags.allows_duplicate_labels = False
+
+        ts._adopt_data_inplace(np.array([1.0, 2.0, 3.0]),
+                               iter([10.0, 11.0, 12.0]))
+
+        assert ts.index.tolist() == [10.0, 11.0, 12.0]
+        assert identity_of(ts) == SEEDED_IDENTITY
 
     def test_any_other_error_propagates_unchanged(self):
         """Not everything the setter can raise is a duplicate-label refusal.

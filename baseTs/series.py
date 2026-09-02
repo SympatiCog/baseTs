@@ -294,23 +294,48 @@ def _refuse_undeclarable_index(declared, index):
     to assume nothing changed.
 
     Checking the prospective index first makes the operation atomic: either
-    it raises having touched nothing, or the restore afterwards cannot fail.
+    it raises having touched nothing, or the duplicate-label restore that
+    follows cannot fail.
+
+    **Returns the index it checked, and the caller must use that object.**
+    Building a `pd.Index` from a one-shot iterable drains it, so a version
+    that checked one object and let the caller re-use the original turned a
+    working call into `Length of values (3) does not match length of index
+    (0)` for any generator index. Materialising once and handing the result
+    back means there is exactly one candidate index, never two - the same
+    unpack-once rule that a band-edge generator forced on `plot_fft_power`.
+    Unconditional, not only on the falsy branch, so the two branches cannot
+    hand back different types.
     """
-    if declared:
-        return
     candidate = index if isinstance(index, pd.Index) else pd.Index(index)
-    if candidate.has_duplicates:
+    if not declared and candidate.has_duplicates:
         _raise_duplicate_label_refusal(candidate)
+    return candidate
+
+
+#: How many duplicated labels an error message names before summarising.
+_DUPLICATE_LABELS_SHOWN = 5
 
 
 def _raise_duplicate_label_refusal(index, cause=None):
-    """The one wording for both the pre-check and the restore arm."""
-    from .utils import ValidationError
+    """The one wording for both the pre-check and the restore arm.
+
+    The labels are sampled rather than pasted whole. `{duplicated!r}` on the
+    full list built an 889,108-character exception from an index of 100,000
+    duplicated pairs - the same defect `utils._describe` exists to prevent,
+    where a 200k-element list produced a 1.4 MB message that then lands in
+    logs and tracebacks. A handful of labels and a count identify the
+    mistake; the rest is payload.
+    """
+    from .utils import ValidationError, _describe
 
     duplicated = index[index.duplicated()].unique().tolist()
+    shown = _describe(duplicated[:_DUPLICATE_LABELS_SHOWN])
+    if len(duplicated) > _DUPLICATE_LABELS_SHOWN:
+        shown += f" and {len(duplicated) - _DUPLICATE_LABELS_SHOWN} more"
     error = ValidationError(
         "this object declares allows_duplicate_labels=False, but the "
-        f"operation produced duplicate time labels {duplicated!r}, so that "
+        f"operation produced duplicate time labels {shown}, so that "
         "declaration cannot be carried to the result. Either drop the "
         "declaration or give the result a unique index."
     )
@@ -618,7 +643,14 @@ class TimeSeriesData(pd.Series):
         registry is actually defined.
         """
         super().__setstate__(state)
-        if '_metadata' in self.__dict__:
+        # Dropped only when it is *stale*, not whenever it exists. Deleting
+        # unconditionally also discarded a registry someone had deliberately
+        # extended on one instance - the extra names' values survived, but
+        # nothing tracked them afterwards, so they were silently dropped from
+        # every later derivation. A shadow that still covers everything the
+        # class declares is not the legacy case and is left alone.
+        shadow = self.__dict__.get('_metadata')
+        if shadow is not None and not set(type(self)._metadata) <= set(shadow):
             object.__delattr__(self, '_metadata')
         if not hasattr(self, _IDENTITY_NAME_SLOT):
             object.__setattr__(self, _IDENTITY_NAME_SLOT, None)

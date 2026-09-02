@@ -398,7 +398,12 @@ class baseTs(TimeSeriesData):
         # the new data and index with its duplicate-label protection reset to
         # pandas' permissive default - a failure report over a mutated,
         # silently unprotected object.
-        _refuse_undeclarable_index(allows_duplicates, new_index)
+        #
+        # The returned index is the one used below, deliberately. Checking a
+        # `pd.Index` built from the argument and then handing the *argument*
+        # to pandas means two objects where there should be one, and drains a
+        # one-shot iterable before pandas ever sees it.
+        new_index = _refuse_undeclarable_index(allows_duplicates, new_index)
 
         preserved = {attr: getattr(self, attr)
                      for attr in self._metadata if hasattr(self, attr)}

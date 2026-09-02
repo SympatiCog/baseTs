@@ -394,6 +394,43 @@ because reading a test cannot tell you whether it would.
   `result.name is None` after a filter changes. CHANGELOG covers #35 and #39
   with that framing.
 
+## What implementation review round 2 changed
+
+Scoped deliberately away from the inventory and onto the round-1 fixes, on
+the grounds that this repo's rounds mostly find defects in the previous
+round's fix. All three findings were exactly that.
+
+- **The atomicity fix drained a one-shot index.** `_refuse_undeclarable_index`
+  built a `pd.Index` from its argument to test it, then let the caller hand
+  the *original* to pandas - so a generator index was exhausted by the check
+  and `super().__init__` saw an empty one. Fixed by returning the
+  materialised index and requiring the caller to use it: exactly one candidate
+  index, never two. Not reachable from the three current call sites, all of
+  which pass an array or an `Index`, but a trap laid for the next one.
+- **The `_metadata` shadow fix deleted too much.** Dropping it
+  unconditionally also discarded a registry someone had deliberately extended
+  on a single instance; the values survived but nothing tracked them
+  afterwards. Now dropped only when it is *stale* - when it no longer covers
+  what the class declares.
+- **The AST scan's `__init__` skip ignored nesting.** A flat `ast.walk`
+  descends into nested scopes, so an ordinary `super().__init__()` inside a
+  nested class's own `__init__` was attributed to the enclosing method. The
+  scan now yields only calls in a function's own scope.
+
+**Found independently while the round ran:** the refusal message named every
+duplicated label, building an 889,108-character exception from an index of
+100,000 duplicated pairs. This repo already has `utils._describe` for exactly
+that failure, written after a 200k-element list produced a 1.4 MB message; the
+new helper now uses it and names a bounded sample plus a count.
+
+Three findings the round raised and dropped on verification, all worth
+recording because they were checked rather than assumed: `.has_duplicates`
+does not raise on unhashable elements in this pandas; the `if declared:`
+truthiness test handles `np.bool_(False)` correctly, so it is *not* a
+recurrence of the `is False` bug this repo shipped before; and the
+`_metadata` snapshot inside `_adopt_data_inplace` cannot be made to fail by
+any of this class's own metadata names.
+
 ## What the implementation review changed
 
 A `consensus-review` round against the code (codex ✓, agy ✓), the first not
