@@ -155,6 +155,15 @@ Consequences, each handled deliberately:
 - **Half A does nothing for sites 8 and 9**, which have no metadata loop to
   ride. This is why Group 2 needs its own mechanism rather than a wider
   registry.
+- **Half A alone does not close #39 either.** It fixes objects pickled *from
+  now on*. A blob written before this change carries no `_name` key, because
+  `__getstate__` serialised the registry as it stood then, so loading it with
+  the fixed code still yields an object whose every operation raises. Closing
+  #39 as stated — "unpickled objects are broken" — needs `__setstate__` to
+  normalise a missing `_name` to `None` after delegating to pandas. That is
+  the same normalise-at-the-door move `_detach_shared_metadata` already makes
+  for `history` and `outlier_filter`, applied to the one door that
+  reconstitutes an object from bytes.
 - **`deepcopy_metadata_value` is reached with `_name`.** A Series name must be
   hashable, so it cannot be a `list`/`dict`/`ndarray` and the isinstance gate
   never matches it. No change needed; asserted by a test rather than left as
@@ -181,10 +190,19 @@ def _carry_identity(target, source):
 
 It copies:
 
-- **`name`** — `object.__setattr__(target, '_name', source.name)`, by the
-  private slot. Same invariant as #20: assigning through a public property
-  runs a setter, and `Series.name`'s setter validates hashability, so a name
-  that predates that rule would raise here rather than at its origin.
+- **`name`** — `object.__setattr__(target, '_name', getattr(source, '_name', None))`.
+  By the private slot, on the same invariant as #20: assigning through the
+  public property runs a setter, and `Series.name`'s setter validates
+  hashability, so a name that predates that rule would raise here rather than
+  at its origin.
+
+  **Read with `getattr`, never `source.name`.** `NDFrame.__getstate__`
+  serialises `{k: getattr(self, k, None) for k in self._metadata}` — the
+  registry *as it was at dump time*. A blob pickled before this change
+  therefore has no `_name` key, and loading it with the fixed code still
+  produces an object without the attribute. Verified: `old.name` and
+  `repr(old)` both still raise after the fix. Reading `source.name` in the
+  helper would make the fix itself raise on every legacy pickle.
 - **`attrs`** — `deepcopy(source.attrs)` when non-empty, else left alone.
   **Verified against pandas' source on both majors, not assumed:**
   `NDFrame.__finalize__` deep-copies attrs, guarded by an `if other.attrs:`
@@ -192,19 +210,44 @@ It copies:
   of this design said "shallow copy, matching pandas" and was wrong. Matching
   pandas here means `iloc` and `copy()` isolate nested attrs values
   identically.
-- **`flags.allows_duplicate_labels`** — by plain assignment.
+- **`flags.allows_duplicate_labels`** — by plain assignment, for a reason
+  that had to be rewritten once the "freshness" premise was tested.
 
-  **A cross-version difference the panel surfaced, and why plain assignment
-  is still right.** pandas 2.3.3's `__finalize__` assigns
-  (`self.flags.adl = other.flags.adl`); pandas 3.0.5's ANDs
-  (`self.flags.adl = self.flags.adl and other.flags.adl`). The two agree
-  whenever the target is freshly constructed, because a fresh target's flag
-  is `True` and `True and x == x`. Every Group 1 site hands `_carry_identity`
-  a freshly-constructed target, so the choice is immaterial *today* — but
-  that is an assumption about call sites, not a property of the helper. It is
-  therefore pinned by a test asserting the target is fresh at every call
-  site, and the docstring says a non-fresh target would diverge between
-  pandas majors.
+  pandas 2.3.3's `__finalize__` assigns (`self.flags.adl = other.flags.adl`);
+  pandas 3.0.5's ANDs (`self.flags.adl = self.flags.adl and other.flags.adl`).
+  Revision 2 justified plain assignment by claiming every target is freshly
+  constructed, so `True and x == x`. **That premise is false**, and the test
+  revision 2 said would pin it asserted end-to-end outcomes rather than the
+  premise. Measured: `pd.Series.copy(deep=False)` on a baseTs returns an
+  object that is *already* `isinstance(..., baseTs)` with the flag already
+  carried by pandas' own `__finalize__`, so `baseTs.copy(deep=False)`'s
+  rebuild fallback is not reached at all in normal operation and its target,
+  when it is reached, is not fresh.
+
+  Plain assignment is right on its own merits instead: the helper's contract
+  is "this object is a derivation of that one", and a derivation takes the
+  source's declaration. AND-ing would let a target's incidental default
+  override an explicit `False` on the source in one direction and not the
+  other. The freshness question is therefore dropped rather than asserted,
+  and the divergence from pandas 3.x's AND is documented in the docstring as
+  deliberate.
+
+  **Restoring the flag can raise, and that is a behaviour change.** If the
+  operation produced a duplicate index while the source declared
+  `allows_duplicate_labels=False`, pandas refuses the restore with
+  `DuplicateLabelError`. This is reachable today: on a length-1 series
+  `_update_series_data` builds its replacement index with
+  `np.linspace(start, end, n)` where `start == end`, so `ts.data = [1., 2., 3.]`
+  yields the index `[0.0, 0.0, 0.0]`. That call currently succeeds *because*
+  the flag is not carried; carrying it makes it raise.
+
+  The flag is still carried, because silently dropping a declaration the
+  caller made is the failure mode this whole change exists to fix. But the
+  refusal is caught and re-raised as a `ValidationError` naming the
+  operation, the duplicate labels and the declaration that forbids them —
+  pandas' own message says only "Index has duplicates" and gives the caller
+  nothing to act on. The degenerate `linspace` index behind the reachable
+  case is a pre-existing defect of its own and is filed, not fixed here.
 
 Called from all six Group 1 sites. Sites 1, 2, 4, 5 and 6 would get `name`
 from Half A alone; they call the helper anyway, because a single door
@@ -247,11 +290,24 @@ from the table — which is precisely how sites 7–9 went unfound in revision 1
 
 The guard therefore derives its subjects instead of listing them:
 
-- **Every `inplace=True` branch**, enumerated by reflection over `baseTs`'s
-  public methods whose signature has an `inplace` parameter. Each is called
-  on a seeded object and asserted to preserve the identity triple. This is
-  the check that would have caught sites 8 and 9, and it catches the next one
-  for free.
+- **Every `inplace=True` branch**, discovered by reflection over `baseTs`'s
+  own public methods whose signature has an `inplace` parameter, and asserted
+  to equal the set that has been classified. Each classified method is then
+  called on a seeded object and asserted to preserve the identity triple.
+
+  Precisely what this buys, since revision 2 overclaimed it: reflection
+  cannot invent a valid cutoff frequency, so the *arguments* stay a
+  hand-written table. What is derived is the **membership** check — adding a
+  method that takes `inplace` fails the suite until someone classifies it.
+  It does not exercise a new method for free; it refuses to stay green while
+  one is unaccounted for. That is the property sites 8 and 9 needed and a
+  hand-written path list could never have.
+
+  Measured while building it: **36 of 53** `inplace`-capable methods lose the
+  triple on `main`, and the loss correlates exactly with the method being
+  baseTs-defined rather than inherited — every inherited pandas method
+  already keeps it. That correlation is what makes the owner-based partition
+  a real boundary rather than a convenience.
 - **Every direct re-initialisation**, asserted by a source-level check that
   `super(TimeSeriesData, self).__init__` appears in `core.py` only inside
   `_adopt_data_inplace`. A tenth site re-introducing the pattern fails the
@@ -297,6 +353,19 @@ because reading a test cannot tell you whether it would.
   `add_constant` has no caller, and none is in `__all__`, so no public API
   returns one. To be filed, not widened into. The panel independently agreed
   none of these exclusions leaves an incoherent state.
+- **`interpolate_missing(inplace=True)` is dead.** It passes `inplace=` to
+  `interpolate_missing_values`, which returns `None` in that branch, then
+  reads `.data` off it — `AttributeError` on both pandas majors, with and
+  without NaNs in the data. Dead from introduction, the same shape as #27's
+  `butterpass_at`. Found by the reflection sweep, recorded in the test file's
+  `INPLACE_KNOWN_BROKEN` so the exclusion is accounted for rather than
+  silent, and to be filed.
+- **`_update_series_data`'s degenerate replacement index.** When the data
+  length changes it rebuilds the index as `np.linspace(start, end, n)`, and
+  on a length-1 series `start == end`, so every timestamp is identical. To be
+  filed: it is the pre-existing cause behind the `DuplicateLabelError`
+  interaction above, and inventing a constant index is wrong independently of
+  any flag.
 
 ## Risk register
 
@@ -318,7 +387,38 @@ because reading a test cannot tell you whether it would.
   `result.name is None` after a filter changes. CHANGELOG covers #35 and #39
   with that framing.
 
-## What the review changed
+## What review round 2 changed
+
+A second `consensus-review` round (codex ✓, agy ✓), scoped away from the
+inventory and onto the two mechanisms revision 2 introduced. Three findings
+were raised by both models; all four below were verified independently before
+acting.
+
+- **Reading `source.name` breaks on legacy pickles** (both models). Verified
+  by pickling with unpatched code and loading with patched code: the object
+  still has no `_name`, so the helper would raise inside the fix. Now
+  `getattr(source, '_name', None)`, plus the `__setstate__` normalisation
+  above — which is what actually closes #39 rather than half of it.
+- **The `flags` freshness premise was false** (both models), and revision 2's
+  claimed test did not assert it. Verified: `pd.Series.copy(deep=False)`
+  returns an already-finalised baseTs, so the fallback target is not fresh.
+  Plain assignment is kept, justified on the helper's contract instead, and
+  the freshness claim is deleted rather than papered over.
+- **The reflection guard was overclaimed** (both models). Corrected above:
+  reflection derives membership, not arguments.
+- **Carrying `flags` can raise where nothing raises today** (codex; verified
+  and reproduced). `ts.data = x` on a length-1 series builds a duplicate
+  index, and restoring `allows_duplicate_labels=False` onto it is refused.
+  Handled by re-raising as a diagnosable `ValidationError`; the degenerate
+  index generator behind it is filed separately.
+
+One finding was dropped: that `_update_series_data`'s explicit `_metadata`
+snapshot is redundant because those attributes live in the instance
+`__dict__` and survive re-init anyway. True, but it is exactly the accident
+this change replaces with a mechanism, so the snapshot stays and the
+docstring says why.
+
+## What review round 1 changed
 
 A `consensus-review` panel round (codex ✓, agy ✓; no finding raised by both,
 so everything was single-source and independently verified before acting).
