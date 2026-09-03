@@ -60,3 +60,40 @@ def test_example_4_runs_to_completion():
     assert set(spectral) == {"peak_frequency", "spectral_centroid", "spectral_bandwidth"}
     assert np.isfinite(spectral["spectral_bandwidth"])
     assert set(report["condition_analysis"]) == {"baseline", "stimulus", "recovery"}
+
+
+def test_example_4_enhanced_cleaning_branch_completes():
+    """The `quality_score < 0.95` branch, which the example's own data never takes.
+
+    Over 40 seeds the usage block's sine-plus-noise scores exactly 1.0 under
+    IQR at threshold 2.0, so the branch #28 patched - filter_outliers leaves
+    gaps as NaN, and the spectral step rejects NaN - is dead in the document
+    as written. Driving the function with spiky, gappy data is what pins the
+    interpolate_gaps() call #28 added: with the call removed, the spectral
+    step rejects the NaN that filter_outliers preserves.
+    """
+    ns = run_example(fenced_python_under("### Example 4: Scientific Data Analysis"))
+    analyse = ns["scientific_time_series_analysis"]
+
+    rng = np.random.default_rng(1)
+    n = 12000
+    data = np.sin(2 * np.pi * 0.5 * np.linspace(0, 120, n)) + 0.1 * rng.standard_normal(n)
+    spikes = rng.choice(n, size=n // 10, replace=False)
+    data[spikes] += rng.choice([-1.0, 1.0], size=spikes.size) * 8
+    # Acquisition dropouts. filter_outliers leaves these as NaN (#36), which
+    # is what makes the interpolate_gaps() step load-bearing: without input
+    # gaps the filter's own blanks are re-interpolated and nothing is left
+    # for the spectral guard to reject.
+    data[rng.choice(n, size=50, replace=False)] = np.nan
+    metadata = {
+        "sampling_rate": 100,
+        "experiment_name": "spiky",
+        "conditions": {"time_windows": {"first": (0, 60), "second": (60, 120)}},
+    }
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        report = analyse(data, metadata)
+
+    assert report["data_quality"]["quality_score"] < 0.95
+    assert any("Interpolated gaps" in step for step in report["processing_history"])
+    assert np.isfinite(report["features"]["spectral"]["spectral_bandwidth"])
