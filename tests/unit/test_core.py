@@ -860,9 +860,14 @@ class TestButterpassAt:
         inputs did not span the axis the test was named for.
 
         Census of TimeSeriesData._metadata, measured rather than asserted:
-        ten fields are seeded off their constructor default and survive this
-        call intact, and the other three (`is_filtered`, `last_process`,
+        eleven fields are seeded off their constructor default and survive
+        this call intact, and the other three (`is_filtered`, `last_process`,
         `history`) change because changing them is the operation's own effect.
+        `_name` is the eleventh, added when the registry stopped replacing
+        pandas' own and started extending it (#35/#39). It has to be seeded
+        here like any other field: left at its `None` default it would compare
+        equal on both sides whatever the implementation did with it, which is
+        the exact vacuity this seeding exists to prevent.
         An earlier revision of this docstring claimed eleven and two. It was
         wrong on both counts, and wrong for an instructive reason: the probe
         behind it truncated each value to 26 characters, which hid the entry
@@ -871,6 +876,7 @@ class TestButterpassAt:
         and compared equal no matter what the implementation did with it.
         """
         ts = cls._two_tone()
+        ts.name = "SEEDED_NAME"
         ts.set_outlier_filter(frac=0.25)
         ts.set_timestamp_offset(1.5)
         ts.is_interpolated = True
@@ -922,6 +928,7 @@ class TestButterpassAt:
     #: was vacuous, which let a field move between these two groups without
     #: anything noticing that the documented counts had gone stale.
     PRESERVED_BY_OP = frozenset({
+        '_name',
         '_freq_declaration', 'signal_name', 'is_interpolated', 'is_uniform_grid',
         'ts_offset', 'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
         'is_outlier_filtered', 'outlier_filter',
@@ -960,7 +967,7 @@ class TestButterpassAt:
         ), "a field was added to or removed from _metadata; classify it here"
         assert preserved == self.PRESERVED_BY_OP
         assert changed == self.CHANGED_BY_OP
-        assert (len(preserved), len(changed)) == (10, 3)  # the quoted numbers
+        assert (len(preserved), len(changed)) == (11, 3)  # the quoted numbers
 
     def test_seeding_leaves_no_metadata_field_vacuous(self):
         """No field may sit at its default and stay there across the call.

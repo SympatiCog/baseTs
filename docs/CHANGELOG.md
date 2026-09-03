@@ -54,6 +54,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — derived objects keep the Series `name`, `attrs` and `flags` (#35, #39)
+
+### Fixed — the three fields pandas owns were dropped by almost every derivation
+
+A `baseTs` is a `pd.Series`, so pandas defines and propagates three pieces of
+identity on it: the Series `name`, the `attrs` dict and `flags`. baseTs dropped
+all three across most derivations, where a plain `pd.Series` drops none of them.
+Measured on `main`, seeding all three: `copy(deep=True)`, `copy.deepcopy`,
+`apply_function`, every non-inplace filter and transform, `baseTs(ts)` and
+`to_basetseries()` lost all three; `dropna()`, `round()` and `sort_values()`
+lost the name; on pandas 3.0 so did `head()`, because pandas 3.0 implements it
+as `self.iloc[:n].copy()` and so reaches baseTs' own rebuilding `copy()`.
+**36 of 53 `inplace=True` methods** lost all three, and the loss correlated
+exactly with the method being baseTs-defined rather than inherited from pandas.
+
+Two independent causes, neither of which the issue names:
+
+- `TimeSeriesData._metadata` **replaced** `pd.Series._metadata` (which is
+  `['_name']`) instead of extending it, so every `__finalize__` path dropped the
+  name. It now extends, composed from `pd.Series._metadata` rather than
+  hardcoding `'_name'` — hardcoding a list pandas owns is the original mistake.
+- Nine sites rebuilt or re-initialised an object carrying only `_metadata`
+  names. `attrs` and `flags` are not in `_metadata`; pandas handles them inside
+  `__finalize__`, so no site carried them. Six were rebuild sites, now served by
+  one `_carry_identity` helper. Three re-initialised `self` through
+  `super(TimeSeriesData, self).__init__` — `_update_series_data` (reached by
+  `ts.data = x`), `interpolate_gaps(inplace=True)` and
+  `shift_time(inplace=True)` — and are now one `_adopt_data_inplace` primitive.
+  A post-hoc helper could not have served those: their target *is* their source,
+  so the snapshot has to be taken before the re-initialisation.
+
+### Fixed — unpickling produced an object that raised on everything (#39)
+
+`pickle.dumps` and `pickle.loads` both succeeded; what came back was unusable.
+`__getstate__` serialises exactly `_metadata`, so `_name` was never written and
+never restored, and `.name`, `repr()`, `iloc`, `head()` and arithmetic all
+raised `AttributeError: 'baseTs' object has no attribute '_name'` on the
+restored object. `mean()` worked, which is why it went unnoticed. Identical on
+pandas 2.3.3 and 3.0.5.
+
+Extending `_metadata` fixes objects pickled from now on and nothing else: a blob
+already on disk has no `_name` key, so loading it with the fixed code still
+produced the broken object. `TimeSeriesData.__setstate__` now normalises a
+missing `_name` to `None` after delegating to pandas — the same
+normalise-at-the-door move `_detach_shared_metadata` makes for `history`,
+applied to the one door that rebuilds an object out of bytes. The original name
+is not recovered, because it is genuinely not in those bytes.
+
+It also drops the registry pandas restores onto the instance. `_metadata` is
+written into every pickle and installed as an *instance* attribute, shadowing
+the class's; for a blob written since this change the two are identical and it
+does not matter, but a legacy blob carries the old, `_name`-less list. Without
+dropping it the object came back healed, worked once, and lost the name again
+the moment anything iterated `self._metadata` — the next `pickle.dumps`, or the
+next `ts.data = x`.
+
+### Changed — behaviour that was previously silent
+
+- **Derived objects now carry a name.** Code asserting `result.name is None`
+  after a filter, transform, copy or conversion will now see the source's name.
+- **`attrs` is deep-copied**, matching `NDFrame.__finalize__` exactly, including
+  its emptiness guard. Nested `attrs` values are isolated between parent and
+  child rather than shared.
+- **`allows_duplicate_labels` is carried by assignment**, not by pandas 3.x's
+  AND with the target's existing value. A derivation takes its source's
+  declaration; AND-ing would let a target's incidental default override an
+  explicit `False` in one direction only. pandas 2.x assigns, so this matches
+  2.x and deliberately differs from 3.x.
+- **Carrying that flag can now raise where nothing raised before.** If an
+  operation produces duplicate time labels on an object that declared
+  `allows_duplicate_labels=False`, it is refused. This is reachable:
+  `_update_series_data` rebuilds the index as `linspace(first, last, n)`, so on
+  a single-sample series every replacement timestamp is identical and
+  `ts.data = [1., 2., 3.]` produces three duplicate labels (filed as #65). The
+  declaration is still carried — silently dropping one is the class of failure
+  this change exists to fix — and pandas' bare "Index has duplicates" is
+  re-raised as a `ValidationError` naming the labels and the remedy.
+
+  **The refusal happens before anything is mutated.** Checked after the
+  re-initialisation, as it first was, the new data and index were already
+  committed and the flag had fallen back to pandas' permissive default — an
+  operation that reported failure left a mutated object with its declared
+  protection silently switched off, which is worse than the silent behaviour it
+  replaced. `ts.data = x` is now all-or-nothing: either it raises having
+  changed nothing, or it succeeds.
+
+### Testing
+
+`tests/unit/test_identity_propagation.py`. The guard against a tenth site
+derives its subjects rather than listing them: it discovers baseTs' own
+`inplace=` methods by reflection and asserts the discovered set equals the
+classified one, so a new method fails the suite until someone accounts for it.
+Reflection cannot invent a valid cutoff frequency, so the *arguments* remain a
+hand-written table — what is derived is the membership check, which is the
+property a hand-written path list could never have. A source-level AST check
+additionally pins that `super(TimeSeriesData, self).__init__` appears in
+`core.py` only inside the primitive.
+
+The suite had no pickle round-trip test at all, which is why #39 survived; it
+now has one that asserts the unpickled object *works* rather than that `loads`
+returned.
+
+26 mutants, 26 killed, 0 survivors. Three lines that survived an earlier round
+were removed rather than explained: two `_carry_identity` calls that pandas'
+own `__finalize__` had already made redundant, and a `_name` exclusion
+superseded by the call after it. A fourth survivor — the arm that re-raises a
+non-duplicate error untouched — is unreachable through the public API now that
+the refusal happens before the mutation, so it is tested directly rather than
+deleted on the assumption that it can never fire.
+
+Both halves of the reflection guard were widened after review found holes in
+each: it keyed on the literal class name `baseTs`, missing anything defined on
+`TimeSeriesData`, and the AST scan required the two-argument
+`super(Cls, self)` form, missing a zero-argument `super().__init__()` in an
+ordinary method — equivalent at runtime and equally destructive. Both fixes
+were verified by injecting the exact site each used to miss.
+
+Verified on pandas 3.0.5/numpy 2.5.1, pandas 2.3.3/numpy 1.26.4 and pandas
+2.3.3/numpy 2.2.6 — 1114 tests green on all three.
+
 ## [Unreleased] — `plot_fft_power` raises instead of drawing the error (#34)
 
 ### Fixed — a bare `except Exception` neutralised every spectral guard

@@ -28,7 +28,9 @@ from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      normalise_label, _UNSET, _UnsetType,
-                     _carries_metadata)
+                     _carries_metadata, _carry_identity,
+                     _apply_duplicate_label_declaration,
+                     _refuse_undeclarable_index)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -361,6 +363,63 @@ class baseTs(TimeSeriesData):
         # are *read*, so there is no moment at which this setter, or any other
         # writer, has to remember anything.
     
+    def _adopt_data_inplace(self, new_data: np.ndarray, new_index):
+        """Re-initialise this object's data and index, keeping everything else.
+
+        The single door for re-initialising `self` through pandas. Three
+        methods used to call `super(TimeSeriesData, self).__init__` directly -
+        this one, `interpolate_gaps(inplace=True)` and
+        `shift_time(inplace=True)` - and pandas' `__init__` resets `name`,
+        `attrs` and `flags` to defaults on the way past. Two of the three
+        restored nothing at all, and the third restored `_metadata` only, so
+        every `inplace=True` method silently stripped the object's identity.
+
+        Collapsing them is deliberate, and not the same as adding a call to
+        each. `_carry_identity` cannot serve here: its target *is* its source,
+        and by the time any post-reinit call could run, the values it would
+        copy have already been reset. The snapshot has to be taken *before*
+        the re-initialisation, which only a wrapper around it can guarantee.
+
+        The `_metadata` snapshot is load-bearing, and an earlier version of
+        this docstring wrongly called it redundant on the grounds that those
+        attributes live in the instance `__dict__` which `pd.Series.__init__`
+        does not touch. That is true of baseTs' own names and false of the one
+        that matters most: `_name` is in `_metadata` and pandas *does* reset
+        it here. Deleting the restore loop fails 40 tests.
+        """
+        # Split by who owns the field, with no overlap. `_name` is in
+        # `_metadata`, so the loop below restores it and these locals must
+        # not - two mechanisms restoring one field means neither is pinned by
+        # a test, which is what mutation testing showed when both did.
+        attrs = dict(getattr(self, 'attrs', {}) or {})
+        allows_duplicates = self.flags.allows_duplicate_labels
+
+        # Before the re-initialisation, so this method is all-or-nothing.
+        # Checked afterwards, a refused declaration left the object holding
+        # the new data and index with its duplicate-label protection reset to
+        # pandas' permissive default - a failure report over a mutated,
+        # silently unprotected object.
+        #
+        # The returned index is the one used below, deliberately. Checking a
+        # `pd.Index` built from the argument and then handing the *argument*
+        # to pandas means two objects where there should be one, and drains a
+        # one-shot iterable before pandas ever sees it.
+        new_index = _refuse_undeclarable_index(allows_duplicates, new_index)
+
+        preserved = {attr: getattr(self, attr)
+                     for attr in self._metadata if hasattr(self, attr)}
+
+        super(TimeSeriesData, self).__init__(new_data, index=new_index)
+
+        for attr, value in preserved.items():
+            setattr(self, attr, value)
+
+        if attrs:
+            self.attrs = attrs
+        if allows_duplicates is not self.flags.allows_duplicate_labels:
+            _apply_duplicate_label_declaration(self, allows_duplicates)
+        return self
+
     def _update_series_data(self, new_data: np.ndarray):
         """Update Series data while preserving metadata and handling length changes."""
         if len(new_data) == len(self.index):
@@ -371,19 +430,8 @@ class baseTs(TimeSeriesData):
             start_time = self.index[0] if len(self) > 0 else 0
             end_time = self.index[-1] if len(self) > 0 else len(new_data)-1
             old_index = np.linspace(start_time, end_time, len(new_data))
-        
-        # Preserve metadata
-        old_metadata = {}
-        for attr in self._metadata:
-            if hasattr(self, attr):
-                old_metadata[attr] = getattr(self, attr)
-        
-        # Update the Series
-        super(TimeSeriesData, self).__init__(new_data, index=old_index)
-        
-        # Restore metadata
-        for attr, val in old_metadata.items():
-            setattr(self, attr, val)
+
+        self._adopt_data_inplace(new_data, old_index)
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
@@ -455,6 +503,13 @@ class baseTs(TimeSeriesData):
             # staleness the properties exist to catch. Same reason
             # _freq_declaration is copied by its private name.
             _detach_shared_metadata(new_obj)
+
+            # The curated list above is the one metadata copy in the package
+            # that does not iterate _metadata, so declaring `_name` there
+            # reaches every other site but not this one - and this is the site
+            # every non-inplace filter and transform goes through. attrs and
+            # flags are in no list at all.
+            _carry_identity(new_obj, self)
 
         return new_obj
 
@@ -1755,7 +1810,7 @@ class baseTs(TimeSeriesData):
         
         if inplace:
             # Update current object
-            super(TimeSeriesData, self).__init__(interpolated.values, index=interpolated.index)
+            self._adopt_data_inplace(interpolated.values, interpolated.index)
             order_str = f", order={order}" if order is not None else ""
             self._update_history_and_process(
                 f"Interpolated gaps using {method}{order_str}",
@@ -1821,9 +1876,9 @@ class baseTs(TimeSeriesData):
         if inplace:
             # Update current object, removing NaN values
             valid_mask = ~shifted.isna()
-            super(TimeSeriesData, self).__init__(
+            self._adopt_data_inplace(
                 shifted[valid_mask].values,
-                index=shifted[valid_mask].index
+                shifted[valid_mask].index
             )
             self._update_history_and_process(
                 f"Shifted time by {periods} periods",
@@ -2366,6 +2421,11 @@ class baseTs(TimeSeriesData):
             # was the one derivation that could still hand back a history
             # that is not a list.
             _detach_shared_metadata(new_obj)
+            # attrs and flags are not in _metadata, so the loop above cannot
+            # carry them however complete it is. pandas calls this method
+            # itself - head() is iloc[:n].copy() on pandas 3.0 - so this is
+            # not only the user-facing copy path.
+            _carry_identity(new_obj, self)
             return new_obj
         else:
             # Shallow copy using pandas Series copy
@@ -2379,6 +2439,15 @@ class baseTs(TimeSeriesData):
                     if hasattr(self, attr):
                         setattr(copied, attr, getattr(self, attr))
                 _detach_shared_metadata(copied)
+            # No _carry_identity call on this branch, unlike the deep one
+            # above. pandas' own copy has already run __finalize__ here, which
+            # carries all three fields, and the rebuild it falls back to is
+            # unreachable while `_constructor` returns baseTs. Both spellings
+            # were tried and neither could be made to fail a test, so neither
+            # is shipped: an unpinned line that reads as a safeguard is how a
+            # later reader comes to trust something that was never doing
+            # anything. The deep branch differs because it constructs its
+            # object from bare arrays, where nothing has finalized anything.
             return copied
 
     def apply_function(self, func, *args, inplace=False, **kwargs) -> "baseTs":
