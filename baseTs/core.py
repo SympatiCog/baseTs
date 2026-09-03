@@ -2016,8 +2016,8 @@ class baseTs(TimeSeriesData):
 
         Raises:
             ValueError: If the sampling frequency is not usable (NaN, zero, or
-                negative), if the data contains NaN or Inf, or if the window
-                function is unknown
+                negative), if the data is complex or contains NaN or Inf, or
+                if the window function is unknown
         """
         from scipy import signal
 
@@ -2095,8 +2095,8 @@ class baseTs(TimeSeriesData):
             Single peak frequency (if num_pks=1) or list of peak frequencies
 
         Raises:
-            ValueError: If the sampling frequency is not usable, or if the data
-                contains NaN or Inf. Fill gaps first, e.g. with
+            ValueError: If the sampling frequency is not usable, if the data is
+                complex, or if it contains NaN or Inf. Fill gaps first, e.g. with
                 interpolate_gaps() - an FFT over data containing NaN returns an
                 all-NaN spectrum, from which any peak is meaningless.
 
@@ -2338,7 +2338,8 @@ class baseTs(TimeSeriesData):
 
         Raises:
             ValueError: If the sampling rate is unusable (NaN, zero or negative),
-                if the data contains NaN or Inf, if `window` names an unknown
+                if the data is complex or contains NaN or Inf, if `window`
+                names an unknown
                 window function, if `min_rate`/`max_rate` is not a real finite
                 scalar (`max_rate` also takes NaN, its "use Nyquist" sentinel),
                 if [min_rate, max_rate] selects no frequency bins, or if

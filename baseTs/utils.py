@@ -119,6 +119,33 @@ def validate_sampling_freq(freq: Any) -> float:
         raise ValueError(f"Invalid sampling frequency: {freq} Hz.{hint}")
     return value
 
+def _complex_data_message(dtype: Any) -> str:
+    """The rejection text for complex sample values (issue #43).
+
+    Names the reason (one-sided spectra presume real input) and the remedy
+    (pick a real projection explicitly), because the obvious fix - taking
+    the real part on the caller's behalf - is what relative_band_power used
+    to do silently, and is what this rejection exists to stop.
+    """
+    return (
+        f"Time series data is complex: dtype '{dtype}'. The spectral "
+        f"functions return one-sided spectra, keeping only non-negative "
+        f"frequencies on the strength of a symmetry that real input has and "
+        f"complex input does not - so the discarded half would be real "
+        f"content, not a mirror. Pass the real projection you mean "
+        f"explicitly, e.g. `values.real`, `values.imag` or `np.abs(values)`."
+    )
+
+
+def _converts_to_complex(arr: Any) -> bool:
+    """Whether an array that failed the float cast is complex in disguise."""
+    try:
+        np.asarray(arr, dtype=complex)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def validate_finite_data(data: Any) -> None:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
@@ -143,7 +170,8 @@ def validate_finite_data(data: Any) -> None:
         data: The sample values to check, as any array-like
 
     Raises:
-        ValueError: If the data contains NaN or Inf, or is not numeric
+        ValueError: If the data contains NaN or Inf, is complex, or is not
+            numeric
     """
     arr = np.asarray(data)
 
@@ -192,12 +220,26 @@ def validate_finite_data(data: Any) -> None:
             f"rather than NaN, which this check would then accept."
         )
 
+    # Complex is a dtype rejection, not a value one, so it comes before the
+    # finiteness check: a complex array with a NaN in it would otherwise be
+    # told to fill its gaps and then be rejected again for its dtype.
+    #
+    # Every consumer of this guard returns a one-sided spectrum - the
+    # non-negative bins only - which is correct for real input because the
+    # negative half is its mirror. Complex input has no such symmetry, so the
+    # discarded half is genuine content. Before #43 the entry points handled
+    # that in two different silent ways: relative_band_power cast to float
+    # and kept the real part under a ComplexWarning, while the others fed the
+    # complex data to np.fft.fft and threw away the negative half - which,
+    # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
+    # for a 0.05 Hz probe with no warning at all.
+    if arr.dtype.kind == "c":
+        raise ValueError(_complex_data_message(arr.dtype))
+
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
-    # arrays. Complex is left alone deliberately: np.isfinite handles it, and
-    # a float cast would reject it outright, which would be a behaviour change
-    # rather than the guard this function exists to add.
-    if arr.dtype.kind not in "fc":
+    # arrays.
+    if arr.dtype.kind != "f":
         try:
             arr = np.asarray(arr, dtype=float)
         except (TypeError, ValueError) as exc:
@@ -205,6 +247,12 @@ def validate_finite_data(data: Any) -> None:
             # docstring makes, the same way validate_sampling_freq does.
             # arr is unchanged here - the failed assignment above leaves the
             # original bound, so this reports the caller's dtype, not float.
+            #
+            # An object array of complex numbers fails the float cast too,
+            # and deserves the complex message rather than "not numeric": the
+            # caller has complex data, and the remedy is the one above.
+            if _converts_to_complex(arr):
+                raise ValueError(_complex_data_message(arr.dtype)) from exc
             raise ValueError(
                 f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
                 f"be interpreted as real numbers."
@@ -339,8 +387,8 @@ def compute_fft_power(
         Tuple of (frequencies, power_spectrum)
 
     Raises:
-        ValueError: If the time series is empty, has an invalid frequency, or
-            contains NaN or Inf values
+        ValueError: If the time series is empty, has an invalid frequency, is
+            complex, or contains NaN or Inf values
     """
     # Input validation
     if len(ts.data) == 0:
@@ -531,7 +579,8 @@ def relative_band_power(
 
     Raises:
         ValueError: If the band is invalid, exceeds Nyquist, is narrower than
-            the frequency resolution, if the data contains NaN/Inf, or if the
+            the frequency resolution, if the data is complex or contains
+            NaN/Inf, or if the
             signal has no spectral power outside DC
 
     Examples:
