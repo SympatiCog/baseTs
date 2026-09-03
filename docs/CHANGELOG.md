@@ -54,6 +54,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — USER_GUIDE Example 4 runs to completion (#44)
+
+### Fixed — two defects in `scientific_time_series_analysis`, one masking the other
+
+The worked example under *Example 4: Scientific Data Analysis* could not run.
+`bandpass_at(hp_hz=0.1, lp_hz=50.0)` at the example's own
+`sampling_rate=100` put the upper edge exactly at Nyquist, which
+`validate_band_params` rejects as it should, so the pipeline raised
+`InvalidParameterError` before reaching the feature extraction. Had it got
+there, the `spectral_features` dict literal referenced itself
+(`spectral_features['spectral_centroid']` inside the literal that binds the
+name) and would have raised `UnboundLocalError`. The upper edge is now 40 Hz
+with a comment naming the constraint, and the centroid is computed before
+the dict is built.
+
+Neither is a library change. Both surfaced while fixing #28, which touched a
+different line of the same example - the `quality_score < 0.95` branch - and
+were filed rather than folded in.
+
+**Pinned by executing the document.** A new
+`tests/unit/test_user_guide_examples.py` extracts the example from
+`docs/USER_GUIDE.md` by its heading and runs it, so the document stays the
+source of truth; a copy pasted into a test would pin the copy, and the two
+would drift the way the spectral guards had before #28. Each fix was checked
+by reverting it alone and watching the test fail with that defect's error.
+
+**Filed rather than folded in:** #69. Executing every fenced Python block in
+`docs/` the same way, sequentially per file, fails 45 of 108. Most of
+`API_SERIES.md` is fragments with no setup, but the rest is real rot - keyword
+arguments that no longer exist, a removed method, pandas frequency aliases
+rejected by 3.x, and eleven `API.md` blocks written against the old attribute
+API. That is a sweep of its own, with the harness shape already in place.
 ## [Unreleased] — the spectral family rejects complex data (#43)
 
 ### Fixed — `relative_band_power` silently truncated complex data to its real part

@@ -611,7 +611,8 @@ def scientific_time_series_analysis(experimental_data, metadata):
         cleaned = ts
     
     # Signal processing
-    filtered = cleaned.bandpass_at(hp_hz=0.1, lp_hz=50.0)
+    # lp_hz must be strictly below Nyquist (sampling_rate / 2 = 50 Hz here).
+    filtered = cleaned.bandpass_at(hp_hz=0.1, lp_hz=40.0)
     normalized = filtered.zscale()
     
     # Feature extraction
@@ -625,10 +626,11 @@ def scientific_time_series_analysis(experimental_data, metadata):
     
     # 2. Frequency-domain features
     freqs, power = normalized.get_frequency_content(window='hann')
+    centroid = np.sum(freqs * power) / np.sum(power)
     spectral_features = {
         'peak_frequency': freqs[np.argmax(power)],
-        'spectral_centroid': np.sum(freqs * power) / np.sum(power),
-        'spectral_bandwidth': np.sqrt(np.sum(((freqs - spectral_features['spectral_centroid'])**2) * power) / np.sum(power))
+        'spectral_centroid': centroid,
+        'spectral_bandwidth': np.sqrt(np.sum(((freqs - centroid) ** 2) * power) / np.sum(power))
     }
     
     # 3. Statistical features
