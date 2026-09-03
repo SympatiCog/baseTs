@@ -2123,11 +2123,14 @@ class baseTs(TimeSeriesData):
         This is the quantity behind fractional amplitude of low-frequency
         fluctuations (fALFF) and its EEG/HRV cousin, relative band power.
 
-        The band defaults to 0.01-0.1 Hz, the standard low-frequency band
-        for resting-state fMRI, heart-rate variability and other autonomic
-        fluctuation measures. Pass both edges to measure a different band.
-        The default does not relax the constraints below: the series still
-        has to be sampled above 0.2 Hz and last at least 100 s.
+        The band defaults to 0.01-0.1 Hz, the low-frequency band of
+        resting-state fMRI (Zou et al., 2008) and a common choice for other
+        slow physiological fluctuations. It is not the only convention: the
+        HRV literature's LF band, for one, is 0.04-0.15 Hz. Pass both edges
+        to measure a different band. The default does not relax the
+        constraints below: the upper edge still has to sit at or below
+        Nyquist, so a series sampled below 0.2 Hz raises, and at least one
+        FFT bin still has to fall inside the band.
 
         The two conventions are not interchangeable:
 
@@ -2166,7 +2169,7 @@ class baseTs(TimeSeriesData):
             # Fraction of variance in the default 0.01-0.1 Hz band
             ts.detrend('linear').relative_band_power()
 
-            # A different band
+            # A different band, here the HRV low-frequency band
             ts.relative_band_power(0.04, 0.15)
 
             # Classic fALFF convention (or use falff(), which defaults to it)

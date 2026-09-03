@@ -58,12 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — `low_freq=0.01, high_freq=0.1` on `relative_band_power`
 
-`ts.relative_band_power()` now measures 0.01-0.1 Hz, the standard
-low-frequency band for resting-state fMRI, heart-rate variability and other
-autonomic fluctuation measures. Before, both edges were required and every
-call in these domains spelled out the same two numbers; `falff()` already
-defaulted to them. The `utils` function and the `baseTs` method both gained
-the defaults.
+`ts.relative_band_power()` now measures 0.01-0.1 Hz, the low-frequency band
+of resting-state fMRI (Zou et al., 2008) and a common choice for other slow
+physiological fluctuations. Before, both edges were required and every call
+in that domain spelled out the same two numbers; `falff()` already defaulted
+to them. The `utils` function and the `baseTs` method both gained the
+defaults. The docstrings say it is one convention among several and name
+the HRV literature's 0.04-0.15 Hz LF band as the example of another, since
+the issue's own rationale listed HRV and the two bands are not the same.
 
 Not a breaking change. Every existing call passes the edges explicitly, by
 position or keyword, and those calls are unaffected; the new tests assert
@@ -75,9 +77,14 @@ The convention split with `falff()` is unchanged and deliberate: a bare
 differ *only* in that default, and their docstrings say so.
 
 The default does not relax the constraints. A series sampled below 0.2 Hz
-puts the default upper edge above Nyquist, and one shorter than 100 s cannot
-resolve the lower edge; both raise the same `ValueError` an explicit call
-would, and the message carries the edge the caller never typed.
+puts the default upper edge above Nyquist and raises the same `ValueError`
+an explicit call would, with the edge the caller never typed in the message.
+The duration constraint is weaker than the docstring's 100 s precondition
+suggests: that figure is what it takes to give the 0.01 Hz edge a bin of
+its own, but the call only refuses when *no* bin lands in the band, which
+for a decade-wide band happens below roughly 10 s. Review caught the first
+draft of this entry claiming a raise at 100 s; a 20 s series at 1 Hz
+succeeds.
 
 **Pinned against drift.** The band now lives in four signatures with
 nothing tying them together at runtime, so

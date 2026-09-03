@@ -939,3 +939,19 @@ def test_default_band_above_nyquist_names_the_default_edge():
     with pytest.raises(ValueError) as explicit:
         relative_band_power(ts, 0.01, 0.1)
     assert str(bare.value) == str(explicit.value)
+
+
+def test_default_band_needs_a_bin_in_it_not_100_s():
+    """
+    The docstring's "100 s" precondition is what gives the 0.01 Hz edge a
+    bin of its own; it is not where the call refuses. The guard fires only
+    when *no* bin lands in [0.01, 0.1], so a 20 s series succeeds, and a
+    rate of exactly 0.2 Hz (Nyquist == the default upper edge) succeeds
+    too. Review caught a first draft claiming a raise at both.
+    """
+    np.random.seed(1)
+    for n, fs in ((20, 1.0), (20, 0.2)):
+        ts = baseTs(np.random.randn(n), np.arange(n) / fs, freq=fs)
+        res = relative_band_power(ts, details=True)
+        assert res.n_band_bins >= 1
+        assert 0.0 < res.ratio <= 1.0
