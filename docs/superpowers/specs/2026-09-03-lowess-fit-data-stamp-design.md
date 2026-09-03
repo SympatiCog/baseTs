@@ -3,10 +3,11 @@
 Date: 2026-09-03
 Issue: #40
 Branch: `fix/lowess-fit-data-stamp`
-Baseline: `main` @ `dbef680`, measured on pandas 3.0.1/numpy 2.5.2
+Baseline: `main` @ `dbef680`, measured on pandas 3.0.1/numpy 2.5.2,
+pandas 2.3.3/numpy 1.26.4 and pandas 2.3.3/numpy 2.2.6
 
-Revision 1, before the `consensus-review` panel round. What that round
-changes will be recorded in "What the review changed" at the end.
+Revision 2, after a `consensus-review` panel round (codex + agy). What that
+round changed is recorded in "What the review changed" at the end.
 
 ## Problem
 
@@ -25,22 +26,28 @@ valid fit and one outlier position:
 |---|---|---|---|---|
 | `ts.data = noise` | yes | yes | **kept** | **kept** |
 | `ts.iloc[3] = 5.0`, `ts[label] = 9.0` | yes | yes | **kept** | **kept** |
+| `ts.values[:] = 0` (pandas 2.x only; raises on 3.x) | yes | yes | **kept** | **kept** |
 | `ts += 1.0` | yes | yes | **kept** | **kept** |
 | `sg_filter()`, `detrend('linear')`, `lowpass_filter(1.0)`, `zscale()`, `apply_function(np.abs)` | yes | yes | **kept** | **kept** |
 | `ts * 2.0`, `rolling(5).mean()` | yes | yes | **kept** | **kept** |
-| `ts + 0.0`, `copy()`, `rolling(1).mean()`, `clip(-1, 1)` on data already inside that range, `fillna(0, inplace=True)` on data without NaN | no | yes | kept | kept |
+| `ts + 0.0`, `copy()`, `rolling(1).mean()` | no | yes | kept | kept |
+| `clip(-1, 1)` on data already inside that range | no | yes | kept | kept |
+| `fillna(0, inplace=True)`, `interpolate_gaps()`, `interpolate_gaps(inplace=True)` on data without NaN | no | yes | kept | kept |
 
-Thirteen of the eighteen operations tried change the values and keep both
-fields. The issue's table names four. The five that keep both *correctly*
-are the ones whose values happen to come out equal, and they matter because
-they are what separates "the data changed" from "a method was called": the
-rule below must keep those five and drop the thirteen.
+Eighteen operations were tried on pandas 3.0.1. Eleven change the values and
+keep both fields (the `ts.values[:]` row is a twelfth on pandas 2.3.3, where
+that door is open). The issue's table names four. The seven that keep both
+*correctly* are the ones whose values happen to come out equal, and they
+matter because they are what separates "the data changed" from "a method was
+called": the rule below must keep those seven and drop the eleven.
 
 `ts.values[:] = 0` raises `ValueError: assignment destination is read-only`
 on pandas 3.0 (copy-on-write), so that door is closed on 3.x by pandas
-itself. It is open on pandas 2.x. Either way it is the shape of door #20's
-lesson is about: a write to the block's own array passes through nothing
-this package defines, so no write-side hook can see it.
+itself. **Measured open on pandas 2.3.3** with both numpy majors: the write
+lands, the data reads back as all zeros, and the fit is still there. It is
+the shape of door #20's lesson is about: a write to the block's own array
+passes through nothing this package defines, so no write-side hook can see
+it.
 
 ### Why this is a separate decision from #20, and what the issue left open
 
@@ -95,23 +102,28 @@ values, which every one of those doors changes.
 
 ### The comparison
 
-The snapshot is stored as a `pd.Index` built from a copy of the values, and
+Both sides go through `to_numpy()`. The snapshot is
+`pd.Index(np.array(self.to_numpy(), copy=True))`, taken by the setter, and
 the check is `stamped.equals(pd.Index(self.to_numpy()))`. Three reasons,
-each measured on the throwaway spike that chose it:
+each measured on the throwaway spike that chose it, on pandas 3.0.1 and
+re-measured on 2.3.3 with both numpy majors (identical results):
 
 - **It cannot be mutated.** `pd.Index` is immutable, so the snapshot cannot
   be written into by a later in-place operation and silently start agreeing
   with whatever the data became. A read-only numpy array was the
-  alternative; its `writeable` flag does not survive pickling and
-  `np.array_equal` raises on object dtypes.
+  alternative; its `writeable` flag does not survive pickling.
 - **Its equality is the right one.** `Index.equals` treats NaN as equal to
   NaN in the same position, so a series with gaps compares equal to itself;
   it compares values rather than dtypes, so `float32` against `float64` of
-  the same numbers is equal, `1.0` against `1` is equal, and nullable
-  `Float64` against `float64` with the NA in the same place is equal; and it
-  handles object, complex, datetime and boolean values without raising.
-  `Series.equals` is dtype-strict on all three of those; `np.array_equal`
-  raises on object dtype and cannot see `pd.NA`.
+  the same numbers is equal and `1.0` against `1` is equal; and it handles
+  object, complex, tz-aware datetime, boolean and empty values without
+  raising. A nullable `Float64` series compares equal to its own snapshot
+  because `to_numpy()` materialises both sides the same way (as an object
+  array holding `pd.NA`, or a float array holding NaN, depending on the
+  pandas version - the same on both sides either way). `Series.equals` is
+  dtype-strict, so a `float32` cast would drop the fit; `np.array_equal`
+  cannot compare arrays holding `pd.NA` (it raises `TypeError: boolean
+  value of NA is ambiguous`).
 - **Its cost is the cost of reading the value.** 0.5 ms per read on a
   million samples, 40 µs on two hundred. `Index.equals` on the index is
   already O(n) on a derived object's first read, and hashing the values
@@ -124,6 +136,12 @@ each measured on the throwaway spike that chose it:
 `-0.0` equals `0.0` under this comparison and a NaN with a different payload
 equals a NaN. Both are values-equal, so both keep the fit, which is right: a
 fit of `x` is a fit of `-0.0` where `x` was `0.0`.
+
+The copy is shallow. For an object-dtype series holding mutable elements,
+the snapshot and the live values share those elements, and mutating one in
+place would leave the check passing. No baseTs series holds such values in
+any documented use, and `Index.equals` on object dtype compares by `==`, so
+this is noted rather than defended against.
 
 ### Order of checks
 
@@ -151,26 +169,52 @@ until one of them is assigned a new fit.
 
 ### Pickles written before this change
 
-A blob on disk holds two-element pairs. `__setstate__` completes each pair
-into a triple by stamping it with the unpickled object's own values. That is
-exactly what the setter would have recorded had it existed when the fit was
-assigned, and the blob's data and fit were serialised together, so an object
-comes back in the state it was pickled in: a fit that was valid then is valid
-now, and a fit that was already stale under #40's defect stays exactly as
-stale as it was. Dropping the pair instead would silently lose every fit in
-every existing pickle to fix a defect most of them do not have.
+A blob on disk holds one of three shapes in each slot, and `__setstate__`
+completes every one to the triple:
 
-The same door already heals `_name` for #39, so this is a second branch in a
-method that exists for this purpose, not a new mechanism.
+| written | slot holds | completion |
+|---|---|---|
+| before #20 | the bare fit array or positions list, or `None` | stamped against the unpickled object's index and values |
+| #20 to now | `(value, index)` | index kept, stamped against the unpickled object's values |
+| from now on | `(value, index, values)` | left alone |
+
+The shape test is on type and length, not on length alone: a two-sample
+bare fit array is not a pair. The pre-#20 shape is a pre-existing defect on
+its own - the #20 getter unpacks the slot as a pair and raises on a bare
+array - and is folded in because the same door and the same rule cover it.
+
+What completion means, stated honestly: a legacy blob carries no evidence
+of whether its fit still described its values when it was written. The
+completion accepts the pairing the blob holds, so a fit that was stale
+under #40's defect at pickling time reads as valid after unpickling, where
+the same object kept in memory would read `None`. The alternative is to
+drop every legacy fit to fix a defect most of them do not have. The rule
+applies from the moment of unpickling: the next change to the values reads
+`None` like any other.
+
+The same door already heals `_name` for #39, so this is a second branch in
+a method that exists for this purpose, not a new mechanism. The `_metadata`
+shadow deletion runs first and the completion after, so both heals read the
+class's registry.
 
 ### Producers
 
-No change to `filter_outliers`, `lowess_detrend` or the constructor. All
-three assign the fit after the data, so the stamp records the data they
-leave behind. `filter_outliers(qcplot=True)` assigns the fit onto a
-pre-filter copy, so the QC plot's fit is stamped against the original
-values it is drawn over - the one place the pairing is between a fit and
-the very data it was computed from.
+`filter_outliers` and the constructor assign the slots after the data, so
+the stamp records the data they leave behind; neither changes.
+`filter_outliers(qcplot=True)` assigns the fit onto a pre-filter copy, so
+the QC plot's fit is stamped against the original values it is drawn over -
+the one place the pairing is between a fit and the very data it was computed
+from.
+
+`lowess_detrend` changes in one line. Its docstring promises that
+`outlier_indices` is "left alone: detrending is not filtering", and on
+`main` the positions do survive it. Under the rule they would not: it
+assigns new values and never re-touches the positions. So it re-asserts
+them after assigning the data - a copy of the source's readable positions,
+or `None` if the source had none - and its promise stays true. This is what
+a producer is for: the rule decides what a *derivation* keeps, and a method
+that knows the positions still describe its result says so by stamping
+them. `is_outlier_filtered` needs nothing; it is a flag.
 
 The copying discipline from #20 gains a second reason. Copying a slot
 through the public name would re-stamp it with the receiving object's index
@@ -180,10 +224,13 @@ and `_copy_metadata_from_basetseries` copy the private slots, and
 
 ### What is deliberately not done
 
-- **No per-transform judgement.** `sg_filter`, `lowpass_filter` and the
-  rest do not decide whether the parent's fit "still applies". They change
-  the values, so the fit reads `None`, whatever the transform was. A rule
-  that could be argued per method could not be checked.
+- **No per-transform judgement on derivations.** `sg_filter`,
+  `lowpass_filter` and the rest do not decide whether the parent's fit
+  "still applies". They change the values, so the fit reads `None`, whatever
+  the transform was. A rule that could be argued per method could not be
+  checked. `lowess_detrend` is not an exception to this: it is a producer
+  re-stamping a slot, which is the mechanism working, not a carve-out from
+  it.
 - **`outlier_indices` is not treated differently from `lowess_fit`.** One
   could argue the positions are a record of what was removed and survive a
   values change that the fit does not. Two mechanisms for two fields that
@@ -201,12 +248,14 @@ and `_copy_metadata_from_basetseries` copy the private slots, and
 All are the rule doing what it says; none is incidental.
 
 - **Every derivation that changes values on an unchanged index now reads
-  `lowess_fit` and `outlier_indices` as `None`.** The thirteen operations in
+  `lowess_fit` and `outlier_indices` as `None`.** The eleven operations in
   the table, and any other. `filter_outliers(inplace=True)` followed by
   `interpolate_gaps(inplace=True)` on data that had pre-existing gaps loses
   both; on data without gaps the interpolation changes nothing and both
   survive. Code that reads either field after a further transform must read
   it before, or from the filtered object.
+- **`lowess_detrend` keeps `outlier_indices`, as documented**, by
+  re-stamping it. Its `lowess_fit` is the trend it removed, as before.
 - **Restoring an index no longer resurrects a fit for different data.** The
   wrinkle `_positional_property`'s docstring records - a fit made readable
   again by putting the old index back after the values changed - is gone,
@@ -219,8 +268,20 @@ All are the rule doing what it says; none is incidental.
   the fit it validates, which is one float per sample.
 - **`copy(deep=True)` is unchanged in cost.** The snapshot is shared, not
   copied.
-- **Pickles grow** by the snapshot, and pre-existing pickles load with
-  their fits intact under the rule above.
+- **Pickles grow** by the snapshot, and pre-existing pickles of every shape
+  load with their fits readable under the completion rule above.
+
+## Documentation
+
+`docs/API_SERIES.md` lines 421-485 document the #20 rule and say that
+scalar arithmetic, `sg_filter` and `rolling` keep both fields, which the
+new rule reverses for the value-changing cases. That section is rewritten
+around the triple; the two "consequences" bullets change (the index-revert
+wrinkle is gone; the in-place-mutation limitation remains and now covers
+values too). `_positional_property`'s docstring, the comment above the two
+property definitions, `__finalize__`'s docstring and the `times` setter's
+comment all say "pair" and are updated. `docs/CHANGELOG.md` gains an
+Unreleased section naming the behaviour changes and the migration.
 
 ## Testing
 
@@ -229,16 +290,17 @@ All are the rule doing what it says; none is incidental.
 
 - **The issue's reproduction** as written: `ts.data = noise` on an unchanged
   index reads both as `None`.
-- **Every operation in the table**, parametrised, asserting the thirteen
-  drop both and the five keep both. The five are the discriminating half:
+- **Every operation in the table**, parametrised, asserting the eleven
+  drop both and the seven keep both. The seven are the discriminating half:
   a rule that fired on "a method was called" would fail them.
 - **Doors past every hook**: `ts.iloc[3] = x`, `ts[label] = x`,
   `ts.values[...] = x` where pandas allows it (skipped with a reason on
   copy-on-write), `fillna(inplace=True)` on data with gaps, `ts += 1`.
 - **The pairing is what the producer left behind**: `filter_outliers` and
-  `lowess_detrend` results, both `inplace` values, read a non-`None` fit,
-  and `filter_outliers(qcplot=True)` draws the fit trace. Pins the ordering
-  the issue was worried about.
+  `lowess_detrend` results, both `inplace` values, read a non-`None` fit;
+  `lowess_detrend` on a filtered source keeps `outlier_indices` equal to the
+  source's and not the same list; `filter_outliers(qcplot=True)` draws the
+  fit trace. Pins the ordering the issue was worried about.
 - **The stamp is a copy**: mutating the object's values after stamping does
   not mutate the snapshot (`ts._lowess_fit[2]` still equals the original).
 - **Reading is pure**: a stale read does not clear the slot; reading one
@@ -247,9 +309,11 @@ All are the rule doing what it says; none is incidental.
 - **Values equality semantics**: NaN-in-the-same-place equal; `float32`
   cast of exactly representable values equal; a one-sample change unequal;
   object and nullable dtypes do not raise.
-- **Legacy pickles**: a blob built with two-element slots (constructed by
-  hand, the way #39's test builds a `_name`-less blob) loads with the fit
-  readable and the slot completed to a triple.
+- **Legacy pickles, all three shapes**: blobs built by hand (the way #39's
+  test builds a `_name`-less blob) with a bare array, a pair, and `None` in
+  the slot load with the fit readable and the slot completed to a triple;
+  a two-sample bare array is completed as a bare array, not unpacked as a
+  pair.
 - **Laundering, on the values axis**: `_create_new_with_data` carries the
   parent's snapshot object verbatim (`is`), using `copy()` as the
   discriminating derivation - it has its own `Index` object and equal
@@ -257,25 +321,34 @@ All are the rule doing what it says; none is incidental.
   re-stamped it. `sg_filter` played that role in #20's test and cannot any
   more, because its result correctly reads `None`.
 
-In `test_derived_lowess_invalidation.py`, eight tests pin the old rule
-("values changed, index unchanged, both kept"). They are rewritten, not
-deleted: each keeps its purpose - that the *index* rule does not fire on an
-unchanged index - and does it with a values-preserving operation
-(`+ 0.0`, `rolling(1).mean()`, `clip` inside the data's range, a
-same-length assignment of equal values, `+= 0.0`), while its former
-values-changing operation moves to the new file as a drop case.
+In `test_derived_lowess_invalidation.py`, eleven tests pin the old rule
+("values changed, index unchanged, both kept"), at lines 82, 101, 146, 343,
+384, 417, 477, 525, 532, 565 and 576 on `main`. Three of them
+(`test_appending_through_a_derived_object_leaves_the_parent_alone`,
+`test_appending_through_a_create_new_with_data_result`,
+`test_an_array_valued_outlier_record_is_detached_too`) would not fail an
+assertion but raise, because they call `.append()` or index-assign on a
+result that now reads `None`. All eleven are rewritten, not deleted: each
+keeps its purpose - that the *index* rule does not fire on an unchanged
+index, or that a surviving list is not shared - and does it with a
+values-preserving operation (`+ 0.0`, `rolling(1).mean()`, `clip` inside
+the data's range, a same-length assignment of equal values, `+= 0.0`,
+`copy()`), while its former values-changing operation moves to the new file
+as a drop case.
 
-Mutation testing on the getter and on `_drop_stale_positional_metadata`, as
-on the previous two branches: delete the values check, invert it, compare
-without copying, and confirm a test fails for each.
+Mutation testing on the getter, on `_drop_stale_positional_metadata` and on
+`__setstate__`'s completion, as on the previous two branches: delete the
+values check, invert it, compare without copying, complete a pair without
+the values, and confirm a test fails for each.
 
 ## Risk register
 
-- **Version matrix.** `Index.equals` semantics for NaN, nullable NA and
-  object dtype were measured on pandas 3.0.1 only. `array_equivalent`
-  underlies it on both majors and has since 1.x, but the full suite must run
-  on pandas 2.3.3 (numpy 1.26 and 2.x) as before, and the `ts.values[...]`
-  door must be exercised there, where it is open.
+- **Version matrix - partly discharged.** `Index.equals` semantics for NaN,
+  nullable NA, object, complex, tz-aware datetime, bool and empty values
+  were measured identical on pandas 3.0.1, 2.3.3/numpy 1.26.4 and
+  2.3.3/numpy 2.2.6, and the `ts.values[...]` door was measured open on
+  both 2.3.3 environments. The full suite (1114 passed on all three at the
+  branch baseline) must run on all three after implementation.
 - **Read cost in tight loops.** A caller reading `lowess_fit` per iteration
   over a large series pays O(n) per read. No such loop exists in the package
   or its docs; `qc_plot` and `plot` read once. Noted in the CHANGELOG.
@@ -291,4 +364,37 @@ without copying, and confirm a test fails for each.
 
 ## What the review changed
 
-To be written after the panel round.
+The panel (codex + agy) returned seven findings; all seven were verified
+against `main` and all seven changed this document. None changed the
+mechanism.
+
+- **Both models: legacy pickles have three shapes.** Revision 1 completed
+  "the pair" and never said what a pre-#20 blob holds, which is a bare
+  array the #20 getter cannot even unpack. Now a table of all three shapes,
+  a type-and-length test, and the pre-#20 shape folded in as pre-existing.
+- **Both models: three of the affected tests raise rather than fail.**
+  Revision 1 said the old-rule tests would be "rewritten"; it did not say
+  that `.append()` on a `None` is an `AttributeError`. Named now.
+- **codex: the "stays exactly as stale" claim was false.** Completing a
+  legacy pair against the unpickled object's live values makes *every*
+  legacy fit read valid, including one that was stale at pickling time.
+  The decision stands - dropping every legacy fit is worse - but the text
+  now says what the completion actually does and why.
+- **codex: `lowess_detrend` promises to leave `outlier_indices` alone.**
+  Revision 1 did not check that method against the rule; on `main` the
+  positions survive detrending and the docstring says they must. It now
+  re-stamps them after assigning the data, and the spec explains why that is
+  the mechanism rather than an exception to it.
+- **codex: the operation count did not match the table.** "Thirteen of
+  eighteen" was wrong; the table now lists all eighteen and the counts are
+  eleven and seven.
+- **codex: the nullable `Float64` claim was wrong as written.**
+  `pd.Index(Float64 array).equals(pd.Index(float64 array))` is `False`; the
+  mechanism holds only because both sides go through `to_numpy()`, which
+  the text now says. The `np.array_equal` claim was likewise narrowed to
+  what was measured.
+- **codex: eleven old-rule tests, not eight.** Three were missed on manual
+  inspection (`rolling(5).mean()`, the same-length zeros assignment, the
+  array-valued detachment test). Listed by line now.
+- **codex, minor:** the `API_SERIES.md` rewrite was missing from the plan
+  (now a section), and the shallow-copy caveat for object dtype is stated.
