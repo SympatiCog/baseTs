@@ -803,14 +803,19 @@ peak = ts.get_peak_freq(window='blackman', min_freq=1.0, max_freq=50.0)  # Retur
 peak_with_dc = ts.get_peak_freq(min_freq=0.0)  # May return 0.0 if DC is strongest
 ```
 
-### `relative_band_power(low_freq, high_freq, ratio='power', window=None, details=False)`
+### `relative_band_power(low_freq=0.01, high_freq=0.1, ratio='power', window=None, details=False)`
 
 Compute the relative power (or amplitude) in a frequency band — the quantity behind fractional
 amplitude of low-frequency fluctuations (fALFF) and relative band power in EEG/HRV work.
 
+The band defaults to 0.01–0.1 Hz, the standard low-frequency band for resting-state fMRI, heart-rate
+variability and other autonomic fluctuation measures, so the common case is a bare call. Pass both
+edges to measure a different band. The default does not relax the preconditions below: the series
+still has to be sampled above 0.2 Hz and last at least 100 s.
+
 **Parameters:**
-- `low_freq` (float): Lower band edge in Hz (inclusive)
-- `high_freq` (float): Upper band edge in Hz (inclusive)
+- `low_freq` (float, optional): Lower band edge in Hz (inclusive). Default: 0.01
+- `high_freq` (float, optional): Upper band edge in Hz (inclusive). Default: 0.1
 - `ratio` (str, optional): `'power'` (variance fraction, default) or `'amplitude'` (classic fALFF)
 - `window` (str, optional): Window function to apply ('hann', 'hamming', 'blackman', None)
 - `details` (bool, optional): If True, return a `BandPowerResult` breakdown. Default: False
@@ -854,26 +859,29 @@ detrended upstream.
 
 **Example:**
 ```python
-# Fraction of variance between 0.01 and 0.1 Hz
-ratio = ts.detrend('linear').relative_band_power(0.01, 0.1)  # Returns: 0.717
+# Fraction of variance in the default 0.01-0.1 Hz band
+ratio = ts.detrend('linear').relative_band_power()  # Returns: 0.717
 
-# Classic fALFF convention
-falff = ts.relative_band_power(0.01, 0.1, ratio='amplitude')  # Returns: 0.147
+# A different band
+ratio = ts.relative_band_power(0.04, 0.15)
+
+# Classic fALFF convention (or use falff(), which defaults to it)
+falff = ts.relative_band_power(ratio='amplitude')  # Returns: 0.147
 
 # Full breakdown, including the white-noise null
-res = ts.relative_band_power(0.01, 0.1, details=True)
+res = ts.relative_band_power(details=True)
 print(res.ratio, res.bin_fraction)  # 0.717 0.092  -> well above the null
 ```
 
 ### `falff(low_freq=0.01, high_freq=0.1, ratio='amplitude', window=None, details=False)`
 
 Fractional amplitude of low-frequency fluctuations. Convenience wrapper around
-`relative_band_power()` using the band and convention from Zou et al. (2008),
-*J Neurosci Methods* 172(1):137-141.
+`relative_band_power()` using the convention from Zou et al. (2008),
+*J Neurosci Methods* 172(1):137-141. Both default to the same 0.01–0.1 Hz band.
 
-Note the deliberate default split: `relative_band_power()` defaults to `ratio='power'` as the
-better-behaved general-purpose measure, while `falff()` defaults to `ratio='amplitude'` so it
-reproduces published values.
+What differs is the convention, and the split is deliberate: `relative_band_power()` defaults to
+`ratio='power'` as the better-behaved general-purpose measure, while `falff()` defaults to
+`ratio='amplitude'` so it reproduces published values.
 
 **Parameters:**
 - `low_freq` (float, optional): Lower band edge in Hz. Default: 0.01
@@ -934,7 +942,7 @@ Plot FFT power spectrum with enhanced windowing and frequency range control.
 - `show` (bool, optional): Whether to display the plot. Default: True
 - `ax` (matplotlib.axes.Axes, optional): Axes to plot on
 - `highlight_band` (tuple, optional): `(low_freq, high_freq)` in Hz to shade on the plot, e.g.
-  `(0.01, 0.1)` to mark the fALFF band alongside `relative_band_power(0.01, 0.1)`
+  `(0.01, 0.1)` to mark the default `relative_band_power()` band
 
 **Returns:**
 - `matplotlib.axes.Axes`: The plot axes

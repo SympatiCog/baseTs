@@ -360,6 +360,15 @@ class TestRelativeBandPower:
         with pytest.raises(ValueError):
             ts.relative_band_power(0.01, 99.0)
 
+    def test_bare_call_measures_the_falff_band(self):
+        """#46: the method defaults to 0.01-0.1 Hz, same as falff()."""
+        ts = self._lf_ts()
+        assert ts.relative_band_power() == ts.relative_band_power(0.01, 0.1)
+        assert ts.relative_band_power(details=True).high_freq == 0.1
+        # The band is shared; the convention split is not
+        assert ts.falff() == ts.relative_band_power(ratio='amplitude')
+        assert ts.falff() != ts.relative_band_power()
+
     def test_no_side_effects(self):
         """It is a pure measurement: no history entry, no data mutation."""
         ts = self._lf_ts()

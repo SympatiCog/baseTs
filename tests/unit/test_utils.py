@@ -871,3 +871,71 @@ def test_filters_use_the_normalised_rate():
     data = np.sin(np.arange(200) / 10.0)
     assert len(highpass_filter(data, 1.0, Decimal('30'), 4)) == 200
     assert len(lowpass_filter(data, 1.0, Decimal('30'), 4)) == 200
+
+
+# --- #46: the fALFF band is the default band ------------------------------
+
+def test_relative_band_power_defaults_to_the_falff_band(lf_baseTsObj):
+    """
+    A bare call measures 0.01-0.1 Hz. This pins the *value*, not just the
+    signature: the bare call must return exactly what the explicit call
+    returns, in both conventions and with details.
+    """
+    assert relative_band_power(lf_baseTsObj) == relative_band_power(
+        lf_baseTsObj, 0.01, 0.1)
+    assert relative_band_power(lf_baseTsObj, ratio='amplitude') == (
+        relative_band_power(lf_baseTsObj, 0.01, 0.1, ratio='amplitude'))
+
+    res = relative_band_power(lf_baseTsObj, details=True)
+    assert (res.low_freq, res.high_freq) == (0.01, 0.1)
+
+
+def test_relative_band_power_default_ratio_is_still_power(lf_baseTsObj):
+    """
+    #46 adds band defaults only. The convention split with falff() is
+    deliberate and must survive: bare relative_band_power() is the variance
+    fraction, bare falff() is the amplitude ratio, and on a peaked in-band
+    spectrum the two differ.
+    """
+    bare = relative_band_power(lf_baseTsObj)
+    assert bare == relative_band_power(lf_baseTsObj, ratio='power')
+    assert falff(lf_baseTsObj) == relative_band_power(
+        lf_baseTsObj, ratio='amplitude')
+    assert falff(lf_baseTsObj) != bare
+
+
+def test_band_defaults_agree_across_all_four_entry_points():
+    """
+    The band lives in four signatures: the two utils functions and the two
+    baseTs methods. Nothing ties them together at runtime, so this test is
+    the only thing that stops one from drifting to a different band. The
+    values are asserted literally on purpose - a shared constant would make
+    the test tautological, and the literal is what an IDE shows the caller.
+    """
+    import inspect
+    from baseTs.core import baseTs as _baseTs
+
+    for fn in (relative_band_power, falff,
+               _baseTs.relative_band_power, _baseTs.falff):
+        params = inspect.signature(fn).parameters
+        assert params['low_freq'].default == 0.01, fn.__qualname__
+        assert params['high_freq'].default == 0.1, fn.__qualname__
+
+
+def test_default_band_above_nyquist_names_the_default_edge():
+    """
+    A default only removes boilerplate; it does not remove the Nyquist
+    constraint. Below 0.2 Hz the bare call must fail the same way an
+    explicit (0.01, 0.1) call does, and the message must carry the number
+    the caller never typed, or they cannot see what was rejected.
+    """
+    fs, n = 0.1, 200  # a 10 s "TR": Nyquist is 0.05 Hz
+    t = np.arange(n) / fs
+    np.random.seed(0)
+    ts = baseTs(np.random.randn(n), t, freq=fs)
+
+    with pytest.raises(ValueError, match=r"high_freq \(0\.1 Hz\)") as bare:
+        relative_band_power(ts)
+    with pytest.raises(ValueError) as explicit:
+        relative_band_power(ts, 0.01, 0.1)
+    assert str(bare.value) == str(explicit.value)

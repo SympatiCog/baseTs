@@ -54,6 +54,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `relative_band_power` defaults to the fALFF band (#46)
+
+### Added — `low_freq=0.01, high_freq=0.1` on `relative_band_power`
+
+`ts.relative_band_power()` now measures 0.01-0.1 Hz, the standard
+low-frequency band for resting-state fMRI, heart-rate variability and other
+autonomic fluctuation measures. Before, both edges were required and every
+call in these domains spelled out the same two numbers; `falff()` already
+defaulted to them. The `utils` function and the `baseTs` method both gained
+the defaults.
+
+Not a breaking change. Every existing call passes the edges explicitly, by
+position or keyword, and those calls are unaffected; the new tests assert
+the bare call returns exactly what the explicit `(0.01, 0.1)` call returns.
+
+The convention split with `falff()` is unchanged and deliberate: a bare
+`relative_band_power()` is the variance fraction (`ratio='power'`), a bare
+`falff()` is the amplitude ratio (`ratio='amplitude'`). The two functions now
+differ *only* in that default, and their docstrings say so.
+
+The default does not relax the constraints. A series sampled below 0.2 Hz
+puts the default upper edge above Nyquist, and one shorter than 100 s cannot
+resolve the lower edge; both raise the same `ValueError` an explicit call
+would, and the message carries the edge the caller never typed.
+
+**Pinned against drift.** The band now lives in four signatures with
+nothing tying them together at runtime, so
+`test_band_defaults_agree_across_all_four_entry_points` asserts the literal
+defaults on all four. The literal is deliberate: a shared constant would
+make the test tautological, and the literal is what a caller's IDE shows.
+
 ## [Unreleased] — USER_GUIDE Example 4 runs to completion (#44)
 
 ### Fixed — two defects in `scientific_time_series_analysis`, one masking the other
