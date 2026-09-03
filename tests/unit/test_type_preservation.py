@@ -80,9 +80,13 @@ class TestMetadataPropagation:
         assert ts.iloc[0:20].outlier_indices is None
 
     def test_outlier_indices_survives_an_index_preserving_operation(self, ts):
-        """Invalidation is keyed on the index changing, not on deriving."""
+        """Invalidation is keyed on the index or values changing, not on deriving.
+
+        `+ 0.0` rather than `* 2.0`: since #40 a change of values releases
+        the record too, so the operation has to leave them alone.
+        """
         ts.outlier_indices = [3, 4, 5]
-        assert (ts * 2.0).outlier_indices == [3, 4, 5]
+        assert (ts + 0.0).outlier_indices == [3, 4, 5]
 
     def test_declared_metadata_is_actually_reachable(self, ts):
         """Every name in _metadata must exist on a constructed object."""

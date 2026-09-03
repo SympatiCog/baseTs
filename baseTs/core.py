@@ -359,9 +359,9 @@ class baseTs(TimeSeriesData):
         # outcome rather than a side effect to remember to trigger here.
         #
         # No lowess_fit/outlier_indices handling either, and for a stronger
-        # reason than freq's: they are checked against the live index when they
-        # are *read*, so there is no moment at which this setter, or any other
-        # writer, has to remember anything.
+        # reason than freq's: they are checked against the live index and the
+        # live values when they are *read* (#20, #40), so there is no moment
+        # at which this setter, or any other writer, has to remember anything.
     
     def _adopt_data_inplace(self, new_data: np.ndarray, new_index):
         """Re-initialise this object's data and index, keeping everything else.
@@ -2591,9 +2591,21 @@ class baseTs(TimeSeriesData):
 
         detrended = np.asarray(self.data, dtype=float) - lowess_fit
 
+        # Read before the data changes: the positional properties check the
+        # live values (#40), and after `target.data = detrended` the source's
+        # own record would read None on the inplace path.
+        positions = self.outlier_indices
+
         target = self if inplace else self.copy()
         target.data = detrended
         target.lowess_fit = lowess_fit
+        # Re-asserted, not left to propagate. The docstring promises the
+        # outlier record survives detrending, and since #40 a slot only
+        # survives a change of values if the producer stamps it against the
+        # values it leaves behind - which is what assigning through the
+        # property does. A copy of the list, so the two objects do not share
+        # one record; `None` when the source had none.
+        target.outlier_indices = None if positions is None else copy.copy(positions)
         target._update_history_and_process(
             hist_msg=f"Detrended with lowess fit frac={frac}",
             last_process="_lowess_detrend"

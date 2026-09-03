@@ -860,10 +860,13 @@ class TestButterpassAt:
         inputs did not span the axis the test was named for.
 
         Census of TimeSeriesData._metadata, measured rather than asserted:
-        eleven fields are seeded off their constructor default and survive
-        this call intact, and the other three (`is_filtered`, `last_process`,
-        `history`) change because changing them is the operation's own effect.
-        `_name` is the eleventh, added when the registry stopped replacing
+        nine fields are seeded off their constructor default and survive
+        this call intact, and the other five change - `is_filtered`,
+        `last_process` and `history` because changing them is the operation's
+        own effect, and `_lowess_fit` and `_outlier_indices` because the call
+        changes the values and a slot stamped against the old values is
+        released on derivation (#40; before that, eleven and three).
+        `_name` is among the nine, added when the registry stopped replacing
         pandas' own and started extending it (#35/#39). It has to be seeded
         here like any other field: left at its `None` default it would compare
         equal on both sides whatever the implementation did with it, which is
@@ -930,10 +933,14 @@ class TestButterpassAt:
     PRESERVED_BY_OP = frozenset({
         '_name',
         '_freq_declaration', 'signal_name', 'is_interpolated', 'is_uniform_grid',
-        'ts_offset', 'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
+        'ts_offset', 'has_timestamp_offset',
         'is_outlier_filtered', 'outlier_filter',
     })
-    CHANGED_BY_OP = frozenset({'is_filtered', 'last_process', 'history'})
+    # The two positional slots moved here with #40: the call changes the
+    # values, and a slot stamped against the old values is released on
+    # derivation rather than carried unreadable.
+    CHANGED_BY_OP = frozenset({'is_filtered', 'last_process', 'history',
+                               '_outlier_indices', '_lowess_fit'})
 
     def _census(self):
         """Partition _metadata by what the call does to each field."""
@@ -947,7 +954,7 @@ class TestButterpassAt:
         return source, preserved, changed
 
     def test_metadata_census_is_exactly_what_the_docs_claim(self):
-        """The 10-preserved / 3-changed split is asserted, not just described.
+        """The 9-preserved / 5-changed split is asserted, not just described.
 
         Three places quote this census in prose - _seeded's docstring,
         test_metadata_matches_bandpass_at's, and the CHANGELOG entry. Prose
@@ -967,7 +974,7 @@ class TestButterpassAt:
         ), "a field was added to or removed from _metadata; classify it here"
         assert preserved == self.PRESERVED_BY_OP
         assert changed == self.CHANGED_BY_OP
-        assert (len(preserved), len(changed)) == (11, 3)  # the quoted numbers
+        assert (len(preserved), len(changed)) == (9, 5)  # the quoted numbers
 
     def test_seeding_leaves_no_metadata_field_vacuous(self):
         """No field may sit at its default and stay there across the call.

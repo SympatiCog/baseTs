@@ -423,24 +423,45 @@ travel. They describe the samples by position, so they are dropped to `None` on
 any object whose index is not the one they were computed against (#20) — a
 slice, a `dropna`, a `resample`, a `sort_values`, arithmetic against a series
 on a different index, or an in-place `ts.times = ...`, `ts.index = ...` or
-`shift_time(inplace=True)`. Operations that leave the index alone — scalar
-arithmetic, `sg_filter`, `copy`, `rolling` — keep both, and `outlier_indices`
-is copied rather than shared so appending through a derived object cannot
-rewrite the parent's record. Unlike `freq` they cannot be re-derived on read,
-which is why the check is full index equality rather than the cheaper
-`(len, first, last)` token: an interior permutation leaves that token intact
-while moving every sample they describe.
+`shift_time(inplace=True)`. They are also dropped on any object whose
+**values** are not the ones they were assigned against (#40) — `ts.data = x`,
+`ts.iloc[i] = v`, `ts += 1`, `sg_filter`, the frequency filters, `detrend`,
+`zscale`, `apply_function`, `ts * 2`, `rolling(n > 1)`. Operations that leave
+both the index and the values alone — `copy`, `+ 0.0`, `rolling(1).mean()`,
+`clip` inside the data's range, `interpolate_gaps()` on gap-free data — keep
+both, and `outlier_indices` is copied rather than shared so appending through
+a derived object cannot rewrite the parent's record. Unlike `freq` they cannot
+be re-derived on read, which is why the index check is full index equality
+rather than the cheaper `(len, first, last)` token: an interior permutation
+leaves that token intact while moving every sample they describe.
+
+What "the values they were assigned against" means: the values on the object
+at the moment the slot was set, not the values the fit was computed from.
+`filter_outliers` computes its fit from the unfiltered data and assigns it
+after replacing the data; `lowess_detrend`'s fit is the trend it removed, and
+it re-asserts `outlier_indices` after detrending because its docstring
+promises they survive. A producer writes the data first and the slot second,
+and the stamp records what it left behind — the pairing `qc_plot` draws.
 
 The rule is enforced **on read, in one place** — the properties themselves —
-rather than at every point an index can change. `_metadata` therefore carries
-the private slots `_lowess_fit` and `_outlier_indices`, each holding
-`(value, index_it_describes)`; pandas copies that pair verbatim like any other
-metadata entry, and the property getter re-checks it against the live index on
-every access. This is the same shape as `_freq_declaration`, with one
-difference: `freq` compares a `(len, first, last)` token because those are
-exactly the three inputs its derivation reads, while these two are positional,
-so an interior permutation must invalidate them and the check is full
-`Index.equals`.
+rather than at every point an index or a value can change. `_metadata`
+therefore carries the private slots `_lowess_fit` and `_outlier_indices`, each
+holding `(value, index_it_describes, values_it_describes)`; pandas copies that
+triple verbatim like any other metadata entry, and the property getter
+re-checks it against the live index and the live values on every access. The
+values stamp is an immutable `pd.Index` built from a copy of the values, so no
+in-place write can reach into it, and `Index.equals` gives the right equality:
+NaN equals NaN in the same place, `float32` against `float64` of the same
+numbers is equal, and object or nullable values compare without raising.
+This is the same shape as `_freq_declaration`, with one difference: `freq`
+compares a `(len, first, last)` token because those are exactly the three
+inputs its derivation reads, while these two are positional, so an interior
+permutation must invalidate them and the check is full `Index.equals`.
+
+A valid read costs O(n) in the values every time — 0.5 ms per million samples,
+measured — because an in-place write keeps the array's identity while changing
+its contents, so nothing cheaper can prove the values unchanged. The index
+half has an identity fast path after the first read and is checked first.
 
 Read-time was not the first design. The write-side version needed a hook
 wherever an index could change, and that list would not close: it went from
@@ -456,28 +477,35 @@ cannot be bypassed by a path nobody thought of.
 **One invariant this depends on:** any code that copies metadata must copy the
 private slots, never the public names. Assigning through `lowess_fit` or
 `outlier_indices` runs the stamping setter, which re-stamps with the receiving
-object's index and launders a stale fit into a valid-looking one.
+object's index *and values* and launders a stale fit into a valid-looking one.
 `_create_new_with_data` had exactly that shape and names the private slots for
 this reason, as it already did for `_freq_declaration`.
 
 Two consequences of checking on read rather than destroying on write:
 
-- **Restoring an index makes the value readable again, on the object that owned
-  it.** Within this property's scope — do the samples still sit where the fit
-  says — that is correct: the positions are back. It is misleading only if the
-  *data* changed while the index was elsewhere, which is the separate defect
-  [#40](https://github.com/SympatiCog/baseTs/issues/40); stamping the data as
-  well would remove this wrinkle with it. A *derived* object behaves
-  differently and deliberately: derivation releases a value that never
-  described it, so no later revert can hand it one it never had. Reading never
-  destroys, so which of the two you get never depends on whether anyone looked
-  first.
-- **An object mutated in place to a different index keeps the old value in its
-  slot**, unread, until it is overwritten or the object is collected. Only
-  derivation releases eagerly — which is the case that matters, since it is
-  what stops a slice pinning the parent's full-length array. Closing the
-  in-place case too would need a hook at every point an index can change, which
-  is the design this replaced.
+- **Restoring the index and the values makes the fit readable again, on the
+  object that owned it.** Both stamps match again, so the samples the fit
+  describes are back where it says. Restoring only the index after the values
+  changed does not — that was the wrinkle #20 left and
+  [#40](https://github.com/SympatiCog/baseTs/issues/40) closed. A *derived*
+  object behaves differently and deliberately: derivation releases a value
+  that never described it, so no later revert can hand it one it never had.
+  Reading never destroys, so which of the two you get never depends on
+  whether anyone looked first.
+- **An object mutated in place to a different index or different values keeps
+  the old value in its slot**, unread, until it is overwritten or the object
+  is collected. Only derivation releases eagerly — which is the case that
+  matters, since it is what stops a slice, or since #40 a `sg_filter()`
+  result, pinning the parent's full-length fit and values snapshot. Closing
+  the in-place case too would need a hook at every point an index or a value
+  can change, which is the design this replaced.
+
+Pickles written before #40 hold the older slot shapes — a bare array from
+before #20, a `(value, index)` pair from between — and `__setstate__`
+completes each to the triple, stamped against the unpickled object's own
+index and values. A legacy blob carries no evidence of whether its fit still
+described its values when written; the completion accepts the pairing it
+holds, and the rule applies from then on.
 
 ### Constructor
 
