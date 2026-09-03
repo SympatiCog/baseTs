@@ -808,10 +808,10 @@ peak_with_dc = ts.get_peak_freq(min_freq=0.0)  # May return 0.0 if DC is stronge
 Compute the relative power (or amplitude) in a frequency band — the quantity behind fractional
 amplitude of low-frequency fluctuations (fALFF) and relative band power in EEG/HRV work.
 
-The band defaults to 0.01–0.1 Hz, the low-frequency band of resting-state fMRI (Zou et al., 2008)
-and a common choice for other slow physiological fluctuations, so the common case is a bare call.
-It is not the only convention: the HRV literature's LF band, for one, is 0.04–0.15 Hz. Pass both
-edges to measure a different band. The default does not relax the preconditions below: the upper
+The band defaults to 0.01–0.1 Hz, a common low-frequency band for resting-state fMRI and other slow
+physiological fluctuations, so the common case is a bare call. It is one convention among several:
+Zou et al. (2008) computed fALFF over 0.01–0.08 Hz, and the HRV literature's LF band is
+0.04–0.15 Hz. Pass both edges to measure a different band. The default does not relax the preconditions below: the upper
 edge still has to sit at or below Nyquist, so a series sampled below 0.2 Hz raises, and at least
 one FFT bin still has to fall inside the band.
 
@@ -879,7 +879,8 @@ print(res.ratio, res.bin_fraction)  # 0.717 0.092  -> well above the null
 
 Fractional amplitude of low-frequency fluctuations. Convenience wrapper around
 `relative_band_power()` using the convention from Zou et al. (2008),
-*J Neurosci Methods* 172(1):137-141. Both default to the same 0.01–0.1 Hz band.
+*J Neurosci Methods* 172(1):137-141. Both default to the same 0.01–0.1 Hz band, which is wider
+than the 0.01–0.08 Hz that paper used; pass `(0.01, 0.08)` to reproduce it.
 
 What differs is the convention, and the split is deliberate: `relative_band_power()` defaults to
 `ratio='power'` as the better-behaved general-purpose measure, while `falff()` defaults to
@@ -900,7 +901,7 @@ What differs is the convention, and the split is deliberate: `relative_band_powe
 # Classic fALFF on a detrended signal
 value = ts.detrend('linear').falff()  # Returns: 0.147
 
-# Custom band
+# The band Zou et al. (2008) used
 value = ts.falff(0.01, 0.08)
 ```
 ### `plot` — line plot, or the pandas plotting accessor

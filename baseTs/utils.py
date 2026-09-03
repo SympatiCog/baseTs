@@ -552,11 +552,11 @@ def relative_band_power(
     This is the quantity behind fractional amplitude of low-frequency
     fluctuations (fALFF) and its EEG/HRV cousin, relative band power.
 
-    The band defaults to 0.01-0.1 Hz, the low-frequency band of
-    resting-state fMRI (Zou et al., 2008) and a common choice for other slow
-    physiological fluctuations. It is not the only convention: the HRV
-    literature's LF band, for one, is 0.04-0.15 Hz. Pass both edges to
-    measure a different band. The default changes nothing about the
+    The band defaults to 0.01-0.1 Hz, a common low-frequency band for
+    resting-state fMRI and other slow physiological fluctuations. It is one
+    convention among several: Zou et al. (2008) computed fALFF over
+    0.01-0.08 Hz, and the HRV literature's LF band is 0.04-0.15 Hz. Pass
+    both edges to measure a different band. The default changes nothing about the
     constraints below: the upper edge still has to sit at or below Nyquist,
     so a series sampled below 0.2 Hz raises the same ValueError an explicit
     (0.01, 0.1) would, and at least one FFT bin still has to fall inside
@@ -740,7 +740,8 @@ def falff(
     from Zou et al. (2008), "An improved approach to detection of amplitude
     of low-frequency fluctuation (ALFF) for resting-state fMRI", J Neurosci
     Methods 172(1):137-141. Both functions default to the same 0.01-0.1 Hz
-    band.
+    band, which is wider than the 0.01-0.08 Hz that paper used; pass
+    (0.01, 0.08) to reproduce it.
 
     What differs is the convention, and the split is deliberate:
     relative_band_power() defaults to ratio='power' because the variance
@@ -767,7 +768,7 @@ def falff(
         # Classic fALFF on a detrended signal
         ts.detrend('linear').falff()
 
-        # Custom band
+        # The band Zou et al. (2008) used
         ts.falff(0.01, 0.08)
     """
     return relative_band_power(ts, low_freq, high_freq, ratio=ratio, **kwargs)
