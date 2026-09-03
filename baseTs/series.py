@@ -84,9 +84,13 @@ def _values_stamp(obj) -> pd.Index:
     boolean values compare without raising. `Series.equals` is dtype-strict
     and `np.array_equal` cannot compare arrays holding `pd.NA`.
 
-    Built from an explicit copy, because `to_numpy()` may hand back a view of
-    the block's own array, and `pd.Index` does not promise to copy what it is
-    given.
+    Built from an explicit copy, and that copy is load-bearing on pandas 2.x.
+    `to_numpy()` hands back a view of the block's own array on both majors;
+    `pd.Index` copies it on pandas 3.0 and aliases it on 2.3.3, so without
+    the copy every in-place write on 2.x would land in the snapshot too and
+    the check would pass on exactly the doors it exists to close. Measured:
+    the mutant that drops the copy survives the suite on 3.0.1 and fails six
+    tests on 2.3.3.
 
     Both sides go through `to_numpy()` - here and in _values_match - so an
     extension dtype is materialised the same way on both sides whatever that

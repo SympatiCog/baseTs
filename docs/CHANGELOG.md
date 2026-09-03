@@ -54,6 +54,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the values (#40)
+
+### Fixed — a fit survived a change of the data it described
+
+#20 made both fields read as `None` when the *index* they were computed
+against is no longer the object's index. The complement was untouched: an
+operation that replaces the *values* on an unchanged index carried the fit
+onto data it does not describe, and `qc_plot` drew the old fit over the new
+signal. Measured on `main`: `ts.data = noise`, `ts.iloc[3] = 5`, `ts += 1`,
+`sg_filter()`, `detrend()`, `lowpass_filter()`, `zscale()`, `apply_function()`,
+`ts * 2` and `rolling(5).mean()` all kept both fields. The issue names four
+of those. On pandas 2.x, `ts.values[:] = 0` is an eleventh; pandas 3.0's
+copy-on-write makes that array read-only.
+
+The positional slot now holds `(value, index, values)` - the third element a
+snapshot of the object's values taken when the slot was assigned - and the
+property getter returns the value only while *both* the live index and the
+live values still equal the stamps. Checked on read, in the getter, for the
+reason #20 established: there is no bounded list of places a value can
+change, but every one of them changes what `to_numpy()` returns.
+
+What the stamp records is **the values that were on the object when the slot
+was assigned**, not the values the fit was computed from. `filter_outliers`
+computes its fit from the unfiltered data and assigns it after replacing the
+data; `lowess_detrend`'s fit is the trend it removed. Both write the data
+first and the slot second, and the stamp records what they left behind -
+which is the pairing `qc_plot` draws.
+
+### Changed — behaviour, all of it the rule doing what it says
+
+- **Every derivation that changes values on an unchanged index reads
+  `lowess_fit` and `outlier_indices` as `None`.** Scalar arithmetic other
+  than a no-op, `sg_filter`, the frequency filters, `detrend`, `zscale`,
+  `apply_function`, `rolling(n > 1)`, an `astype` that rounds, and any
+  in-place write - `ts.data = x`, `ts.iloc[i] = v`, `ts[label] = v`,
+  `ts += x`, `fillna(inplace=True)` or `interpolate_gaps(inplace=True)` on
+  data that had gaps. Operations that leave the values equal keep both:
+  `copy()`, `+ 0.0`, `rolling(1).mean()`, `clip` inside the data's range,
+  `interpolate_gaps()` on gap-free data, a `float32` cast of representable
+  values. **Migration:** read the fit or the positions before a further
+  transform, or keep the filtered object.
+- **`lowess_detrend` keeps `outlier_indices`, as its docstring promises**, by
+  re-stamping a copy of the source's positions after assigning the detrended
+  data. Its `lowess_fit` is the trend it removed, as before.
+- **Restoring an index no longer resurrects a fit for different data.** The
+  wrinkle #20 documented - a fit made readable again by putting the old
+  index back after the values changed - is gone.
+- **Reading either property costs O(n) in the values on every read**,
+  measured at 0.5 ms per million samples on the fit's own million floats.
+  Previously O(n) in the index on the first read and O(1) after. There is no
+  fast path: an in-place write keeps the array's identity while changing its
+  contents.
+- **A stamped slot holds one extra copy of the values**, shared by reference
+  across derived objects. Comparable to the fit it validates. `copy(deep=True)`
+  is unchanged in cost - the snapshot is immutable and shared, not copied.
+- **The `butterpass_at` metadata census moves.** The two positional slots
+  are now among the fields that call changes (nine preserved, five changed;
+  before, eleven and three), because a slot stamped against the old values is
+  released on derivation rather than carried unreadable.
+
+### Fixed — a pickle written before #20 could not be read back
+
+`__getstate__` writes the slot as it stood at dump time. A blob written
+before #20 holds a bare fit array, which the #20 getter unpacked as a pair and
+raised on. `__setstate__` now completes every earlier shape to the triple:
+a bare array or list is stamped against the unpickled object's index and
+values; a #20-era `(value, index)` pair keeps its index and gains the values
+stamp; a current triple is left alone. The test is on type and length, so a
+two-sample fit array is not mistaken for a pair.
+
+Stated plainly: a legacy blob carries no evidence of whether its fit still
+described its values when it was written, and the completion accepts the
+pairing the blob holds. The alternative - dropping every legacy fit to catch
+the few that were already stale - loses more than it corrects. From the
+moment of unpickling the rule applies as to any other object.
+
 ## [Unreleased] — derived objects keep the Series `name`, `attrs` and `flags` (#35, #39)
 
 ### Fixed — the three fields pandas owns were dropped by almost every derivation
