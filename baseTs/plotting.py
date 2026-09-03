@@ -342,6 +342,7 @@ def plot_fft_power(ts,
             ValueError` covers the whole function:
 
             - the sampling rate is unusable (NaN, zero or negative)
+            - the data is complex (pass `.real`, `.imag` or `np.abs` of it)
             - the data contains NaN or Inf (fill gaps first, e.g. with
               `interpolate_gaps()`)
             - `window` names an unknown window function

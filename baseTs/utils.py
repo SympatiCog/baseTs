@@ -6,8 +6,10 @@ Created on Oct 19 2024
 """
 
 import math
+import numbers
 from dataclasses import dataclass
 from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
@@ -119,6 +121,46 @@ def validate_sampling_freq(freq: Any) -> float:
         raise ValueError(f"Invalid sampling frequency: {freq} Hz.{hint}")
     return value
 
+def _complex_data_message(what: str) -> str:
+    """The rejection text for complex sample values (issue #43).
+
+    `what` describes the offending dtype - "dtype 'complex128'", or
+    "dtype 'object' holding complex values" - so that the two spellings of
+    the same problem do not read as a contradiction.
+
+    Names the reason (one-sided spectra presume real input) and the remedy
+    (pick a real projection explicitly), because the obvious fix - taking
+    the real part on the caller's behalf - is what relative_band_power used
+    to do silently, and is what this rejection exists to stop.
+    """
+    return (
+        f"Time series data is complex: {what}. The spectral functions return "
+        f"one-sided spectra, keeping only non-negative frequencies on the "
+        f"strength of a symmetry that real input has and complex input does "
+        f"not - so the discarded half would be real content, not a mirror. "
+        f"Pass the real projection you mean explicitly, e.g. `values.real`, "
+        f"`values.imag` or `np.abs(values)`."
+    )
+
+
+def _holds_complex_numbers(arr: Any) -> bool:
+    """Whether an object array that failed the float cast is complex numbers.
+
+    Inspects the elements rather than asking whether a complex cast would
+    succeed: complex('1+2j') parses where float('1+2j') does not, so a cast
+    probe would route a malformed text column to the complex message and
+    its `.real`/`.imag` remedies. Only genuine number objects count, and at
+    least one must be non-real; a string among them means the data is not
+    numeric, which is the more useful thing to say.
+    """
+    if arr.dtype.kind != "O":
+        return False
+    numbers_only = all(isinstance(x, numbers.Complex) for x in arr.flat)
+    return numbers_only and any(
+        not isinstance(x, numbers.Real) for x in arr.flat
+    )
+
+
 def validate_finite_data(data: Any) -> None:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
@@ -143,7 +185,8 @@ def validate_finite_data(data: Any) -> None:
         data: The sample values to check, as any array-like
 
     Raises:
-        ValueError: If the data contains NaN or Inf, or is not numeric
+        ValueError: If the data contains NaN or Inf, is complex, or is not
+            numeric
     """
     arr = np.asarray(data)
 
@@ -192,12 +235,26 @@ def validate_finite_data(data: Any) -> None:
             f"rather than NaN, which this check would then accept."
         )
 
+    # Complex is a dtype rejection, not a value one, so it comes before the
+    # finiteness check: a complex array with a NaN in it would otherwise be
+    # told to fill its gaps and then be rejected again for its dtype.
+    #
+    # Every consumer of this guard returns a one-sided spectrum - the
+    # non-negative bins only - which is correct for real input because the
+    # negative half is its mirror. Complex input has no such symmetry, so the
+    # discarded half is genuine content. Before #43 the entry points handled
+    # that in two different silent ways: relative_band_power cast to float
+    # and kept the real part under a ComplexWarning, while the others fed the
+    # complex data to np.fft.fft and threw away the negative half - which,
+    # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
+    # for a 0.05 Hz probe with no warning at all.
+    if arr.dtype.kind == "c":
+        raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
+
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
-    # arrays. Complex is left alone deliberately: np.isfinite handles it, and
-    # a float cast would reject it outright, which would be a behaviour change
-    # rather than the guard this function exists to add.
-    if arr.dtype.kind not in "fc":
+    # arrays.
+    if arr.dtype.kind != "f":
         try:
             arr = np.asarray(arr, dtype=float)
         except (TypeError, ValueError) as exc:
@@ -205,6 +262,13 @@ def validate_finite_data(data: Any) -> None:
             # docstring makes, the same way validate_sampling_freq does.
             # arr is unchanged here - the failed assignment above leaves the
             # original bound, so this reports the caller's dtype, not float.
+            #
+            # An object array of complex numbers fails the float cast too,
+            # and deserves the complex message rather than "not numeric": the
+            # caller has complex data, and the remedy is the one above.
+            if _holds_complex_numbers(arr):
+                raise ValueError(_complex_data_message(
+                    f"dtype '{arr.dtype}' holding complex values")) from exc
             raise ValueError(
                 f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
                 f"be interpreted as real numbers."
@@ -339,8 +403,8 @@ def compute_fft_power(
         Tuple of (frequencies, power_spectrum)
 
     Raises:
-        ValueError: If the time series is empty, has an invalid frequency, or
-            contains NaN or Inf values
+        ValueError: If the time series is empty, has an invalid frequency, is
+            complex, or contains NaN or Inf values
     """
     # Input validation
     if len(ts.data) == 0:
@@ -422,9 +486,10 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
         Single peak frequency (float) if num_pks=1, otherwise list of peak frequencies
 
     Raises:
-        ValueError: If the sampling frequency is not usable, or if the data
-            contains NaN or Inf. Both are raised by get_frequency_content
-            below, so this function carries no guard of its own.
+        ValueError: If the sampling frequency is not usable, if the data is
+            complex, or if it contains NaN or Inf. All are raised by
+            get_frequency_content below, so this function carries no guard
+            of its own.
 
     Examples:
         # Basic peak frequency (returns float, excludes DC)
@@ -531,7 +596,8 @@ def relative_band_power(
 
     Raises:
         ValueError: If the band is invalid, exceeds Nyquist, is narrower than
-            the frequency resolution, if the data contains NaN/Inf, or if the
+            the frequency resolution, if the data is complex or contains
+            NaN/Inf, or if the
             signal has no spectral power outside DC
 
     Examples:

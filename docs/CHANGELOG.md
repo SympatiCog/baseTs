@@ -54,6 +54,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the spectral family rejects complex data (#43)
+
+### Fixed — `relative_band_power` silently truncated complex data to its real part
+
+`relative_band_power` (and so `falff`) narrowed its input with
+`np.asarray(ts.values, dtype=float)`. On a complex series that emits a
+`ComplexWarning` and keeps the real part, and the band ratio came back as a
+number with nothing in the output to say half the data had been discarded.
+#28 had just made `utils.validate_finite_data` accept complex deliberately,
+so the guard said complex was acceptable and the function then threw half of
+it away.
+
+**The inconsistency was four ways, not two.** Measured on `main` with the
+issue's own probe — `sin + i·cos`, an analytic signal whose one spectral line
+sits at *negative* frequency:
+
+| Entry point | On complex input |
+|---|---|
+| `relative_band_power`, `falff` | `ComplexWarning`; answer from the real part only |
+| `get_frequency_content` | no warning; every non-negative bin ≈ 1e-27 |
+| `get_peak_freq` | no warning; reports 0.388 Hz for a 0.05 Hz signal |
+| `compute_fft_power` | no warning; non-negative half only |
+
+The three that handled complex "natively" were wrong in a quieter way than
+the one that warned. Every spectral function here returns a **one-sided**
+spectrum: it keeps the non-negative bins on the strength of Hermitian
+symmetry, which real input has and complex input does not. On complex data
+the discarded half is content, not a mirror — for an analytic signal it is
+all of the content. So the issue's second option, letting the FFT handle
+complex natively, is what three of the four already did, and it produced a
+confident wrong number with no warning at all.
+
+**Behaviour change:** `validate_finite_data` now rejects complex data, so
+`get_frequency_content`, `get_peak_freq`, `compute_fft_power`,
+`relative_band_power`, `falff` and `plot_fft_power` raise `ValueError` on a
+complex series where they previously returned a number (two of them under a
+`ComplexWarning`, three silently). The message names the reason and the
+remedy: pass the real projection you mean explicitly — `values.real`,
+`values.imag` or `np.abs(values)`. The library does not choose one for you,
+because choosing the real part silently is exactly what this fixes.
+
+The check is made on dtype, before the finiteness check, so a complex array
+that also contains NaN is told about its dtype rather than sent to
+`interpolate_gaps()` and rejected again afterwards. An object array holding
+complex numbers gets the same message rather than the generic "not numeric"
+one. Real-valued input takes an unchanged code path; the #28 test that named
+complex "the load-bearing case" for acceptance now pins the rejection, and
+says why.
+
+`baseTs` has no other complex support — the filters reject complex band
+edges by construction, and the constructor never promised complex samples —
+so this closes the one place where complex input produced an answer.
+
 ## [Unreleased] — `lowess_fit` and `outlier_indices` stop following the values (#40)
 
 ### Fixed — a fit survived a change of the data it described
@@ -1143,7 +1196,10 @@ number` from their own `np.asarray(..., dtype=float)` narrowing, which runs
 before they delegate. That narrowing is now preceded by the shared guard, so
 the uniform-`ValueError` contract holds for dtype as well as for NaN. Integer and boolean series skip the check
 entirely — those dtypes cannot represent NaN or Inf — and complex data is
-checked without a float cast, so it is not newly rejected. Pandas nullable
+checked without a float cast, so it is not newly rejected (**superseded by
+#43**, which rejects complex data at all four entry points; the decision here
+was out of this issue's scope, not a judgement that complex was supported).
+Pandas nullable
 dtypes (`Int64`, `Float64`) and pyarrow-backed columns are checked correctly:
 `pd.NA` becomes NaN under `np.asarray` and is caught.
 
