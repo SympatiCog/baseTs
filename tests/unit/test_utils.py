@@ -483,34 +483,85 @@ def test_non_numeric_data_raises_the_same_way_at_all_four_entry_points():
     np.arange(8),                          # int - cannot hold NaN, early return
     np.array([True, False, True]),         # bool - likewise
     np.array([1.0, 2.0], dtype=object),    # object, but of real numbers
-    np.array([1 + 2j, 3 + 4j]),            # complex, both parts finite
 ])
 def test_validate_finite_data_accepts_usable_dtypes(good):
-    """The guard rejects bad values, not unfamiliar dtypes.
-
-    Complex is the load-bearing case: np.isfinite handles it, so it is left
-    unconverted. A float cast would reject it outright, which would be a
-    behaviour change rather than the guard this function exists to add.
-    """
+    """The guard rejects bad values, not unfamiliar dtypes."""
     from baseTs.utils import validate_finite_data
 
     assert validate_finite_data(good) is None
 
 
-@pytest.mark.parametrize("bad", [
-    np.array([1.0, np.nan], dtype=object),
-    np.array([1 + 2j, complex(np.nan, 0)]),
-])
-def test_validate_finite_data_looks_inside_unconverted_dtypes(bad):
-    """Object and complex arrays are checked, not waved through.
+def test_validate_finite_data_looks_inside_object_arrays():
+    """Object arrays are checked, not waved through.
 
-    np.isfinite raises TypeError on object arrays, so the object case only
-    works because it is converted first.
+    np.isfinite raises TypeError on object arrays, so this only works
+    because the array is converted first.
     """
     from baseTs.utils import validate_finite_data
 
     with pytest.raises(ValueError, match="NaN or Inf"):
-        validate_finite_data(bad)
+        validate_finite_data(np.array([1.0, np.nan], dtype=object))
+
+
+def _analytic_ts(n=1200, rate=2.0, f=0.05):
+    """A complex series whose entire energy sits at negative frequency.
+
+    sin + i*cos is i*exp(-i*2*pi*f*t): one spectral line, at -f Hz. A
+    one-sided spectrum (non-negative bins only) therefore contains none of
+    it, which is what makes this the probe that shows why complex input is
+    rejected rather than merely inconvenient.
+    """
+    t = np.arange(n) / rate
+    z = np.sin(2 * np.pi * f * t) + 1j * np.cos(2 * np.pi * f * t)
+    return baseTs(z, t, freq=rate)
+
+
+@pytest.mark.parametrize("value", [
+    np.array([1 + 2j, 3 + 4j]),            # finite in both parts
+    np.array([1 + 2j, complex(np.nan, 0)]),  # NaN in the real part
+    np.array([1 + 2j, 3 + 4j], dtype=object),  # complex hiding in object
+])
+def test_validate_finite_data_rejects_complex_by_dtype(value):
+    """Complex is a dtype rejection, made before the finiteness check.
+
+    Issue #43. The spectral family returns one-sided spectra, and a one-sided
+    spectrum presumes real input - it keeps the non-negative bins on the
+    strength of Hermitian symmetry, which complex data does not have. So the
+    problem is the dtype, not the values, and the error says so even when a
+    NaN is also present: the remedy for the NaN (interpolate_gaps) would
+    otherwise be followed by a second, different rejection.
+    """
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="complex") as info:
+        validate_finite_data(value)
+    assert "one-sided" in str(info.value)
+    assert ".real" in str(info.value)
+
+
+def test_complex_data_is_rejected_at_all_four_entry_points_and_falff():
+    """No entry point gets a number out of complex input, and none warns.
+
+    Before #43 each of the four failed differently: relative_band_power (and
+    so falff) truncated to the real part under a ComplexWarning, while
+    get_frequency_content, get_peak_freq and compute_fft_power kept the
+    complex data and silently discarded the negative half of its spectrum -
+    on the analytic probe below, the half holding all of the energy.
+    get_peak_freq reported 0.388 Hz for a 0.05 Hz signal, with no warning.
+
+    Warnings are turned into errors so that a ComplexWarning fired before
+    the rejection would surface as a non-ValueError and fail the test.
+    """
+    import warnings
+    from baseTs.utils import falff
+
+    ts = _analytic_ts()
+    calls = _all_four_entry_points(ts) + (lambda: falff(ts),)
+    for call in calls:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(ValueError, match="complex"):
+                call()
 
 
 @pytest.mark.parametrize("demean", [True, False])
