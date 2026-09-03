@@ -80,11 +80,16 @@ class TestInvalidationOnDerivation:
         assert shuffled.outlier_indices is None
 
     def test_an_unchanged_index_keeps_both(self, filtered):
-        """Invalidation is about the index, not about deriving at all."""
-        doubled = filtered * 2.0
-        assert doubled.lowess_fit is not None
-        assert len(doubled.lowess_fit) == len(doubled)
-        assert doubled.outlier_indices == filtered.outlier_indices
+        """Invalidation is about the index, not about deriving at all.
+
+        `+ 0.0` rather than `* 2.0`: since #40 the values are checked too,
+        so the operation has to leave them alone for this to isolate the
+        index rule. `* 2.0` is a drop case in test_data_stamp_invalidation.
+        """
+        same = filtered + 0.0
+        assert same.lowess_fit is not None
+        assert len(same.lowess_fit) == len(same)
+        assert same.outlier_indices == filtered.outlier_indices
 
     def test_a_head_of_the_whole_series_keeps_both(self, filtered):
         """The rule is index equality, not "was a slicing method called"."""
@@ -99,8 +104,12 @@ class TestInvalidationOnDerivation:
         assert copied.outlier_indices == filtered.outlier_indices
 
     def test_a_rolling_aggregation_keeps_both(self, filtered):
-        """rolling() routes through _FinalizingWindow, not __finalize__ directly."""
-        rolled = filtered.rolling(5).mean()
+        """rolling() routes through _FinalizingWindow, not __finalize__ directly.
+
+        A window of one leaves every value as it was; a wider window changes
+        them and is a drop case in test_data_stamp_invalidation (#40).
+        """
+        rolled = filtered.rolling(1).mean()
         assert rolled.lowess_fit is not None
         assert rolled.outlier_indices is not None
 
@@ -144,7 +153,12 @@ class TestInvalidationOnInPlaceIndexChange:
         assert filtered.outlier_indices is None
 
     def test_assigning_same_length_data_keeps_both(self, filtered):
-        filtered.data = np.zeros(200)
+        """Same length keeps the index; equal values keep the fit (#40).
+
+        Assigning zeros here would trip the values rule instead, which is a
+        drop case in test_data_stamp_invalidation.
+        """
+        filtered.data = np.asarray(filtered.data, dtype=float).copy()
         assert filtered.lowess_fit is not None
         assert filtered.outlier_indices is not None
 
@@ -201,7 +215,13 @@ class TestInheritedPandasInplaceMethods:
         ids=["fillna", "clip"],
     )
     def test_index_preserving_inplace_methods_keep_both(self, filtered, call):
-        """These change values, not positions, so the rule must not fire."""
+        """These keep the positions, so the index rule must not fire.
+
+        On this fixture they also leave every value alone - there is no NaN
+        to fill and nothing outside [-1, 1] to clip - so the values rule
+        (#40) does not fire either. The gapped and out-of-range variants are
+        drop cases in test_data_stamp_invalidation.
+        """
         call(filtered)
         assert filtered.lowess_fit is not None
         assert len(filtered.lowess_fit) == len(filtered)
@@ -346,7 +366,7 @@ class TestReadIsPureAndDerivationReleases:
         Re-stamping with the index just proved equal changes no answer and
         lets later reads take Index.equals' identity fast path.
         """
-        derived = filtered.sg_filter()
+        derived = filtered.copy()
         assert derived.index is not filtered.index, "test needs a distinct Index"
 
         assert derived.lowess_fit is not None
@@ -384,7 +404,7 @@ class TestDeepCopyIndependence:
     def test_an_array_valued_outlier_record_is_detached_too(self, filtered):
         """The constructor types this as np.array, so a list check is not enough."""
         filtered.outlier_indices = np.array([3, 4, 5])
-        derived = filtered * 2.0
+        derived = filtered + 0.0
         assert derived.outlier_indices is not filtered.outlier_indices
 
         derived.outlier_indices[0] = 999
@@ -417,20 +437,22 @@ class TestTheStampIsNotLaunderable:
     def test_a_derived_object_carries_the_parents_stamp_verbatim(self, filtered):
         """The discriminating case for laundering.
 
-        sg_filter routes through _create_new_with_data, which builds a *new*
-        Index object for the result. If the copy went through the public name,
-        the setter would stamp with that new index and the fit would look valid
-        by construction. Carrying the parent's own index object is the proof it
-        did not.
+        interpolate_gaps routes through _create_new_with_data, which builds a
+        *new* Index object for the result, and on gap-free data leaves every
+        value alone. If the copy went through the public name, the setter
+        would stamp with that new index and the fit would look valid by
+        construction. Carrying the parent's own index object is the proof it
+        did not. sg_filter played this role before #40; it cannot now, because
+        its result changes the values and correctly reads None.
         """
         parent_stamp = filtered._lowess_fit[1]
-        smoothed = filtered.sg_filter()
+        derived = filtered.interpolate_gaps()
 
-        assert smoothed.index is not filtered.index, (
+        assert derived.index is not filtered.index, (
             "this test is only meaningful while the result has its own Index"
         )
-        assert smoothed._lowess_fit[1] is parent_stamp
-        assert smoothed.lowess_fit is not None, "and the fit is still valid here"
+        assert derived._lowess_fit[1] is parent_stamp
+        assert derived.lowess_fit is not None, "and the fit is still valid here"
 
     def test_a_stale_slot_is_released_on_derivation(self, filtered):
         """Memory, not correctness: the getter already reads a slice as None.
@@ -474,12 +496,17 @@ class TestInvalidationThroughCreateNewWithData:
         assert shifted.lowess_fit is None
         assert shifted.outlier_indices is None
 
-    def test_sg_filter_keeps_both(self, filtered):
-        """Same index, so both still describe the result."""
-        smoothed = filtered.sg_filter()
-        assert smoothed.index.equals(filtered.index)
-        assert smoothed.lowess_fit is not None
-        assert smoothed.outlier_indices == filtered.outlier_indices
+    def test_a_value_preserving_rebuild_keeps_both(self, filtered):
+        """Same index and same values, so both still describe the result.
+
+        sg_filter was the operation here before #40; its result now reads
+        None because it changes the values, and that is a drop case in
+        test_data_stamp_invalidation.
+        """
+        rebuilt = filtered.interpolate_gaps()
+        assert rebuilt.index.equals(filtered.index)
+        assert rebuilt.lowess_fit is not None
+        assert rebuilt.outlier_indices == filtered.outlier_indices
 
 
 class TestArithmeticOperators:
@@ -523,34 +550,52 @@ class TestArithmeticOperators:
         assert result.outlier_indices is None
 
     def test_a_scalar_operand_keeps_both(self, filtered):
-        """A scalar cannot change the index, so nothing should be dropped."""
-        result = filtered * 2.0
+        """A scalar cannot change the index, so the index rule must not fire.
+
+        Zero, so the values rule (#40) does not fire either; `* 2.0` is a
+        drop case in test_data_stamp_invalidation.
+        """
+        result = filtered + 0.0
         assert result.lowess_fit is not None
         assert result.outlier_indices == filtered.outlier_indices
 
-    @pytest.mark.parametrize("rhs", ["scalar", "different_index", "same_index"])
-    def test_augmented_assignment_never_invalidates(self, filtered, other, rhs):
-        """`ts += x` cannot change ts's index, so it must not drop anything.
+    @pytest.mark.parametrize(
+        "rhs, values_change",
+        [("scalar_zero", False), ("different_index", True), ("same_index_zeros", False)],
+    )
+    def test_augmented_assignment_never_changes_the_index(self, filtered, other, rhs,
+                                                          values_change):
+        """`ts += x` cannot change ts's index, so the index rule never fires.
 
         _inplace_arith reindex_like's the result back onto the original index
         before adopting it, exactly as pandas' own _inplace_method does, so
         even an operand on a different time base leaves the length and labels
-        alone. This pins that boundary: the rule keys on the index changing,
-        and here it provably cannot.
+        alone. This pins that boundary. Whether the fit survives is then the
+        values rule's call (#40): adding zero keeps it, and an operand on a
+        different time base writes NaN wherever the two do not align, which
+        changes the values and drops it.
         """
         operand = {
-            "scalar": 1.0,
+            "scalar_zero": 0.0,
             "different_index": other,
-            "same_index": baseTs(np.zeros(len(filtered)), np.asarray(filtered.times)),
+            "same_index_zeros": baseTs(np.zeros(len(filtered)), np.asarray(filtered.times)),
         }[rhs]
         before_index = filtered.index.copy()
+        before_values = np.asarray(filtered.data, dtype=float).copy()
 
         filtered += operand
 
         assert filtered.index.equals(before_index)
-        assert filtered.lowess_fit is not None
-        assert len(filtered.lowess_fit) == len(filtered)
-        assert filtered.outlier_indices is not None
+        changed = not np.array_equal(np.asarray(filtered.data, dtype=float),
+                                     before_values, equal_nan=True)
+        assert changed is values_change, "the case is not exercising what it claims"
+        if values_change:
+            assert filtered.lowess_fit is None
+            assert filtered.outlier_indices is None
+        else:
+            assert filtered.lowess_fit is not None
+            assert len(filtered.lowess_fit) == len(filtered)
+            assert filtered.outlier_indices is not None
 
     def test_an_operand_on_the_same_index_keeps_both(self, filtered):
         twin = baseTs(np.zeros(len(filtered)), np.asarray(filtered.times))
@@ -564,7 +609,7 @@ class TestNoWriteThrough:
 
     def test_appending_through_a_derived_object_leaves_the_parent_alone(self, filtered):
         before = list(filtered.outlier_indices)
-        derived = filtered * 2.0
+        derived = filtered + 0.0
         derived.outlier_indices.append(9999)
         assert filtered.outlier_indices == before
 
@@ -574,9 +619,10 @@ class TestNoWriteThrough:
         assert filtered.outlier_indices == before
 
     def test_appending_through_a_create_new_with_data_result(self, filtered):
-        """sg_filter keeps the index, so the list survives - it must not be shared."""
+        """interpolate_gaps keeps the index and, on gap-free data, the values,
+        so the list survives - it must not be shared."""
         before = list(filtered.outlier_indices)
-        filtered.sg_filter().outlier_indices.append(9999)
+        filtered.interpolate_gaps().outlier_indices.append(9999)
         assert filtered.outlier_indices == before
 
 
