@@ -470,9 +470,10 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
         Single peak frequency (float) if num_pks=1, otherwise list of peak frequencies
 
     Raises:
-        ValueError: If the sampling frequency is not usable, or if the data
-            contains NaN or Inf. Both are raised by get_frequency_content
-            below, so this function carries no guard of its own.
+        ValueError: If the sampling frequency is not usable, if the data is
+            complex, or if it contains NaN or Inf. All are raised by
+            get_frequency_content below, so this function carries no guard
+            of its own.
 
     Examples:
         # Basic peak frequency (returns float, excludes DC)
