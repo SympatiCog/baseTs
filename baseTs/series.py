@@ -64,15 +64,54 @@ def _carries_metadata(data: Any) -> bool:
 
 
 #: The private slots behind the positional properties, paired with the public
-#: names they back. Each holds either None or `(value, index_it_describes)`.
+#: names they back. Each holds either None or
+#: `(value, index_it_describes, values_it_describes)`.
 _POSITION_INDEXED_SLOTS = (('lowess_fit', '_lowess_fit'),
                            ('outlier_indices', '_outlier_indices'))
+
+
+def _values_stamp(obj) -> pd.Index:
+    """Snapshot `obj`'s values for a positional slot to be checked against.
+
+    A `pd.Index` rather than an array, for two properties the check needs
+    and an array does not give. It is immutable, so no later in-place write
+    to the series can reach into the snapshot and make it agree with
+    whatever the data became; a read-only ndarray's `writeable` flag does not
+    survive a pickle round trip. And `Index.equals` is the right equality:
+    NaN equals NaN in the same position, so a series with gaps compares equal
+    to itself; values are compared rather than dtypes, so a `float32` cast of
+    representable values still matches; and object, complex, tz-aware and
+    boolean values compare without raising. `Series.equals` is dtype-strict
+    and `np.array_equal` cannot compare arrays holding `pd.NA`.
+
+    Built from an explicit copy, because `to_numpy()` may hand back a view of
+    the block's own array, and `pd.Index` does not promise to copy what it is
+    given.
+
+    Both sides go through `to_numpy()` - here and in _values_match - so an
+    extension dtype is materialised the same way on both sides whatever that
+    way is on the running pandas.
+    """
+    return pd.Index(np.array(obj.to_numpy(), copy=True))
+
+
+def _values_match(obj, stamp: pd.Index) -> bool:
+    """Whether `obj`'s live values are still the ones `stamp` recorded.
+
+    O(n) on every call, and there is no fast path to add: an in-place write
+    keeps the array's identity while changing its contents, so nothing
+    cheaper than comparing the values can prove they are unchanged. Measured
+    at 0.5 ms per million samples, alongside a fit that is itself a million
+    floats.
+    """
+    return stamp.equals(pd.Index(obj.to_numpy()))
 
 
 def _positional_property(public: str, private: str, what: str) -> property:
     """
     Build a property that hands back `value` only while the index it was
-    computed against is still the object's index.
+    computed against is still the object's index and the values it was
+    computed against are still the object's values.
 
     `lowess_fit` holds one float per sample and `outlier_indices` holds
     *positions* into that same sample sequence. Neither survives a change of
@@ -110,12 +149,31 @@ def _positional_property(public: str, private: str, what: str) -> property:
     `outlier_indices` recoverable, so an index reverted afterwards would bring
     back exactly the one nobody had looked at.
 
-    A consequence worth stating: on *this* object, restoring an index the fit
-    was computed against makes it readable again. Within the scope of this
-    property that is correct - the samples are back at the positions the fit
-    describes. It is only misleading if the *data* changed while the index was
-    elsewhere, which is the separate defect tracked as #40; fixing that by
-    stamping the data as well removes this wrinkle with it.
+    **The values are checked too (#40).** The index test is positional: it
+    says the samples are still where the fit says they are. It cannot see
+    `ts.data = noise`, `ts.iloc[3] = 5`, `sg_filter()` or `ts * 2` - every
+    one of which leaves the index alone and replaces what is at those
+    positions, so the fit describes samples the object no longer holds and
+    `qc_plot` draws it over a signal it was never fitted to. The slot
+    therefore carries a third element, a snapshot of the values taken by the
+    setter, and the getter compares the live values against it. Same
+    argument as for the index: there is no bounded list of places a value
+    can change (`ts.iloc[i] = v` writes inside pandas' indexer, and on
+    pandas 2.x `ts.values[:] = 0` writes into the array itself), but every
+    one of them changes what `to_numpy()` returns, and that is what is read.
+
+    What "the values it describes" means is *the values that were on the
+    object when the slot was assigned*. That is deliberately not "the
+    values the fit was computed from" - `filter_outliers` computes its fit
+    from the unfiltered data and assigns it after replacing the data, and
+    `lowess_detrend`'s fit is the trend it removed. A producer writes the
+    data first and the slot second, and the stamp records what it left
+    behind. That ordering is load-bearing; a producer that stamped first
+    would read `None` on its own result, which its test catches.
+
+    Index first, values second: the index check has an identity fast path
+    after the first read and fails cheaply on a length change, so an object
+    whose index moved never pays for the values comparison.
 
     Reading does re-stamp with the index it just proved equal. That changes no
     answer - equality is transitive - and buys two things: later reads take
@@ -123,14 +181,15 @@ def _positional_property(public: str, private: str, what: str) -> property:
     index the value arrived with is released. Both matter because every derived
     object gets a *new* `Index` instance, even from `copy(deep=False)`, so a
     derived object never hits the identity fast path on its first read however
-    unchanged its index is.
+    unchanged its index is. There is no equivalent for the values - see
+    _values_match - so a valid read is O(n) every time.
     """
 
     def getter(self):
         stored = getattr(self, private, None)
         if stored is None:
             return None
-        value, described_index = stored
+        value, described_index, described_values = stored
         try:
             current = self.index
         except AttributeError:
@@ -138,22 +197,24 @@ def _positional_property(public: str, private: str, what: str) -> property:
             return None
         if not current.equals(described_index):
             return None
+        if not _values_match(self, described_values):
+            return None
         if current is not described_index:
-            object.__setattr__(self, private, (value, current))
+            object.__setattr__(self, private, (value, current, described_values))
         return value
 
     def setter(self, value):
         if value is None:
             object.__setattr__(self, private, None)
             return
-        object.__setattr__(self, private, (value, self.index))
+        object.__setattr__(self, private, (value, self.index, _values_stamp(self)))
 
     getter.__name__ = public
     setter.__name__ = public
     return property(getter, setter, doc=f"{what} Valid only while the index "
-                                        f"it was computed against is still "
-                                        f"this object's index; reads as None "
-                                        f"otherwise (#20).")
+                                        f"and the values it was assigned "
+                                        f"against are still this object's; "
+                                        f"reads as None otherwise (#20, #40).")
 
 
 #: The private slot names alone, for callers that need to recognise them.
@@ -170,17 +231,17 @@ def deepcopy_metadata_value(name: str, value: Any):
     and `copy(deep=True)` began handing back the parent's own fit array - an
     aliasing bug on the one path whose whole purpose is to prevent it.
 
-    The stamp is carried over by reference rather than copied: `pd.Index` is
-    immutable, so there is nothing to isolate, and copying it would throw away
-    the identity that lets a later read take the fast path. No test pins that -
-    a deep-copied index is still `equals`-true, so the choice is memory and
-    speed, not behaviour.
+    Both stamps are carried over by reference rather than copied: each is a
+    `pd.Index`, immutable, so there is nothing to isolate, and copying the
+    index stamp would throw away the identity that lets a later read take
+    the fast path. No test pins that - a deep-copied index is still
+    `equals`-true, so the choice is memory and speed, not behaviour.
     """
     if name in _POSITION_INDEXED_PRIVATE:
         if value is None:
             return None
-        payload, described_index = value
-        return (copy_module.deepcopy(payload), described_index)
+        payload, described_index, described_values = value
+        return (copy_module.deepcopy(payload), described_index, described_values)
     if isinstance(value, (list, dict, np.ndarray)):
         return copy_module.deepcopy(value)
     return value
@@ -188,11 +249,13 @@ def deepcopy_metadata_value(name: str, value: Any):
 
 def _drop_stale_positional_metadata(obj):
     """
-    Release a positional slot whose index no longer matches.
+    Release a positional slot whose index or values no longer match.
 
     Runs on derivation only, from _detach_shared_metadata. Without it every
     slice of a filtered series would pin the parent's full-length fit for as
-    long as the slice lived, whether or not anyone ever read it.
+    long as the slice lived, whether or not anyone ever read it - and since
+    #40, every `sg_filter()` result would pin the fit and the full-length
+    values snapshot beside it.
 
     It *is* observable, and the rule it enforces is deliberate: a derived
     object whose index never matched is born without the value, so restoring
@@ -202,9 +265,10 @@ def _drop_stale_positional_metadata(obj):
     terms, and neither depends on whether anyone read anything.
 
     The limitation this leaves: an object mutated *in place* to a different
-    index keeps the old value in its slot, unread, until it is overwritten or
-    the object is collected. Closing that would need a hook at every point an
-    index can change, which is the design this replaced.
+    index or different values keeps the old value in its slot, unread, until
+    it is overwritten or the object is collected. Closing that would need a
+    hook at every point an index or a value can change, which is the design
+    this replaced.
 
     _positional_property remains the correctness mechanism: this only decides
     when an unreadable value is released, never whether a readable one is.
@@ -213,13 +277,59 @@ def _drop_stale_positional_metadata(obj):
         stored = getattr(obj, private, None)
         if stored is None:
             continue
-        _value, described_index = stored
+        _value, described_index, described_values = stored
         try:
             current = obj.index
         except AttributeError:
             continue
-        if not current.equals(described_index):
+        if not current.equals(described_index) or not _values_match(obj, described_values):
             object.__setattr__(obj, private, None)
+    return obj
+
+
+def _complete_positional_slots(obj):
+    """
+    Bring a positional slot restored from a pickle up to the current shape.
+
+    `__getstate__` writes the slot as it stood at dump time, so a blob on
+    disk holds one of three shapes, and each is completed to the triple the
+    getter unpacks:
+
+    - written before #20: the bare fit array or positions list. Stamped
+      against the unpickled object's own index and values. The #20 getter
+      could not even unpack this shape, so it is a pre-existing break folded
+      in here because the same door and the same rule cover it.
+    - written between #20 and #40: `(value, index)`. The index is kept and
+      the values are stamped from the unpickled object.
+    - written since #40: `(value, index, values)`. Left alone.
+
+    The test is on type and length, not length alone: a two-sample bare fit
+    array is a bare array, not a pair.
+
+    What completing against the unpickled object's values means, stated
+    plainly: a legacy blob carries no evidence of whether its fit still
+    described its values when it was written, and this accepts the pairing
+    the blob holds. A fit that was stale under #40's defect at pickling time
+    reads as valid after unpickling, where the same object kept in memory
+    would read None. The alternative - dropping every legacy fit to catch
+    the few that were stale - loses more than it corrects. From the moment
+    of unpickling the rule applies as it does to any other object: the next
+    change to the values reads None.
+
+    Runs after the `_metadata` shadow heal in __setstate__, so it iterates
+    the class's registry, not a stale instance copy.
+    """
+    for _public, private in _POSITION_INDEXED_SLOTS:
+        stored = getattr(obj, private, None)
+        if stored is None:
+            continue
+        if isinstance(stored, tuple) and len(stored) == 3:
+            continue
+        if isinstance(stored, tuple) and len(stored) == 2:
+            value, described_index = stored
+        else:
+            value, described_index = stored, obj.index
+        object.__setattr__(obj, private, (value, described_index, _values_stamp(obj)))
     return obj
 
 
@@ -461,7 +571,7 @@ def _detach_shared_metadata(obj):
         # depending on which shape a caller happened to supply. Either way the
         # cost is the number of outliers, not the number of samples.
         object.__setattr__(obj, '_outlier_indices',
-                           (copy_module.copy(stored[0]), stored[1]))
+                           (copy_module.copy(stored[0]),) + tuple(stored[1:]))
     return _drop_stale_positional_metadata(obj)
 
 
@@ -682,10 +792,12 @@ class TimeSeriesData(pd.Series):
             object.__delattr__(self, '_metadata')
         if not hasattr(self, _IDENTITY_NAME_SLOT):
             object.__setattr__(self, _IDENTITY_NAME_SLOT, None)
+        _complete_positional_slots(self)
 
-    # What propagates is the (value, index) pair, not the bare value - so
-    # pandas copying it verbatim is correct, because the child re-checks it
-    # against its own index on read. Listing the public names here instead
+    # What propagates is the (value, index, values) triple, not the bare
+    # value - so pandas copying it verbatim is correct, because the child
+    # re-checks it against its own index and values on read. Listing the
+    # public names here instead
     # would be actively wrong for the same reason it is wrong for `freq`:
     # __finalize__ copies with object.__setattr__, which honours data
     # descriptors, so every propagation would run the stamping setter and
@@ -934,9 +1046,9 @@ class TimeSeriesData(pd.Series):
         filter cannot carry a write from one object to another.
 
         `_lowess_fit` and `_outlier_indices` need nothing special here. They
-        carry the index they describe with them, so copying the pair verbatim
-        is correct however the derived index differs - the property re-checks
-        it on read. That is the point of moving the check to read time: this
+        carry the index and the values they describe with them, so copying
+        the triple verbatim is correct however the derived index or values
+        differ - the property re-checks both on read. That is the point of moving the check to read time: this
         method no longer has to be one of the places that knows the rule.
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
