@@ -6,8 +6,10 @@ Created on Oct 19 2024
 """
 
 import math
+import numbers
 from dataclasses import dataclass
 from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
@@ -119,8 +121,12 @@ def validate_sampling_freq(freq: Any) -> float:
         raise ValueError(f"Invalid sampling frequency: {freq} Hz.{hint}")
     return value
 
-def _complex_data_message(dtype: Any) -> str:
+def _complex_data_message(what: str) -> str:
     """The rejection text for complex sample values (issue #43).
+
+    `what` describes the offending dtype - "dtype 'complex128'", or
+    "dtype 'object' holding complex values" - so that the two spellings of
+    the same problem do not read as a contradiction.
 
     Names the reason (one-sided spectra presume real input) and the remedy
     (pick a real projection explicitly), because the obvious fix - taking
@@ -128,22 +134,31 @@ def _complex_data_message(dtype: Any) -> str:
     to do silently, and is what this rejection exists to stop.
     """
     return (
-        f"Time series data is complex: dtype '{dtype}'. The spectral "
-        f"functions return one-sided spectra, keeping only non-negative "
-        f"frequencies on the strength of a symmetry that real input has and "
-        f"complex input does not - so the discarded half would be real "
-        f"content, not a mirror. Pass the real projection you mean "
-        f"explicitly, e.g. `values.real`, `values.imag` or `np.abs(values)`."
+        f"Time series data is complex: {what}. The spectral functions return "
+        f"one-sided spectra, keeping only non-negative frequencies on the "
+        f"strength of a symmetry that real input has and complex input does "
+        f"not - so the discarded half would be real content, not a mirror. "
+        f"Pass the real projection you mean explicitly, e.g. `values.real`, "
+        f"`values.imag` or `np.abs(values)`."
     )
 
 
-def _converts_to_complex(arr: Any) -> bool:
-    """Whether an array that failed the float cast is complex in disguise."""
-    try:
-        np.asarray(arr, dtype=complex)
-    except (TypeError, ValueError):
+def _holds_complex_numbers(arr: Any) -> bool:
+    """Whether an object array that failed the float cast is complex numbers.
+
+    Inspects the elements rather than asking whether a complex cast would
+    succeed: complex('1+2j') parses where float('1+2j') does not, so a cast
+    probe would route a malformed text column to the complex message and
+    its `.real`/`.imag` remedies. Only genuine number objects count, and at
+    least one must be non-real; a string among them means the data is not
+    numeric, which is the more useful thing to say.
+    """
+    if arr.dtype.kind != "O":
         return False
-    return True
+    numbers_only = all(isinstance(x, numbers.Complex) for x in arr.flat)
+    return numbers_only and any(
+        not isinstance(x, numbers.Real) for x in arr.flat
+    )
 
 
 def validate_finite_data(data: Any) -> None:
@@ -234,7 +249,7 @@ def validate_finite_data(data: Any) -> None:
     # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
     # for a 0.05 Hz probe with no warning at all.
     if arr.dtype.kind == "c":
-        raise ValueError(_complex_data_message(arr.dtype))
+        raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
 
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
@@ -251,8 +266,9 @@ def validate_finite_data(data: Any) -> None:
             # An object array of complex numbers fails the float cast too,
             # and deserves the complex message rather than "not numeric": the
             # caller has complex data, and the remedy is the one above.
-            if _converts_to_complex(arr):
-                raise ValueError(_complex_data_message(arr.dtype)) from exc
+            if _holds_complex_numbers(arr):
+                raise ValueError(_complex_data_message(
+                    f"dtype '{arr.dtype}' holding complex values")) from exc
             raise ValueError(
                 f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
                 f"be interpreted as real numbers."
