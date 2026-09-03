@@ -539,6 +539,33 @@ def test_validate_finite_data_rejects_complex_by_dtype(value):
     assert ".real" in str(info.value)
 
 
+@pytest.mark.parametrize("text", [
+    np.array(["1+2j", "3+4j"]),                 # fixed-width str, dtype <U4
+    np.array(["1+2j", "3+4j"], dtype=object),   # the same, as object
+    np.array(["a", 1 + 2j], dtype=object),      # one complex among non-numbers
+])
+def test_complex_looking_text_is_not_numeric_not_complex(text):
+    """The complex message is for complex numbers, not for strings complex() parses.
+
+    complex('1+2j') succeeds where float('1+2j') fails, so a probe that
+    merely asks whether a complex cast works would route a malformed text
+    column to a message recommending `.real` and `.imag`. Verified on main
+    that these got the "not numeric" message before #43; they must still.
+    """
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(text)
+
+
+def test_object_array_of_complex_message_says_what_it_holds():
+    """'is complex: dtype object' reads as a contradiction; name the values."""
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="dtype 'object' holding complex values"):
+        validate_finite_data(np.array([1 + 2j, 3 + 4j], dtype=object))
+
+
 def test_complex_data_is_rejected_at_all_four_entry_points_and_falff():
     """No entry point gets a number out of complex input, and none warns.
 
