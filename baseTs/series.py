@@ -95,6 +95,12 @@ def _values_stamp(obj) -> pd.Index:
     Both sides go through `to_numpy()` - here and in _values_match - so an
     extension dtype is materialised the same way on both sides whatever that
     way is on the running pandas.
+
+    Two limits on object dtype, noted rather than defended against because
+    no baseTs series holds such values in any documented use: the copy is
+    shallow, so a mutable element mutated in place leaves the check passing;
+    and `Index.equals` treats `None` and `NaN` in the same position as equal,
+    so swapping one for the other keeps the fit.
     """
     return pd.Index(np.array(obj.to_numpy(), copy=True))
 
@@ -307,8 +313,15 @@ def _complete_positional_slots(obj):
       the values are stamped from the unpickled object.
     - written since #40: `(value, index, values)`. Left alone.
 
-    The test is on type and length, not length alone: a two-sample bare fit
-    array is a bare array, not a pair.
+    The test is on shape, not on length: a pair or a triple is a tuple whose
+    second element is the `pd.Index` stamp. Nothing checks the third - no
+    shape this code has ever written has an Index second and anything but
+    one third, so a check there would be a branch no test can reach.
+    Length alone misclassifies two legacy payloads - a two-sample bare fit
+    array, and a bare *tuple* of positions such as `(3, 7)`, which the
+    pre-#20 attribute accepted verbatim and which a length test would read
+    as a pair whose "index" is `7`. Both are bare payloads and are stamped
+    as such.
 
     What completing against the unpickled object's values means, stated
     plainly: a legacy blob carries no evidence of whether its fit still
@@ -327,10 +340,12 @@ def _complete_positional_slots(obj):
         stored = getattr(obj, private, None)
         if stored is None:
             continue
-        if isinstance(stored, tuple) and len(stored) == 3:
+        stamped = (isinstance(stored, tuple) and len(stored) in (2, 3)
+                   and isinstance(stored[1], pd.Index))
+        if stamped and len(stored) == 3:
             continue
-        if isinstance(stored, tuple) and len(stored) == 2:
-            value, described_index = stored
+        if stamped:
+            value, described_index = stored[0], stored[1]
         else:
             value, described_index = stored, obj.index
         object.__setattr__(obj, private, (value, described_index, _values_stamp(obj)))

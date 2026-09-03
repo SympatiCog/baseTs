@@ -398,3 +398,28 @@ mechanism.
   array-valued detachment test). Listed by line now.
 - **codex, minor:** the `API_SERIES.md` rewrite was missing from the plan
   (now a section), and the shallow-copy caveat for object dtype is stated.
+
+### Round 2, on the implementation
+
+Two findings, one from both models; three of agy's were dropped in
+verification (an object-array-of-lists `TypeError` that does not reproduce;
+a derivation-time O(n) that `main` already paid once and this branch pays
+twice, now stated in the CHANGELOG; and a `lowess_detrend` "destroys a
+resurrectable record" claim with no observable difference, since the values
+check already reads it as `None`).
+
+- **Both models: a bare tuple is not a pair.** Revision 2 said the pickle
+  shape test was "on type and length", and it was - which reads a pre-#20
+  `outlier_indices = (3, 7)` as a pair whose index is `7`, and `(3, 7, 12)`
+  as a finished triple. Both read `None` afterwards (on `main` the second
+  raises). The test is now on shape: a stamp is a tuple whose second
+  element is a `pd.Index`. A check on the third was written and then
+  removed when a mutant deleting it survived - no shape this code has ever
+  written has an Index second and anything else third, so it was a branch
+  no test could reach. Two tests pin the bare tuples;
+  `_complete_positional_slots`'s docstring says why.
+- **codex: `None` equals `NaN` on object dtype.** `Index.equals` treats
+  them as the same value in the same position, so that one substitution
+  keeps the fit. Outside the float64 surface, where `None` is not
+  representable; noted beside the shallow-copy caveat in `_values_stamp`
+  rather than defended against, on the same grounds.

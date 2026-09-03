@@ -105,7 +105,9 @@ which is the pairing `qc_plot` draws.
   measured at 0.5 ms per million samples on the fit's own million floats.
   Previously O(n) in the index on the first read and O(1) after. There is no
   fast path: an in-place write keeps the array's identity while changing its
-  contents.
+  contents. Derivation pays the same compare once, in the eager release that
+  runs on every derived object carrying a slot - a second O(n) pass beside
+  the `Index.equals` it already paid.
 - **A stamped slot holds one extra copy of the values**, shared by reference
   across derived objects. Comparable to the fit it validates. `copy(deep=True)`
   is unchanged in cost - the snapshot is immutable and shared, not copied.

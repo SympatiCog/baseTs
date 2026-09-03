@@ -449,6 +449,20 @@ class TestLegacyPickles:
         revived, _ = self._revived_with(fit, n=2)
         assert np.array_equal(revived.lowess_fit, fit)
 
+    @pytest.mark.parametrize("positions", [(3, 7), (3, 7, 12)],
+                             ids=["two_tuple", "three_tuple"])
+    def test_a_pre_20_bare_tuple_is_not_mistaken_for_a_stamp(self, positions):
+        """The pre-#20 attribute accepted a tuple verbatim.
+
+        A length test reads `(3, 7)` as a pair whose index is 7 and
+        `(3, 7, 12)` as a finished triple; the shape test looks for the
+        `pd.Index` stamp instead.
+        """
+        revived, _ = self._revived_with(np.arange(200.0), positions=positions)
+        assert tuple(revived.outlier_indices) == positions
+        assert isinstance(revived._outlier_indices[1], pd.Index)
+        assert isinstance(revived._outlier_indices[2], pd.Index)
+
     def test_a_20_era_pair_is_completed_keeping_its_index(self):
         fit = np.arange(200.0)
         _, source = self._revived_with(None)
