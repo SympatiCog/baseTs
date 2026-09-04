@@ -226,9 +226,10 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
 - `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
   they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
   deliberate and pinned by a test.
-- Cutoffs must be positive and below Nyquist; `order` must be a positive integer (`True`, `4.0` and
-  `'4'` are rejected). All parameter and data rejections raise `InvalidParameterError`, which is
-  also a `ValueError`.
+- Cutoffs must be positive and below Nyquist. For the three single-cutoff filters, `order` must be
+  a positive integer (`True`, `4.0` and `'4'` are rejected); `bandpass_filter`'s `order` argument is
+  accepted and unused, as its own entry says. Parameter and data rejections raise
+  `InvalidParameterError`, which is also a `ValueError`.
 
 ### `lowpass_filter(cutoff, order=4)`
 

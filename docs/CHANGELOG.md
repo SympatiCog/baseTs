@@ -161,12 +161,18 @@ integers are accepted. An integral-valued float such as `4.0` is rejected
 rather than truncated: an order is a count of poles, and admitting `4.0` would
 mean a second rule for `4.5`.
 
-**Breaking, in two places.** `validate_filter_params` is a public function and
+**Breaking, in three places.** `validate_filter_params` is a public function and
 its return changed from a float to a 3-tuple; any direct caller must unpack.
-And the four `order` inputs above that used to pass now raise. A `float`
-cutoff and an `int` order — what every caller in the package, the tests and
-the docs pass — are unaffected: `float(x)` and `int(x)` are the identity
-there, and the whole existing suite ran unchanged.
+The four `order` inputs above that used to pass now raise. And a 0-d numpy
+array cutoff (`np.array(0.5)`), which used to filter, is now rejected as not
+a real number — the same rule the band edges have followed since #30, whose
+`_require_real` docstring explains why arrays are refused rather than probed
+with `float()`. The *rate* still accepts a 0-d array through
+`validate_sampling_freq`; the two doors disagree on that one type, and this
+entry records it rather than hides it. A `float` cutoff and an `int` order —
+what every caller in the package, the tests and the docs pass — are
+unaffected: `float(x)` and `int(x)` are the identity there, and the whole
+existing suite ran unchanged.
 
 ## [Unreleased] — `relative_band_power` defaults to the fALFF band (#46)
 

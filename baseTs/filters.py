@@ -5,7 +5,7 @@ Created on Oct 19 2024
 """
 
 from __future__ import annotations
-from typing import Union, Optional, Literal, TYPE_CHECKING
+from typing import Any, Union, Optional, Literal, TYPE_CHECKING
 import numbers
 from decimal import Decimal
 
@@ -139,7 +139,7 @@ def _require_finite_real(label: str, value) -> float:
     return number
 
 
-def _require_order(order) -> int:
+def _require_order(order: Any, label: str = "Filter order") -> int:
     """Type-check a filter order and coerce it to a plain int.
 
     `order <= 0` was the whole check (#49). `True` is an int in Python, so it
@@ -153,14 +153,11 @@ def _require_order(order) -> int:
     mean choosing between `int(4.0)` and rejecting 4.5 by a second rule, and
     an order is a count of poles, not a measurement.
     """
-    if isinstance(order, bool) or not isinstance(order, numbers.Integral):
+    if (isinstance(order, bool) or not isinstance(order, numbers.Integral)
+            or int(order) <= 0):
         raise InvalidParameterError(
-            f"Filter order must be a positive integer, got {order!r}")
-    order = int(order)
-    if order <= 0:
-        raise InvalidParameterError(
-            f"Filter order must be a positive integer, got {order!r}")
-    return order
+            f"{label} must be a positive integer, got {order!r}")
+    return int(order)
 
 
 def _require_finite_data(data: ArrayLike) -> None:

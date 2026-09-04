@@ -287,7 +287,7 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                     raise ValueError(_complex_data_message(
                         f"dtype '{arr.dtype}' holding complex values")) from exc
             else:
-                    raise ValueError(
+                raise ValueError(
                     f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
                     f"be interpreted as real numbers."
                 ) from exc
