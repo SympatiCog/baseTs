@@ -1290,7 +1290,8 @@ class TimeSeriesData(pd.Series):
         # Copy metadata. freq is no longer special-cased out: the rate is not
         # in _metadata any more, _freq_declaration is, and the constructed
         # object derives from an index identical to this one. Nor is
-        # signal_name: _detach_shared_metadata below normalises the labels.
+        # signal_name: it is a normalising property (#61), so the setattr
+        # below coerces a None to "" on its own.
         for attr in self._metadata:
             if hasattr(self, attr):
                 setattr(base_ts, attr, getattr(self, attr))
