@@ -1325,6 +1325,8 @@ def shift_timeseries(
     freq = ts.freq
 
     lag_secs, lag_idx = get_lags(lag, lag_unit, freq)
+    # len(data) and len(times) are the same number for a Series, whose index
+    # and values cannot differ in length; data is named as the one bounded.
     validate_lag(lag, lag_idx, lag_unit, freq, n_samples=len(data))
 
     if drop_nan:

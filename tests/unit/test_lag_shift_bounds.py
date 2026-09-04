@@ -338,6 +338,21 @@ class TestTheBlankingRuleIsStatedNotListed:
         assert res["lagged_data"].dtype == np.float64
         np.testing.assert_array_equal(res["lagged_data"], [np.nan, np.nan, 1, 2, 3])
 
+    def test_a_dtype_with_no_missing_value_that_cannot_widen_is_diagnosed(self):
+        """A bytes array has no missing value and `astype(float)` refuses it
+        with a bare `ValueError: could not convert string to float`. That is
+        the raw-conversion leak this chain keeps closing; it is reachable,
+        since the constructor takes a bytes array, so it is named instead."""
+        ts = baseTs(np.array([b"a", b"b", b"c", b"d", b"e"]), np.array([0.0, 1, 2, 3, 4]))
+
+        with pytest.raises(ValidationError, match="does not convert to float") as excinfo:
+            shift_timeseries(ts, 2, "index", drop_nan=False)
+        assert "|S1" in str(excinfo.value)
+
+        # Dropping the head writes no sentinel, so the same series shifts.
+        np.testing.assert_array_equal(shift_timeseries(ts, 2, "index")["lagged_data"],
+                                      [b"a", b"b", b"c"])
+
     def test_a_complex_array_holds_nan_without_widening(self):
         ts = baseTs(np.array([1 + 1j, 2, 3, 4, 5]), np.array([0.0, 1, 2, 3, 4]))
         res = shift_timeseries(ts, 2, "index", drop_nan=False)
