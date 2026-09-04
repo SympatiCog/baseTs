@@ -896,16 +896,22 @@ class TestTheNaNRemedyClearsAnEdgeGap:
         with pytest.raises(InvalidParameterError, match=r"limit_direction='both'") as exc:
             followed.lowpass_at(5.0)
         assert "starts with" in str(exc.value)
-        assert "interpolate_gaps" in str(exc.value)
+        assert "NaN or Inf" in str(exc.value)          # the hint is appended, not substituted
+        assert "constant fill, not an interpolation" in str(exc.value)
 
     def test_the_edge_remedy_the_message_names_works_end_to_end(self):
         """Executed, not just named - the whole point of #77."""
         cleaned = self._with_gap(slice(0, 4)).filter_outliers()
 
-        out = cleaned.interpolate_gaps(limit_direction='both').lowpass_at(5.0)
+        filled = cleaned.interpolate_gaps(limit_direction='both')
+        out = filled.lowpass_at(5.0)
 
         assert np.all(np.isfinite(out.values))
         assert len(out) == 600
+        # The caveat the message states, measured: the edge fill is the first
+        # valid value extended back, not a value interpolated towards anything.
+        assert np.all(filled.values[:4] == filled.values[4])
+        assert filled.values[4] == cleaned.values[4]
 
     def test_a_trailing_gap_is_cleared_by_the_plain_remedy(self):
         """The asymmetry the hint is built on, pinned: pandas' forward fill

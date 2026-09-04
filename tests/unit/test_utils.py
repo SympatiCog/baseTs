@@ -1029,6 +1029,8 @@ def test_a_leading_nan_gets_the_edge_hint_and_an_interior_one_does_not():
         validate_finite_data(np.array([np.nan, 1.0, 2.0, 3.0]))
     assert "limit_direction='both'" in str(leading.value)
     assert "interpolate_gaps" in str(leading.value)
+    assert "NaN or Inf" in str(leading.value)             # appended to the base message
+    assert "constant fill, not an interpolation" in str(leading.value)
 
     for interior_or_trailing in (np.array([1.0, np.nan, 3.0]), np.array([1.0, 2.0, np.nan])):
         with pytest.raises(ValueError, match="interpolate_gaps") as plain:
