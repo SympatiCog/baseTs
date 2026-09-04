@@ -60,9 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 All four live in the one chain `get_lags` → `validate_lag` →
 `shift_timeseries` → `plotting.lag_plot` (hence `baseTs.lag_plot`), and all
-four were filed from #32's review rounds rather than folded in. Each let the
-returned dict, and so the plot title, say something the function had not
-done.
+four were filed from #32's review rounds rather than folded in. Three let
+the returned dict, and so the plot title, say something the function had
+not done; the fourth raised numpy's message for a cause #32's title had
+already claimed.
 
 **#51 — a derived rate shifted one sample short and reported the lag it did
 not apply.** `time_to_idx` truncated with `int()`. A derived rate is rarely
@@ -95,8 +96,13 @@ returns int64, a timestamp index returns timestamps. With `drop_nan=False`
 the head is blanked with the dtype's own missing value where it has one (NaN
 for float, complex and object; NaT for datetime and timedelta); a
 *numeric* dtype with none (integer, unsigned, bool) is widened to float64
-first, which for integers is what `pd.Series([1, 2, 3]).shift(1)` does
-(bool deliberately diverges — pandas shifts a bool Series to object, and a
+first, which for integers is what `pd.Series([1, 2, 3]).shift(1)` does —
+and only while every value is within ±2**53, where float64 is exact:
+review round 2 (codex) showed that widening the whole array for the sake
+of two placeholders changed the *surviving* samples past that limit, two
+distinct values landing on one float, where main had raised; so past it
+the call is refused and the message names `drop_nan=True`, which keeps the
+dtype, a remedy the test executes (bool deliberately diverges — pandas shifts a bool Series to object, and a
 float sentinel is what this contract promises); and a non-numeric dtype with
 none (bytes, str) is refused by name, because "widen" would mean parsing,
 and review round 1 (codex) showed an outcome-based fallback let
@@ -146,7 +152,9 @@ conversion the lag was meant for.
 - `shift_timeseries(..., drop_nan=False)` on an integer or bool series
   returns float64 with NaN, on a timestamp index returns NaT, where both
   raised before. A bytes or str series raises `ValidationError` naming the
-  dtype where it raised numpy's bare conversion error.
+  dtype where it raised numpy's bare conversion error. An integer series
+  with a value beyond ±2**53 raises `ValidationError` naming the exact
+  remedy, where it raised numpy's bare error.
 - One call that succeeded now raises, at the edge of float range (review
   round 1): a lag of 1.7e308 s at 1e-308 Hz rounds to 2 samples, and the
   seconds those 2 samples span overflow, so `idx_to_time`'s existing guard
@@ -164,7 +172,9 @@ four; the 5703-case rounding sweep; the tie rule; the two halves agreeing by
 construction across lags at the derived rate; the blanking rule across
 int64, uint8, bool, object, complex, datetime64 and timedelta64; the
 `drop_nan=False` float path pinned against the old code; text refused by
-kind, not by whether it parses; the float-range overflow accepted above; an
+kind, not by whether it parses; the 2**53 widening limit at both ends with
+its remedy executed; the plot title checked for its seconds, not only its
+sample count; the float-range overflow accepted above; an
 array `lag_unit` diagnosed rather than compared elementwise; the boundary at
 `len - 1` / `len`; the seconds-mode bound on the rounded index; the unit
 refused through `get_lags`, `validate_lag`, `shift_timeseries` and

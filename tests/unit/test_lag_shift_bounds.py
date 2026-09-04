@@ -199,10 +199,17 @@ class TestTheResultReportsTheLagItApplied:
 
     def test_the_plot_title_names_the_lag_that_was_drawn(self):
         """`Lag Plot at 0.5 seconds (49items)` was the issue's example."""
-        ax = _closed(lag_plot, _derived(), 0.5, "seconds")
+        ts = _derived()
+        ax = _closed(lag_plot, ts, 0.5, "seconds")
+        title = ax.get_title()
 
-        assert "(50items)" in ax.get_title()
-        assert "49" not in ax.get_title()
+        assert "(50items)" in title
+        assert "49" not in title
+        # The seconds half too: a title built from the caller's 0.5 rather
+        # than the applied 50 / rate passed the two lines above (review
+        # round 2, codex, by mutating the title in plotting.py).
+        assert f"at {50 / ts.freq} seconds" in title
+        assert "at 0.5 seconds" not in title
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +348,34 @@ class TestTheBlankingRuleIsStatedNotListed:
 
         assert res["lagged_data"].dtype == np.float64
         np.testing.assert_array_equal(res["lagged_data"], [np.nan, np.nan, 1, 0, 1])
+
+    def test_an_integer_array_beyond_2_53_is_refused_not_widened(self):
+        """Review round 2 (codex): widening the whole array to float64 for
+        the sake of two NaN placeholders changed the *surviving* samples
+        once they passed 2**53 - two distinct values landed on one float -
+        where main raised. Widening is only honest while it is exact, so
+        past the limit it is refused, and the remedy the message names is
+        executed here: `drop_nan=True` writes no sentinel and keeps int64."""
+        big = 2 ** 53 + 1
+        values = np.array([big, big + 2, big + 4, big + 6, big + 8], dtype=np.int64)
+        ts = baseTs(values, np.array([0.0, 1, 2, 3, 4]))
+
+        with pytest.raises(ValidationError, match="exceed 2\\*\\*53") as excinfo:
+            shift_timeseries(ts, 2, "index", drop_nan=False)
+        assert "drop_nan=True" in str(excinfo.value)
+
+        res = shift_timeseries(ts, 2, "index", drop_nan=True)
+        assert res["lagged_data"].dtype == np.int64
+        np.testing.assert_array_equal(res["lagged_data"], values[:3])
+
+        # The limit itself is exact and still widens; a negative value past
+        # it is caught by the lower bound, which abs() on int64 min would not.
+        edge = np.array([2 ** 53, 0, 0, 0, 0], dtype=np.int64)
+        assert shift_timeseries(baseTs(edge, np.arange(5.0)), 2, "index",
+                                drop_nan=False)["lagged_data"].dtype == np.float64
+        low = np.array([-(2 ** 63), 0, 0, 0, 0], dtype=np.int64)
+        with pytest.raises(ValidationError, match="exceed 2\\*\\*53"):
+            shift_timeseries(baseTs(low, np.arange(5.0)), 2, "index", drop_nan=False)
 
     def test_an_unsigned_array_widens_to_float(self):
         ts = baseTs(np.array([1, 2, 3, 4, 5], dtype=np.uint8),

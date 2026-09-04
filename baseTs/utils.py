@@ -940,6 +940,9 @@ def find_closest_time(
 
 LAG_UNITS = ("seconds", "index")
 
+# The largest magnitude at which every integer is exactly a float64.
+EXACT_INT_LIMIT = 2 ** 53
+
 
 def _validate_lag_unit(lag_unit: Any) -> None:
     """Refuse any lag unit but the two documented ones (issue #54).
@@ -1254,9 +1257,11 @@ def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
     The rule, by dtype kind: a dtype with a missing value of its own gets it
     - NaN for float and complex, NaT for datetime and timedelta, NaN into an
     object slot; a *numeric* dtype with none (integer, unsigned, bool) is
-    widened to float64 first; and a non-numeric dtype with none (bytes, str,
-    void) is refused, because "widen" would mean parsing, and a bytes array
-    whose entries happen to read as numbers would flip dtype silently.
+    widened to float64 first, an integer one only while every value is
+    within +/-2**53 so the widening is exact; and a non-numeric dtype with
+    none (bytes, str, void) is refused, because "widen" would mean parsing,
+    and a bytes array whose entries happen to read as numbers would flip
+    dtype silently.
     Integer widening is what `pd.Series([1, 2, 3]).shift(1)` does; bool
     deliberately diverges from pandas, which shifts a bool Series to object,
     because a float sentinel is what this function's contract promises.
@@ -1280,7 +1285,22 @@ def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
         return out
     if kind in "fcO":
         out = arr.copy()
-    elif kind in "biu":
+    elif kind == "b":
+        out = arr.astype(float)
+    elif kind in "iu":
+        # Widening is only honest while it is exact. float64 holds every
+        # integer up to 2**53; past that, values the shift never touched
+        # come back changed, and two distinct samples can land on one
+        # float (review round 2, codex). On main this raised, so returning
+        # a quietly imprecise array would trade a loud failure for the
+        # confident-wrong-number class this module guards against.
+        if arr.size and (arr.min() < -EXACT_INT_LIMIT or arr.max() > EXACT_INT_LIMIT):
+            raise ValidationError(
+                f"cannot blank the shifted-out samples of a {arr.dtype} array "
+                f"whose values exceed 2**53: widening to float64 would change "
+                f"them. Use drop_nan=True, which drops the shifted-out samples "
+                f"and keeps the dtype."
+            )
         out = arr.astype(float)
     else:
         raise ValidationError(
