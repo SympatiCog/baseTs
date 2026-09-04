@@ -477,9 +477,15 @@ class TestALagLongerThanTheSeriesIsRefused:
 
     def test_a_seconds_lag_that_rounds_up_to_the_length_is_refused(self):
         """The bound is applied to the *rounded* index, which is the one
-        that will be used: 4.6 s at 1 Hz rounds to 5 samples."""
-        with pytest.raises(ValidationError, match="5 samples"):
+        that will be used: 4.6 s at 1 Hz rounds to 5 samples. The message
+        has to say so - "5 samples" alone is the series length, true of
+        both bound messages (review round 3, glm)."""
+        with pytest.raises(ValidationError) as excinfo:
             shift_timeseries(_five(), 4.6, "seconds")
+        message = str(excinfo.value)
+        assert "lag=4.6s" in message
+        assert "lag_idx=5 samples" in message
+        assert "only 5 samples" in message
 
         assert shift_timeseries(_five(), 4.4, "seconds")["lag_idx"] == 4
 
@@ -495,7 +501,14 @@ class TestALagLongerThanTheSeriesIsRefused:
             validate_lag(5.0, 5, "seconds", 1.0, n_samples=5)
 
     def test_the_positive_integer_rule_is_still_judged_first(self):
-        """A zero lag on a five-sample series is a zero lag, not a bound."""
+        """An index that is both non-integer and past the bound gets the
+        integer rule. A zero index cannot show the order, since the bound
+        would not fire on it either way (review round 3, glm); 7.0 on a
+        five-sample series lets both rules speak, and the integer one does."""
+        with pytest.raises(ValidationError, match="positive nonzero integer"):
+            validate_lag(7.0, 7.0, "index", 1.0, n_samples=5)
+
+        # A zero lag on a five-sample series is a zero lag, not a bound.
         with pytest.raises(ValidationError, match="positive nonzero integer"):
             validate_lag(0, 0, "index", 1.0, n_samples=5)
 

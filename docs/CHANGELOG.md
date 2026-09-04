@@ -180,7 +180,14 @@ array `lag_unit` diagnosed rather than compared elementwise; the boundary at
 refused through `get_lags`, `validate_lag`, `shift_timeseries` and
 `lag_plot`, and judged before the rate. Three pins in
 `test_lag_conversion_guards.py` that described truncation are restated for
-rounding.
+rounding. Review round 3, a third harness (ollama `glm-5.3:cloud` prompted
+directly with the diff), found two pins that passed for the wrong reason:
+the rounds-up-to-the-length test matched "5 samples", true of both bound
+messages, and now asserts the rounded index the message names; the
+rule-order test used a zero index the bound could never fire on, and now
+uses a non-integer index past the bound so both rules could speak. 28
+mutants over the diff, 27 killed; the survivor is `len(data)` against
+`len(times)`, the same number for any Series, noted in a comment.
 
 ## [Unreleased] — the NaN message says what a leading gap needs (#77)
 
