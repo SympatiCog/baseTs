@@ -266,10 +266,14 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   deliberate and pinned by a test.
 - Cutoffs must be positive and below Nyquist; `notch_filter` additionally needs its notch more than
   1% of Nyquist from either end, since that is the half-width of the band it stops (see its entry).
-  For the three single-cutoff filters, `order` must be
-  a positive integer (`True`, `4.0` and `'4'` are rejected); `bandpass_filter`'s `order` argument is
-  accepted and unused, as its own entry says. Parameter and data rejections raise
-  `InvalidParameterError`, which is also a `ValueError`.
+- **Integer parameters follow one rule** (#78). A parameter that counts something - a filter
+  `order`, `sg_filter`'s `window_length` and `polyorder`, `filters.bandpass_filter`'s `window_step`
+  and `overlap`, and `set_outlier_filter`'s `max_iterations`, `order` and `it` - must be an
+  integer: a numpy integer is accepted and stored as a plain `int`; `True`, `4.0`, `4.7` and `'4'`
+  are rejected by name. The floor is the rule's: an order, a step, a window length, a pass count
+  and an interpolation order must be at least 1; an `overlap`, a `polyorder` and `it` may be 0.
+  `bandpass_filter`'s `order` argument is accepted and unused, as its own entry says. Parameter
+  and data rejections raise `InvalidParameterError`, which is also a `ValueError`.
 
 ### `lowpass_filter(cutoff, order=4)`
 

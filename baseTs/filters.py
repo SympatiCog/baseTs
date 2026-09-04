@@ -75,9 +75,10 @@ def _require_real(label: str, value) -> None:
     Decimal *rate* - validate_sampling_freq does so deliberately - while
     refusing a Decimal *band edge*. One type, two answers, same call.
 
-    bool is excluded explicitly: it is a Real, and `True` as a band edge or a
-    window step is a mistake worth naming rather than silently reading as 1.
-    Complex is excluded by construction, being neither.
+    bool is excluded explicitly: it is a Real, and `True` as a band edge is a
+    mistake worth naming rather than silently reading as 1 (_require_int makes
+    the same exclusion for the integer parameters). Complex is excluded by
+    construction, being neither.
     """
     if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         raise InvalidParameterError(
@@ -124,40 +125,52 @@ def _as_real_float(label: str, value) -> float:
     return number
 
 
-def _require_finite_real(label: str, value) -> float:
-    """Coerce, and additionally reject NaN and the infinities.
+def _require_int(label: str, value: Any, minimum: int = 1) -> int:
+    """Type-check an integer parameter and coerce it to a plain int.
 
-    Used for parameters that are arithmetic operands rather than comparands.
-    NaN survives every `<`/`>=` comparison as False, so a NaN reaching
-    `max(1, window_step - overlap)` is silently clamped rather than rejected -
-    the same order-dependent `max()` blindness this module had for band edges.
-    """
-    number = _as_real_float(label, value)
-    if not np.isfinite(number):
-        raise InvalidParameterError(
-            f"{label} must be a real number and finite, got {value!r}")
-    return number
+    The one policy for a parameter that counts something - poles, samples,
+    iterations, a polynomial degree (#78). It began as the filter order's
+    rule (#49): `order <= 0` was the whole check, so `True` passed and built
+    an order-1 filter, `'4'` died in the comparison with a bare TypeError,
+    and `3.5` was left to whatever the installed scipy does with a float
+    order. Its siblings then answered the same question differently: a
+    window step went through the real-number guard and accepted 4.0 and 2.5,
+    a Savitzky-Golay window length reached scipy unchecked, and the outlier
+    filter's `int()` coercion stored 4 for 4.7. Same package, three answers.
 
-
-def _require_order(order: Any, label: str = "Filter order") -> int:
-    """Type-check a filter order and coerce it to a plain int.
-
-    `order <= 0` was the whole check (#49). `True` is an int in Python, so it
-    passed and built an order-1 filter; `'4'` died in the comparison with a
-    bare TypeError; `3.5` passed and was left to whatever the installed scipy
-    does with a float order. numbers.Integral rather than int so numpy
-    integers are admitted, and int() so the value handed to scipy is the one
-    checked here - the same rule as _as_real_float, one type down.
+    numbers.Integral rather than int so numpy integers are admitted, and
+    int() so the value handed on is the one checked here - the same rule as
+    _as_real_float, one type down. bool is refused by name: it is an
+    Integral, and `True` as a count is a mistake worth naming rather than
+    silently reading as 1.
 
     An integral-valued float such as 4.0 is rejected too. Admitting it would
     mean choosing between `int(4.0)` and rejecting 4.5 by a second rule, and
-    an order is a count of poles, not a measurement.
+    a count is not a measurement.
+
+    `minimum` is the floor the rule states - 1 for a count that must exist
+    (an order, a step, a window), 0 for one that may be absent (an overlap,
+    a polynomial degree, a robustifying pass). The message names which.
     """
-    if (isinstance(order, bool) or not isinstance(order, numbers.Integral)
-            or int(order) <= 0):
+    rule = {1: "a positive integer", 0: "a non-negative integer"}.get(
+        minimum, f"an integer of at least {minimum}")
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise InvalidParameterError(f"{label} must be {rule}, got {value!r}")
+
+    # numbers.Integral is a registrable ABC, so membership does not imply a
+    # working __int__ - the hole one step in that _as_real_float closes for
+    # reals, and that the first cut of this rule left open. OverflowError is
+    # caught for symmetry with that guard; int() of an Integral cannot
+    # overflow, but a virtual subclass can raise anything from __int__.
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
         raise InvalidParameterError(
-            f"{label} must be a positive integer, got {order!r}")
-    return int(order)
+            f"{label} could not be converted to an int, got {value!r}") from exc
+
+    if number < minimum:
+        raise InvalidParameterError(f"{label} must be {rule}, got {value!r}")
+    return number
 
 
 def _require_finite_data(data: ArrayLike) -> None:
@@ -292,7 +305,7 @@ def _validate_filter_args(data: ArrayLike,
             f"Cutoff frequency must be positive and less than Nyquist frequency "
             f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
 
-    order = _require_order(order)
+    order = _require_int("Filter order", order)
 
     return sampling_freq, cutoff_freq, order
 
@@ -385,12 +398,23 @@ def validate_band_params(data: ArrayLike,
     except ValueError as exc:
         raise InvalidParameterError(str(exc)) from exc
 
-    window_step = _require_finite_real('Window step', window_step)
-    if not window_step >= 1:
-        raise InvalidParameterError(
-            f"Window step must be at least 1, got {window_step!r}")
+    # A step in samples, so an integer (#78): the real-number guard this
+    # replaced accepted 4.0 and 2.5 against the annotation. The floor of 1
+    # is the rule's, not a second check: a sub-1 step would inflate the
+    # effective rate above the real one, and this function is public, so it
+    # cannot rely on its caller's clamp.
+    window_step = _require_int('window_step', window_step)
 
-    effective_freq = sampling_freq / window_step
+    # A Python int is unbounded, so a step the type rule admits can still be
+    # too large to divide a float by: `10.0 / 10**400` raises OverflowError.
+    # #30 closed that bare error through the float coercion this no longer
+    # does, so it is caught here instead, at the one place the step is used.
+    try:
+        effective_freq = sampling_freq / window_step
+    except OverflowError as exc:
+        raise InvalidParameterError(
+            f"window_step is too large to divide the sampling frequency by, "
+            f"got {window_step!r}") from exc
 
     # Scalar-ness before any comparison: `not (edge > 0)` on an array raises
     # numpy's ambiguity ValueError, which escapes this module's contract.
@@ -441,10 +465,19 @@ def sg_filter(data: ArrayLike,
         Filtered data array
         
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If window_length is not a positive integer or
+            polyorder is not a non-negative integer
     """
     data = np.asarray(data)
-    
+
+    # Type-checked before the adjustments below assume them integral (#78).
+    # `True` read as a window of 1 and returned the input unchanged - the
+    # identity, with no error - while 11.0 survived the arithmetic and died
+    # inside savgol_filter with a bare TypeError. A polynomial degree of 0 is
+    # the moving average, so its floor is 0; a window must exist, so 1.
+    window_length = _require_int('window_length', window_length)
+    polyorder = _require_int('polyorder', polyorder, minimum=0)
+
     # Adjust window length if necessary
     if window_length >= len(data):
         window_length = len(data) - 1 if len(data) % 2 == 0 else len(data)
@@ -713,8 +746,8 @@ def bandpass_filter(data: ArrayLike,
         hp_hz: High-pass cutoff frequency in Hz
         lp_hz: Low-pass cutoff frequency in Hz
         sample_Hz: Sampling frequency in Hz
-        window_step: Step size for windowed analysis
-        overlap: Overlap size for windowed analysis
+        window_step: Step size for windowed analysis, in samples (a positive integer)
+        overlap: Overlap size for windowed analysis, in samples (a non-negative integer)
         reset_mean: Whether to reset the mean of filtered data to original mean
         
     Returns:
@@ -734,9 +767,16 @@ def bandpass_filter(data: ArrayLike,
     # to raise a bare TypeError on a string or None, and before the max(),
     # which is order-dependent on NaN exactly as `max(hp_hz, lp_hz)` was:
     # `max(1, nan)` returns 1, so a NaN step used to be silently clamped and
-    # the filter ran at a rate the caller never asked for.
-    window_step = _require_finite_real('window_step', window_step)
-    overlap = _require_finite_real('overlap', overlap)
+    # the filter ran at a rate the caller never asked for (#30).
+    #
+    # Checked as integers (#78): both are counts of samples, annotated int,
+    # and the real-number guard they went through accepted 4.0 and 2.5. The
+    # overlap may be zero - it is the default - but not negative, which would
+    # inflate the effective rate above the real one. The relationship between
+    # the two is still not checked: an overlap of at least the step clamps to
+    # 1 below and filters at the full declared rate, as #30 said plainly.
+    window_step = _require_int('window_step', window_step)
+    overlap = _require_int('overlap', overlap, minimum=0)
     window_step = max(1, window_step - overlap)
     # The coerced edges come back and are what gets filtered. Validating one
     # value and computing with another is not validation (#30).

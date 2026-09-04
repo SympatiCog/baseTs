@@ -30,6 +30,9 @@ class _UnconvertibleReal:
     the InvalidParameterError contract.
     """
 
+    def __repr__(self):
+        return "<unconvertible real>"
+
 
 @numbers.Real.register
 class _DeclaresOneHz:
@@ -233,39 +236,45 @@ class TestWindowingParamsAreGuardedLikeTheBandEdges:
         ("None overlap", dict(overlap=None)),
     ]
 
-    OVERSIZED = [
-        ("huge int overlap", dict(overlap=10 ** 400)),
-        ("huge int window_step", dict(window_step=10 ** 400)),
-    ]
-
-    @pytest.mark.parametrize(
-        "label,kwargs", OVERSIZED, ids=[c[0] for c in OVERSIZED]
-    )
-    def test_an_int_too_large_for_float_is_rejected_not_raised_through(self, label, kwargs):
-        """`float(10**400)` raises OverflowError, which is not our contract.
-
-        A Python int is a numbers.Real, so it passes the membership test and
-        then dies on the conversion. The first draft of this guard did the
-        conversion unwrapped, which turned `overlap=10**400` from silently
-        succeeding on main - `max(1, 1 - 10**400)` is fine in int arithmetic -
-        into a bare OverflowError. Making a wrong answer into an exception is
-        an improvement; making it into an exception outside the contract this
-        change exists to restore is not.
-
-        `window_step=10**400` already raised OverflowError on main, through
-        `sample_Hz / window_step`. The guard claimed to close that class and
-        did not until now.
+    def test_a_window_step_too_large_to_divide_by_is_rejected_not_raised_through(self):
+        """`window_step=10**400` raised a bare OverflowError on main, through
+        `sample_Hz / window_step`. #30 closed that by coercing the step to a
+        float, and the first draft of that guard did the conversion unwrapped,
+        so the OverflowError merely moved. Since #78 the step is an integer
+        and is never converted, so the overflow is back in the division - and
+        is caught there, at the one place the step is used.
         """
-        with pytest.raises(InvalidParameterError, match="is too large to convert"):
+        with pytest.raises(InvalidParameterError, match="window_step is too large"):
             bandpass_filter(
-                self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS, **kwargs
+                self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS,
+                window_step=10 ** 400,
             )
+
+    def test_an_oversized_overlap_clamps_like_any_overlap_at_or_past_the_step(self):
+        """`overlap=10**400` raised under #30 only because the float coercion
+        overflowed; as an integer it is a legitimate non-negative value, and
+        what is wrong with it is its relationship to the step. That is the gap
+        #30 named and left open - an overlap of at least the step clamps to 1
+        and filters at the full declared rate - and #78, whose subject is the
+        type rule, did not close it. So the oversized overlap now does what an
+        overlap of 1 does at the default step: nothing. Pinned so that closing
+        the gap is a decision that changes this test, not a drift.
+        """
+        expected = bandpass_filter(self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS)
+        for overlap in (1, 10 ** 400):
+            np.testing.assert_array_equal(
+                bandpass_filter(self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS,
+                                overlap=overlap),
+                expected)
 
     @pytest.mark.parametrize(
         "label,kwargs", BAD_WINDOWING, ids=[c[0] for c in BAD_WINDOWING]
     )
     def test_bad_windowing_param_raises_invalid_parameter_error(self, label, kwargs):
-        with pytest.raises(InvalidParameterError, match="must be a real number"):
+        """Since #78 the guard is the integer one, so the message names that
+        rule rather than "a real number" - the rejection itself is #30's."""
+        with pytest.raises(InvalidParameterError,
+                           match="must be a (positive|non-negative) integer"):
             bandpass_filter(
                 self._data(), hp_hz=0.1, lp_hz=0.4, sample_Hz=self.FS, **kwargs
             )
@@ -286,7 +295,8 @@ class TestWindowingParamsAreGuardedLikeTheBandEdges:
         effective rate above the real one.
         """
         for bad in (0, -1, 0.5):
-            with pytest.raises(InvalidParameterError, match="[Ww]indow step"):
+            with pytest.raises(InvalidParameterError,
+                               match="window_step must be a positive integer"):
                 validate_band_params(self._data(), self.FS, 0.1, 0.4, 3,
                                      window_step=bad)
 
@@ -481,62 +491,85 @@ class TestTheInvalidParameterContractIsComplete:
     #:
     #: Each row carries the fragment its own guard produces - specific enough
     #: to pin which check fired, not merely which parameter was at fault - and
-    #: a flag for whether this change altered the behaviour. `main` is frozen
-    #: history (main = pre-#30), so recording it as data is a fact rather than
-    #: a cached value that can go stale.
+    #: the PR that made the case raise InvalidParameterError: 30, 78, or None
+    #: for a case that already did before either. `main` before #30 is frozen
+    #: history, so recording it as data is a fact rather than a cached value
+    #: that can go stale.
 
-    #: value -> per-edge (fragment, changed-by-this-fix)
+    #: value -> per-edge (fragment, PR)
     EDGE_CASES = {
         'negative': (-1.0, {
-            'hp_hz': (r"Band edge hp_hz must be positive and less than", True),
-            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", 30),
+            'lp_hz': (r"Cutoff frequency must be positive", 30)}),
         'zero': (0.0, {
-            'hp_hz': (r"Band edge hp_hz must be positive and less than", True),
-            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", 30),
+            'lp_hz': (r"Cutoff frequency must be positive", 30)}),
         # A NaN *lower* edge already raised InvalidParameterError before this
         # change: max(nan, 0.4) returns nan, which the pre-existing NaN-safe
         # cutoff check caught. A NaN *upper* edge did not - max(0.1, nan)
         # returns 0.1. That asymmetry is the whole bug.
         'NaN': (np.nan, {
-            'hp_hz': (r"Band edge hp_hz must be positive and less than", False),
-            'lp_hz': (r"Cutoff frequency must be positive", True)}),
+            'hp_hz': (r"Band edge hp_hz must be positive and less than", None),
+            'lp_hz': (r"Cutoff frequency must be positive", 30)}),
         'non-scalar': (np.array([0.1, 0.2]), {
-            'hp_hz': (r"Band edge hp_hz must be a real number", True),
-            'lp_hz': (r"Band edge lp_hz must be a real number", True)}),
+            'hp_hz': (r"Band edge hp_hz must be a real number", 30),
+            'lp_hz': (r"Band edge lp_hz must be a real number", 30)}),
         # Already InvalidParameterError on main, where the range check caught
         # it by comparing a big int against a float exactly. Now caught one
         # step earlier by the coercion, so the message changed and the
         # behaviour did not.
         'too large': (10 ** 400, {
-            'hp_hz': (r"Band edge hp_hz is too large", False),
-            'lp_hz': (r"Band edge lp_hz is too large", False)}),
+            'hp_hz': (r"Band edge hp_hz is too large", None),
+            'lp_hz': (r"Band edge lp_hz is too large", None)}),
         # A Real that cannot be coerced. The band edges take the same path the
         # windowing parameters do, so this case has to exist on both.
         'unconvertible': (_UnconvertibleReal(), {
-            'hp_hz': (r"Band edge hp_hz could not be converted", True),
-            'lp_hz': (r"Band edge lp_hz could not be converted", True)}),
+            'hp_hz': (r"Band edge hp_hz could not be converted", 30),
+            'lp_hz': (r"Band edge lp_hz could not be converted", 30)}),
     }
 
-    #: value -> (fragment template, changed-by-this-fix)
+    #: The rule each windowing parameter states (#78): a step must exist, an
+    #: overlap may be zero. Every windowing case below fails that one rule, so
+    #: the fragment is built from it and carries the offending value to stay
+    #: specific to its row.
+    WINDOW_RULES = {'window_step': "a positive integer",
+                    'overlap': "a non-negative integer"}
+
+    #: value -> PR. The first three raised "a real number" under #30 and the
+    #: integer rule since #78 - the message moved, the rejection did not. The
+    #: last three ran under #30: a fractional or integral-valued float step
+    #: divided the rate, and a negative overlap inflated it - the silent case
+    #: #30 named and left. `overlap=0` is the default, so zero is a
+    #: window_step-only case, listed as a one-off; an oversized overlap is
+    #: absent because it no longer raises - see the clamping test above.
     WINDOW_CASES = {
-        'NaN': (np.nan, r"{p} must be a real number and finite", True),
-        'non-numeric': (None, r"{p} must be a real number, got", True),
-        'too large': (10 ** 400, r"{p} is too large", True),
-        'unconvertible': (_UnconvertibleReal(), r"{p} could not be converted", True),
+        'NaN': (np.nan, 30),
+        'non-numeric': (None, 30),
+        'unconvertible': (_UnconvertibleReal(), 30),
+        'fractional': (2.5, 78),
+        'integral float': (4.0, 78),
+        'negative': (-1, 78),
     }
 
     #: Genuinely one-off - no symmetric partner to lose.
     ONE_OFF = [
         ("edges transposed", dict(hp_hz=0.4, lp_hz=0.1),
-         r"Band edges out of order", True),
+         r"Band edges out of order", 30),
         ("edges equal", dict(hp_hz=0.2, lp_hz=0.2),
-         r"Band edges out of order", True),
+         r"Band edges out of order", 30),
         ("upper past effective Nyquist",
          dict(hp_hz=0.5, lp_hz=4.0, window_step=4),
-         r"Cutoff frequency must be positive", True),
+         r"Cutoff frequency must be positive", 30),
+        # Clamped to 1 by max() before #78, so it ran at the full rate.
+        ("window_step zero", dict(hp_hz=0.1, lp_hz=0.4, window_step=0),
+         r"window_step must be a positive integer, got 0", 78),
+        # A bare OverflowError on main, from the float coercion under #30 and
+        # from the division since #78; InvalidParameterError under both.
+        ("window_step too large", dict(hp_hz=0.1, lp_hz=0.4, window_step=10 ** 400),
+         r"window_step is too large", 30),
         # Guarded since #24, so unchanged by this fix.
         ("degenerate rate", dict(hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan),
-         r"Invalid sampling frequency", False),
+         r"Invalid sampling frequency", None),
         # An exact type whose value is below Nyquist but whose nearest double
         # is not. A review round read this as a narrowing introduced by the
         # coercion, because comparing the Fraction exactly accepts it. It is
@@ -547,7 +580,7 @@ class TestTheInvalidParameterContractIsComplete:
         ("upper edge rounds onto Nyquist",
          dict(hp_hz=1.0, lp_hz=Fraction(500) - Fraction(1, 10 ** 16),
               sample_Hz=1000.0),
-         r"Cutoff frequency must be positive", True),
+         r"Cutoff frequency must be positive", 30),
     ]
 
     @staticmethod
@@ -560,14 +593,19 @@ class TestTheInvalidParameterContractIsComplete:
                 kwargs = {edge: value, other: 0.4 if edge == 'hp_hz' else 0.1}
                 rows.append((f"{edge} {case}", kwargs, fragment, changed))
         for param in ('window_step', 'overlap'):
-            for case, (value, template, changed) in cls.WINDOW_CASES.items():
+            for case, (value, pr) in cls.WINDOW_CASES.items():
+                fragment = (f"{param} must be {cls.WINDOW_RULES[param]}, "
+                            f"got {re.escape(repr(value))}")
                 rows.append((f"{param} {case}",
                              dict(hp_hz=0.1, lp_hz=0.4, **{param: value}),
-                             template.format(p=param), changed))
+                             fragment, pr))
         return rows + cls.ONE_OFF
 
-    #: The count quoted in the CHANGELOG entry for #30, asserted below.
-    BEHAVIOUR_CHANGES_CLAIMED = 21
+    #: The counts quoted in the CHANGELOG entries, asserted below. #30 quoted
+    #: twenty-one; one of those, the oversized overlap, stopped raising under
+    #: #78 (it fell to the relationship gap #30 left open), so twenty of #30's
+    #: cases remain in the contract and #78's entry says so.
+    BEHAVIOUR_CHANGES_CLAIMED = {30: 20, 78: 7}
 
     def test_the_contract_holds_for_every_known_bad_input(self):
         """Every known bad input raises, with the message its own guard makes."""
@@ -594,11 +632,11 @@ class TestTheInvalidParameterContractIsComplete:
         here instead of quietly making a CHANGELOG paragraph wrong.
         """
         census = self._build_census()
-        changed = [c for c in census if c[3]]
-        unchanged = [c for c in census if not c[3]]
+        by_pr = {pr: [c for c in census if c[3] == pr] for pr in (None, 30, 78)}
 
-        assert len(changed) == self.BEHAVIOUR_CHANGES_CLAIMED
-        assert sorted(c[0] for c in unchanged) == [
+        assert {pr: len(rows) for pr, rows in by_pr.items() if pr} == \
+            self.BEHAVIOUR_CHANGES_CLAIMED
+        assert sorted(c[0] for c in by_pr[None]) == [
             "degenerate rate", "hp_hz NaN", "hp_hz too large", "lp_hz too large",
         ]
 
