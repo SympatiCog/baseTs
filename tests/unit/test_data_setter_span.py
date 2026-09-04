@@ -235,6 +235,32 @@ class TestTheTwoStepRouteStillWorks:
         assert "ts.data" not in str(caught.value)
         assert "5 samples" in str(caught.value)
 
+    @pytest.mark.parametrize("resample", [
+        lambda ts: ts.interpto_hz(10.0),
+        lambda ts: ts.interpto_samples(5),
+    ], ids=['interpto_hz', 'interpto_samples'])
+    def test_an_unmeasurable_span_is_refused_not_leaked(self, resample):
+        """The shared precondition's non-finite arm and its TypeError catch.
+
+        `duration()` on a DatetimeIndex raises TypeError (a Timedelta does
+        not `float()`); the helper turns that into the same degenerate-span
+        refusal with `duration nan` rather than leaking the conversion
+        error. Mutation testing found neither arm pinned for `interpto_hz`
+        before the extraction; both resamplers pin them now.
+        """
+        stamps = pd.date_range("2024-01-01", periods=3, freq="s")
+        ts = baseTs(np.arange(3.0), times=stamps)
+        with pytest.raises(ValueError, match="degenerate \\(duration nan\\)"):
+            resample(ts)
+
+    def test_each_resampler_says_why_the_span_defeats_it_in_its_own_words(self):
+        """One check, two consequences; the wordings must not be swapped."""
+        ts = one_sample()
+        with pytest.raises(ValueError, match="stamping the requested rate"):
+            ts.interpto_hz(10.0)
+        with pytest.raises(ValueError, match="spread the new grid"):
+            ts.interpto_samples(5)
+
     def test_interpto_samples_still_works_on_a_two_sample_span(self):
         ts = baseTs(np.array([0.0, 4.0]), times=np.array([0.0, 1.0]))
         out = ts.interpto_samples(5)
