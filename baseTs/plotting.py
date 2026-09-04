@@ -488,11 +488,14 @@ def lag_plot(ts,
     lag_secs = res['lag_secs']
     lag_idx = res['lag_idx']
     
-    try:
-        sig_name = ts.signal_name.upper()
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        sig_name = "Signal"
+    # Verbatim, like every other title in this module. This used to be
+    # `ts.signal_name.upper()` inside a bare `except Exception` that printed
+    # the failure to stdout and labelled the plot "Signal" (#61). The except
+    # is gone because the failure it caught cannot happen any more -
+    # signal_name is always a string (a normalising property since #61) -
+    # and the .upper() is gone because a derivation carries the name
+    # unchanged (#56) and this was the one title that re-cased it.
+    sig_name = ts.signal_name
 
     title = f'{sig_name} Lag Plot at {lag_secs} seconds ({lag_idx}items)'
     xlabel = f'Original {sig_name} Data'
