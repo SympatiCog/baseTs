@@ -224,9 +224,10 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   gaps as NaN, so a `filter_outliers()` → `lowpass_filter()` chain needs an `interpolate_gaps()`
   between them. A gap at the *start* of the series needs
   `interpolate_gaps(limit_direction='both')`: the default fills forward only, and the error says
-  so when that is the case (#77). That holds for the default `'linear'` and for `'time'`;
-  `'polynomial'` never fills an edge and `'spline'` extrapolates its fit over one. Complex data
-  is accepted: the real and imaginary parts are filtered independently.
+  so when that is the case (#77). That holds for the pandas-native methods (`'linear'`, `'time'`,
+  `'index'`, `'values'`); the scipy-backed methods (`'cubic'`, `'polynomial'`, `'spline'`, ...)
+  leave an edge unfilled or extrapolate a fit. Complex data is accepted: the real and imaginary
+  parts are filtered independently.
 - `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
   they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
   deliberate and pinned by a test.
@@ -513,9 +514,13 @@ Interpolate missing values (NaN) in the time series with enhanced capabilities.
   with the same message that named this method (#77). Pass `limit_direction='both'` to extend the
   first valid value back over the edge. That is a constant extension, not an interpolation, which
   is why it is not the default. A trailing gap is already extended by the default. Both hold for
-  `'linear'` and `'time'`; `'polynomial'` never fills an edge, and `'spline'` extrapolates its fit.
-  A `limit` caps the edge fill like any other. A series with no valid sample cannot be filled at
-  all, and the guards say so instead of naming this method.
+  the pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`). The scipy-backed
+  methods differ at an edge in either direction: `'cubic'`, `'quadratic'`, `'slinear'`, `'zero'`,
+  `'nearest'`, `'polynomial'`, `'krogh'`, `'piecewise_polynomial'`, `'akima'` and
+  `'from_derivatives'` leave it unfilled, while `'spline'`, `'pchip'`, `'cubicspline'` and
+  `'barycentric'` extrapolate their fit over it. A `limit` caps the edge fill like any other. A
+  series with no valid sample cannot be filled at all, and the guards say so instead of naming
+  this method.
 
 **Returns:**
 - `baseTs`: New baseTs object with interpolated data
@@ -787,8 +792,8 @@ Get frequency domain representation using enhanced FFT with optional windowing.
   so a `filter_outliers()` → `get_frequency_content()` chain needs an `interpolate_gaps()` between
   them. A gap at the *start* of the series needs `interpolate_gaps(limit_direction='both')`: the
   default fills forward only, and the error says so when that is the case (#77). That holds for
-  the default `'linear'` and for `'time'`; `'polynomial'` never fills an edge and `'spline'`
-  extrapolates its fit over one.
+  the pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`); the scipy-backed
+  methods (`'cubic'`, `'polynomial'`, `'spline'`, ...) leave an edge unfilled or extrapolate a fit.
 
 **Example:**
 ```python

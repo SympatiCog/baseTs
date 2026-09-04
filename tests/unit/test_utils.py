@@ -1088,7 +1088,11 @@ def test_an_all_nan_series_is_told_there_is_nothing_to_interpolate_from():
     changes rather than gaining a hint (review, round 1)."""
     from baseTs.utils import validate_finite_data
 
-    for all_nan in (np.array([np.nan] * 5), np.array([np.nan]), np.float64(np.nan)):
+    # The 2-D case is included on purpose: "nothing to interpolate from" is
+    # true of any shape, so this branch is not scoped to 1-D the way the
+    # positional hint is (review, round 2).
+    for all_nan in (np.array([np.nan] * 5), np.array([np.nan]), np.float64(np.nan),
+                    np.full((2, 2), np.nan)):
         with pytest.raises(ValueError, match="NaN or Inf") as exc:
             validate_finite_data(all_nan)
         assert "nothing to interpolate from" in str(exc.value)
@@ -1096,28 +1100,36 @@ def test_an_all_nan_series_is_told_there_is_nothing_to_interpolate_from():
         assert "interpolate_gaps()" not in str(exc.value)
 
 
-def test_the_hint_names_the_methods_it_does_not_hold_for():
-    """The hint's remedy is a claim about the *default* method. Measured:
-    'polynomial' never fills an edge in any direction, and 'spline' fills it
-    by extrapolating its fit rather than by a constant - so a caller on either
-    method who follows the hint verbatim lands on the message again (review,
-    round 1, both panelists)."""
+def test_the_hint_scopes_its_remedy_to_the_pandas_native_methods():
+    """The hint's remedy is a claim about the *default* method. Measured over
+    every method pandas accepts: the four pandas-native ones ('linear',
+    'time', 'index', 'values') extend the first valid value back over the
+    edge; every scipy-backed one either leaves the edge unfilled ('cubic',
+    'polynomial', 'nearest', 'akima', ...) or extrapolates its fit ('spline',
+    'pchip', 'cubicspline', 'barycentric'). Round 1 carved out two names and
+    round 2 found 'cubic' - listed in the docstring's own `method` line -
+    reproducing #77 verbatim; the message now states the rule, not a list."""
     from baseTs.utils import validate_finite_data
 
     with pytest.raises(ValueError) as exc:
         validate_finite_data(np.array([np.nan, 1.0, 2.0, 3.0]))
     assert "with the default method" in str(exc.value)
-    assert "'polynomial' never fills an edge" in str(exc.value)
-    assert "'spline' extrapolates" in str(exc.value)
+    assert "scipy-backed methods" in str(exc.value)
+    assert "leave an edge unfilled or extrapolate a fit" in str(exc.value)
 
     d = np.sin(np.arange(500) / 10.0)
     d[:4] = np.nan
     t = np.arange(500) / 10.0
-    poly = baseTs(d, t).interpolate_gaps(method='polynomial', order=2, limit_direction='both')
-    assert np.isnan(poly.values[:4]).all()
-    spline = baseTs(d, t).interpolate_gaps(method='spline', order=3, limit_direction='both')
-    assert np.all(np.isfinite(spline.values[:4]))
-    assert not np.all(spline.values[:4] == spline.values[4])    # a fit, not a constant
+    for unfilled in ({'method': 'cubic'}, {'method': 'polynomial', 'order': 2}, {'method': 'nearest'}):
+        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **unfilled)
+        assert np.isnan(out.values[:4]).all(), unfilled
+    for extrapolated in ({'method': 'spline', 'order': 3}, {'method': 'pchip'}):
+        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **extrapolated)
+        assert np.all(np.isfinite(out.values[:4])), extrapolated
+        assert not np.all(out.values[:4] == out.values[4]), extrapolated   # a fit, not a constant
+    for constant in ({'method': 'linear'}, {'method': 'time'}):
+        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **constant)
+        assert np.all(out.values[:4] == out.values[4]), constant
 
 
 def test_a_two_dimensional_input_gets_the_plain_message_only():
@@ -1125,7 +1137,8 @@ def test_a_two_dimensional_input_gets_the_plain_message_only():
     in baseTs passes 2-D data here, but the helper is importable, and for a
     2-D array `ravel()[0]` is one corner, not "the start" - so the hint would
     be silently wrong in both directions (review, round 1, single-source).
-    2-D input keeps exactly what it got on main."""
+    2-D input with a finite sample keeps exactly what it got on main (an
+    all-NaN 2-D array gets the all-NaN message, which is true of any shape)."""
     from baseTs.utils import validate_finite_data
 
     for two_d in (np.array([[1.0, np.nan], [2.0, 3.0]]), np.array([[np.nan, 1.0], [2.0, 3.0]])):

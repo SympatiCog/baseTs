@@ -328,21 +328,26 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
         # remedy that does not run for an Inf caller. And only for 1-D input:
         # "starts with" is a claim about a series, and [0] of a 2-D array is
         # a row, not a sample (a 0-d NaN is all-NaN and never gets here, so
-        # arr[0] cannot raise). The hint's remedy is scoped to the
-        # default method because it is false for the others - measured on
-        # pandas 2.2 and 3.0, 'polynomial' fills no edge in any direction and
-        # 'spline' extrapolates its fit over one - and a `limit` caps the
-        # edge fill like any other (docstring, not message: it is the
-        # caller's own constraint).
+        # arr[0] cannot raise). The hint's remedy is scoped to the default
+        # method because it is false for most others - measured over every
+        # method pandas accepts, on pandas 2.2 and 3.0: the pandas-native
+        # ones ('linear', 'time', 'index', 'values') extend the first valid
+        # value; every scipy-backed one either fills no edge ('cubic',
+        # 'polynomial', 'nearest', 'akima', ...) or extrapolates its fit
+        # ('spline', 'pchip', 'cubicspline', 'barycentric'). Stated as the
+        # rule rather than a list, because a two-name list missed 'cubic'
+        # (review). A `limit` caps the edge fill like any other (docstring,
+        # not message: it is the caller's own constraint).
         if arr.ndim == 1 and np.isnan(arr[0]):
             message += (
                 " The series starts with a gap, which interpolate_gaps() "
                 "leaves in place by default (it fills forward from the first "
                 "valid sample): pass limit_direction='both', which with the "
                 "default method extends the first valid value back over the "
-                "edge - a constant fill, not an interpolation; 'polynomial' "
-                "never fills an edge and 'spline' extrapolates its fit - or "
-                "drop the leading samples."
+                "edge - a constant fill, not an interpolation; the "
+                "scipy-backed methods ('cubic', 'polynomial', 'spline', ...) "
+                "leave an edge unfilled or extrapolate a fit - or drop the "
+                "leading samples."
             )
         raise ValueError(message)
 

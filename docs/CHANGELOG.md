@@ -90,31 +90,39 @@ does not fill Inf in any direction and pointing an Inf caller at
 share the helper, so `get_peak_freq` and the other spectral entry points say
 the same thing.
 
-Review (both panelists) caught the first cut of the hint making that promise
-for every `method`: measured on pandas 2.2 and 3.0, `'polynomial'` fills no
-edge in any direction and `'spline'` fills one by extrapolating its fit, not
-by a constant — so a caller on either method who followed the hint verbatim
-landed on the message again, the very pattern being fixed one level deeper.
-The hint now says it holds for the default method and names the two that
-differ. It also presupposed a first valid value to extend; a series with no
-finite sample at all now gets its own message — there is nothing to
-interpolate from — instead of either remedy, since neither runs. And it is
-appended only for 1-D input: "starts with" is a claim about a series, and
-`ravel()[0]` of a 2-D array is one corner of it, so 2-D input (reachable only
-by importing the helper directly) keeps exactly the message it had. A
-`limit` caps the edge fill like any other; that is the caller's own
-constraint, so it is documented in the docstring rather than the message,
-and pinned by a test.
+Review round 1 (both panelists) caught the first cut of the hint making that
+promise for every `method`: `'polynomial'` fills no edge in any direction
+and `'spline'` fills one by extrapolating its fit, not by a constant — so a
+caller on either method who followed the hint verbatim landed on the message
+again, the very pattern being fixed one level deeper. Round 2 then found the
+two-name carve-out that fixed it was itself a list that missed: `'cubic'`,
+named on the docstring's own `method` line, behaves like `'polynomial'`. The
+whole method set was measured on pandas 2.2 and 3.0, and it splits cleanly:
+the four pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`)
+extend the first valid value, and every scipy-backed method either leaves the
+edge unfilled or extrapolates a fit. The message states that rule; the
+docstring and `API.md` list which method does which. The hint also
+presupposed a first valid value to extend; a series with no finite sample at
+all now gets its own message — there is nothing to interpolate from —
+instead of either remedy, since neither runs, and that branch is not scoped
+to 1-D because it is true of any shape. The positional hint *is* appended
+only for 1-D input: "starts with" is a claim about a series, and `[0]` of a
+2-D array is a row, not a sample — so 2-D input with a finite sample
+(reachable only by importing the helper directly) keeps exactly the message
+it had. A `limit` caps the edge fill like any other; that is the caller's
+own constraint, so it is documented in the docstring rather than the
+message, and pinned by a test.
 
 **The default is unchanged.** Making `'both'` the default would have
 `interpolate_gaps()` invent edge values by constant extension without being
 asked, which is what #36 stopped `filter_outliers` from doing; the caller
 makes the fill decision explicitly. The `interpolate_gaps` docstring and
 `API.md` now document `limit_direction`, the edge asymmetry, and that
-`'polynomial'` never fills an edge while `'spline'` extrapolates its fit over
-one. The remedy is executed in the tests, not just named: a leading gap
-through `interpolate_gaps(limit_direction='both')` filters to 600 finite
-samples and recovers the true 0.16 Hz peak.
+which methods fill an edge and how. The remedies are executed in the tests,
+not just named: through `interpolate_gaps(limit_direction='both')`, a
+600-sample series with a leading gap filters to 600 finite samples, and a
+separate 500-sample series with a leading gap recovers its true 0.16 Hz
+peak.
 
 ## [Unreleased] — the Butterworth filters reject non-finite data (#48)
 
