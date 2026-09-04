@@ -131,6 +131,13 @@ class TestHelperDerivationsCarryMetadata:
         source = seeded()
         assert add_constant(source, 1.0, inplace=True) is source
 
+    def test_add_constant_inplace_adds_the_constant(self):
+        """Pinned because a mutant that skipped the write survived the rest."""
+        source = seeded()
+        before = source.data.copy()
+        add_constant(source, 1.0, inplace=True)
+        np.testing.assert_array_equal(source.data, before + 1.0)
+
     def test_diff_shortens_and_keeps_the_offset_timestamps(self):
         """The returned timestamps embody the offset; the object reports it."""
         source = seeded()
