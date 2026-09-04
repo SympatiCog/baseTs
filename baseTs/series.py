@@ -1467,8 +1467,8 @@ class TimeSeriesData(pd.Series):
         # signal_name= either, for the same reason and one more: through the
         # constructor the operand's name came back upper-cased, so
         # `ts + 1` was titled differently from `ts` (#56). The loop below
-        # copies it verbatim and _detach_shared_metadata, further down,
-        # normalises it, so a None operand name still lands as "".
+        # copies it verbatim; signal_name is a normalising property (#61),
+        # so a None operand name still lands as "" at the assignment.
         new_basets = baseTs(
             data=result.values,
             times=result.index.values,
