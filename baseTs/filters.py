@@ -190,9 +190,9 @@ def validate_filter_params(data: ArrayLike,
     """
     Validate the parameters and data of a single-cutoff filter.
 
-    The parameter checks, then the data scan, in that order. The band
-    validator composes the two halves itself so that its own edge checks
-    can sit between them: see _validate_filter_args.
+    The parameter checks, then the data scan, in that order. The band and
+    notch validators compose the two halves themselves so that their own
+    edge checks can sit between them: see _validate_filter_args.
 
     Args:
         data: Input data array
@@ -425,12 +425,168 @@ def sg_filter(data: ArrayLike,
         
     return savgol_filter(data, window_length, polyorder)
 
+
+NOTCH_HALF_WIDTH = 0.01
+"""Half-width of the band notch_filter stops, as a fraction of Nyquist.
+
+The stopped band is `cutoff_hz +/- NOTCH_HALF_WIDTH * nyquist`, so in Hz it
+widens with the sampling rate: 0.05 Hz each side at 10 Hz, 5 Hz each side at
+1 kHz. That is the rule the function has always applied (in normalised units,
+`cutoff/nyquist +/- 0.01`); it is named here so validate_notch_params can
+check the same band `butter` receives, and so a change to a Hz- or Q-based
+width is a decision rather than a drift.
+"""
+
+
+def _notch_bounds_hz(nyquist: float) -> tuple:
+    """The accepted notch range in Hz, as bounds that pass the check.
+
+    The check is scipy's, on the normalised band `cutoff / nyquist +/-
+    NOTCH_HALF_WIDTH`; the message speaks Hz. `NOTCH_HALF_WIDTH * nyquist`
+    and `cutoff / nyquist - NOTCH_HALF_WIDTH` are not exact inverses in
+    float64, so at some rates (3.0 Hz, 0.7 Hz) the obvious Hz bound is one
+    ulp on the wrong side, and a cutoff the message's own range called
+    accepted was refused by the same message (#76, review round 2).
+
+    Each bound is therefore nudged inward until the float just inside it
+    passes the predicate. Division by a fixed positive rate is monotone,
+    so every cutoff strictly inside the returned pair passes too:
+    "lo < cutoff_hz < hi" is a true sufficient condition, and a refused
+    cutoff is never inside it. The bound itself may be refused (at 10 Hz,
+    0.05 is exactly on the boundary and prints as 0.05); the accepted range
+    may exceed the printed one by an ulp and never falls short of it. The
+    loop runs at most a couple of steps; the cap is a guard against a
+    pathological float, not a budget.
+    """
+    lo = NOTCH_HALF_WIDTH * nyquist
+    for _ in range(64):
+        if np.nextafter(lo, np.inf) / nyquist - NOTCH_HALF_WIDTH > 0:
+            break
+        lo = float(np.nextafter(lo, np.inf))
+    hi = nyquist - NOTCH_HALF_WIDTH * nyquist
+    for _ in range(64):
+        if np.nextafter(hi, -np.inf) / nyquist + NOTCH_HALF_WIDTH < 1:
+            break
+        hi = float(np.nextafter(hi, -np.inf))
+    return lo, hi
+
+
+def validate_notch_params(data: ArrayLike,
+                          sampling_freq: float,
+                          cutoff_hz: float,
+                          order: int) -> tuple:
+    """
+    Validate the parameters and data of a notch filter.
+
+    Args:
+        data: Input data array
+        sampling_freq: Sampling frequency in Hz
+        cutoff_hz: Notch frequency in Hz
+        order: Filter order
+
+    Returns:
+        `(sampling_freq, low, high, order)`: the rate as a plain float, the
+        two edges of the stopped band in *normalised* units (fractions of
+        Nyquist, what `butter` takes as `Wn`), and the order as a plain int.
+        Callers must filter with the returned edges, not rebuild them: these
+        are the two floats that were range-checked.
+
+    Raises:
+        InvalidParameterError: If parameters or data are invalid
+
+    Notes:
+        notch_filter used to validate `cutoff_hz` against (0, Nyquist) and
+        then stop the band `cutoff/nyquist +/- 0.01` - two derived edges the
+        validator never saw, so a cutoff within 1% of Nyquist of either end
+        passed and died in scipy with a bare ValueError about `Wn` (#76).
+        The #49 shape, reached by a different route: the value filtered was
+        derived from the value validated by a rule the validator did not
+        know. The band is now built here and checked as built.
+
+        The notch range check runs before the delegated single-cutoff check
+        rather than after it, so *every* out-of-range cutoff - zero, negative,
+        NaN, at or above Nyquist, or merely inside the half-width - gets the
+        one message that quotes the limits a retry has to meet. Delegating
+        first would have reported `less than Nyquist (5.0 Hz)` for a cutoff
+        of 5.0, and a caller who retried at 4.99 on that advice was refused
+        again. That makes the delegated call's own cutoff range check
+        unreachable from here (the notch range is strictly inside it); it is
+        still called for the data type, the order, and one definition of a
+        usable rate.
+
+        Parameters before the O(n) data scan, as in validate_band_params: a
+        mistyped notch on gappy data names the notch, not the gaps.
+
+        Precedence among the parameters is the siblings': the cutoff range
+        is judged before the order, as `_validate_filter_args` judges it.
+        A cutoff in the newly refused margin combined with a bad order
+        therefore reports the cutoff where `main` reported the order - a
+        consequence of the tighter range, not of a reordering. Only the
+        data-container check moves behind the range check, and it is
+        unreachable from notch_filter, which `asarray`s first.
+    """
+    # The rate first, and through the shared door, so it is a normalised
+    # float before it is divided.
+    try:
+        sampling_freq = validate_sampling_freq(sampling_freq)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+    nyquist = sampling_freq / 2.0
+
+    # The shared rate check admits any positive finite float, and halving the
+    # smallest of them (5e-324) underflows to exactly 0.0. The siblings only
+    # compare against it; this validator divides by it, so the division
+    # needs its own guard or a bare ZeroDivisionError escapes the contract.
+    if not (nyquist > 0):
+        raise InvalidParameterError(
+            f"Sampling frequency {sampling_freq!r} Hz is too small: its "
+            f"Nyquist frequency underflows to 0 Hz")
+
+    # Coerced before it is divided, so the edges below and the ones butter
+    # receives are computed from the same float.
+    # Labelled "Cutoff frequency", the parameter's name in the siblings, so the
+    # type and conversion messages stay byte-identical to theirs; only the
+    # range rule below is notch-specific and says "Notch frequency".
+    cutoff_hz = _as_real_float("Cutoff frequency", cutoff_hz)
+    notch = cutoff_hz / nyquist
+    low, high = notch - NOTCH_HALF_WIDTH, notch + NOTCH_HALF_WIDTH
+
+    # scipy requires 0 < Wn < 1 for every edge. `not (low > 0)` rather than
+    # `low <= 0`, which is False for NaN. Checked on the derived edges, not on
+    # the cutoff against a pre-computed range, so the predicate is the one
+    # scipy applies to the numbers scipy gets - at the exact boundary the two
+    # spellings can disagree by an ulp.
+    if not (low > 0) or not (high < 1):
+        half_width_hz = NOTCH_HALF_WIDTH * nyquist
+        lo_hz, hi_hz = _notch_bounds_hz(nyquist)
+        raise InvalidParameterError(
+            f"Notch frequency must satisfy {lo_hz} < cutoff_hz < {hi_hz} Hz: "
+            f"the stopped band is the notch frequency +/- {half_width_hz} Hz "
+            f"({NOTCH_HALF_WIDTH:.0%} of the Nyquist frequency, {nyquist} Hz) "
+            f"and both of its edges must lie strictly between 0 Hz and "
+            f"Nyquist; got cutoff_hz={cutoff_hz!r}")
+
+    # The data type, the order, and the rate again through the same door.
+    # Its cutoff range check cannot fire: the notch check above is strictly
+    # tighter on the same float.
+    sampling_freq, _, order = _validate_filter_args(
+        data, sampling_freq, cutoff_hz, order)
+
+    _require_finite_data(data)
+
+    return sampling_freq, low, high, order
+
+
 def notch_filter(data: ArrayLike, 
                  cutoff_hz: float, 
                  fs_hz: float, 
                  order: int = 5) -> np.ndarray:
     """
     Apply a symmetric notch filter to the input data.
+
+    The stopped band is `cutoff_hz +/- 1% of Nyquist` (NOTCH_HALF_WIDTH), so
+    the notch must sit more than that half-width from both 0 Hz and Nyquist.
     
     Args:
         data: Input data array
@@ -442,14 +598,13 @@ def notch_filter(data: ArrayLike,
         Filtered data array
         
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If parameters are invalid, the notch lies
+            within the half-width of either end, or the data has gaps
     """
     data = np.asarray(data)
-    fs_hz, cutoff_hz, order = validate_filter_params(data, fs_hz, cutoff_hz, order)
+    fs_hz, low, high, order = validate_notch_params(data, fs_hz, cutoff_hz, order)
 
-    nyquist_rate = fs_hz / 2.0
-    notch = cutoff_hz / nyquist_rate
-    b, a = butter(order, [notch - 0.01, notch + 0.01], btype='bandstop')
+    b, a = butter(order, [low, high], btype='bandstop')
     return filtfilt(b, a, data)
     
 def highpass_filter(data: ArrayLike, 

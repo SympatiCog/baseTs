@@ -972,3 +972,158 @@ class TestTheNaNRemedyClearsAnEdgeGap:
             cts.lowpass_at(5.0)
         out = cts.interpolate_gaps(limit_direction='both').lowpass_at(5.0)
         assert out.dtype.kind == "c" and np.all(np.isfinite(out.values))
+
+
+class TestTheNotchBandIsValidated:
+    """#76: notch_filter validated `cutoff_hz` against (0, Nyquist) and then
+    stopped the band `cutoff/nyquist +/- 0.01` - two derived edges the
+    validator never saw. A cutoff within 1% of Nyquist of either end passed
+    the check and died in scipy with a bare ValueError about `Wn`. The #49
+    shape again: the value validated was not the value filtered, this time
+    because the filtered band is derived from the cutoff by a rule the
+    validator did not know.
+
+    The rule itself (a half-width of 1% of Nyquist each side) is kept and is
+    now stated; the check is on the same two floats `butter` receives.
+    """
+
+    FS = 10.0          # Nyquist 5.0 Hz, half-width 0.05 Hz
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @pytest.mark.parametrize("cutoff", [4.99, 4.95, 0.05, 0.01],
+                             ids=["near-nyquist", "at-1pct-of-nyquist",
+                                  "at-1pct-of-zero", "near-zero"])
+    def test_a_cutoff_inside_the_half_width_is_refused_by_name(self, cutoff):
+        with pytest.raises(InvalidParameterError) as info:
+            notch_filter(self._data(), cutoff, self.FS)
+
+        message = str(info.value)
+        assert "Notch frequency" in message
+        assert "0.05 Hz" in message                       # the half-width
+        assert "5.0 Hz" in message                        # the Nyquist limit
+        assert f"cutoff_hz={cutoff!r}" in message
+        assert "Wn" not in message                        # scipy's word, not ours
+        assert info.value.__cause__ is None               # refused, not translated
+
+    @pytest.mark.parametrize("cutoff", [0.0, -1.0, 5.0, 6.0, float("nan")],
+                             ids=["zero", "negative", "nyquist", "above", "nan"])
+    def test_every_out_of_range_cutoff_gets_the_notch_message(self, cutoff):
+        """One message for every out-of-range cutoff, so the limits it quotes
+        are the limits a retry has to meet. The generic single-cutoff message
+        says `less than Nyquist (5.0 Hz)`, and a caller who retried at 4.99
+        on that advice was refused again by scipy."""
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), cutoff, self.FS)
+
+    @pytest.mark.parametrize("cutoff", [0.0500001, 0.06, 4.94, 4.9499999],
+                             ids=["just-above-1pct", "0.06", "4.94", "just-below-99pct"])
+    def test_a_cutoff_outside_the_half_width_still_filters(self, cutoff):
+        out = notch_filter(self._data(), cutoff, self.FS)
+
+        assert out.shape == (500,)
+        assert np.all(np.isfinite(out))
+
+    def test_the_band_is_the_documented_half_width_of_nyquist(self):
+        """Drift guard for the stated rule. The stopped band is
+        `cutoff +/- 1% of Nyquist`, in normalised units `cutoff/nyq +/- 0.01`;
+        a change to the width, or to Hz-based or Q-based widths, has to
+        change this test and the docstring together."""
+        from scipy.signal import butter, filtfilt
+
+        out = notch_filter(self._data(), 1.0, self.FS, order=5)
+        b, a = butter(5, [0.2 - 0.01, 0.2 + 0.01], btype="bandstop")
+        np.testing.assert_array_equal(out, filtfilt(b, a, self._data()))
+
+    def test_a_bad_cutoff_is_reported_before_the_gaps_are(self):
+        """The parameter rule before the O(n) data scan, the #48 ordering: a
+        mistyped notch on gappy data names the notch, not the gaps."""
+        d = self._data()
+        d[200:204] = np.nan
+
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(d, 4.99, self.FS)
+
+    def test_the_method_forms_refuse_the_same_way(self):
+        ts = baseTs(self._data(), np.arange(500) / self.FS)
+
+        for call in (lambda: ts.notch_at(4.99), lambda: ts.notch_filter(4.99)):
+            with pytest.raises(InvalidParameterError, match="Notch frequency"):
+                call()
+
+    def test_the_message_quotes_the_accepted_range(self):
+        """The limits a retry has to meet, in Hz, both of them. Review found
+        the first cut named the half-width and Nyquist and left the caller to
+        subtract; the docs claimed otherwise."""
+        with pytest.raises(InvalidParameterError, match=r"0\.05 < cutoff_hz < 4\.95"):
+            notch_filter(self._data(), 4.99, self.FS)
+
+    @pytest.mark.parametrize("fs", [3.0, 7.0, 13.0, 0.7, 10.0, 1000.0, 123456.789, 119.5])
+    def test_the_printed_range_never_contains_the_refused_value(self, fs):
+        """The check is scipy's, on the normalised band; the message speaks
+        Hz. `NOTCH_HALF_WIDTH * nyquist` and `cutoff / nyquist - NOTCH_HALF_WIDTH`
+        are not exact inverses in float64, so at fs=3.0 a cutoff one ulp
+        above the printed 0.015 was refused by a message whose own range said
+        it was accepted (review round 2). The printed bounds are now nudged
+        inward until they pass the predicate themselves; division by a fixed
+        positive rate is monotone, so everything strictly inside passes too.
+        Pinned both ways: a refused value is never inside the printed range,
+        and one ulp inside each printed bound is accepted. The last rate is
+        one of the ~1% (from a 260k-rate sweep) where the *upper* bound needs
+        the nudge; the first seven only exercised the lower one, and a mutant
+        that dropped the upper nudge survived them."""
+        nyquist = fs / 2.0
+        probes = []
+        for centre in (0.01 * nyquist, nyquist - 0.01 * nyquist):
+            x = np.nextafter(centre, -np.inf)
+            for _ in range(5):
+                probes.append(float(x))
+                x = np.nextafter(x, np.inf)
+        rng = re.compile(r"(\S+) < cutoff_hz < (\S+) Hz")
+        bounds = None
+        for c in probes:
+            try:
+                notch_filter(self._data(), c, fs)
+            except InvalidParameterError as exc:
+                lo, hi = map(float, rng.search(str(exc)).groups())
+                assert not (lo < c < hi), (fs, c, str(exc))
+                bounds = (lo, hi)
+        assert bounds is not None, "no probe was refused"
+        lo, hi = bounds
+        for inside in (np.nextafter(lo, np.inf), np.nextafter(hi, -np.inf)):
+            out = notch_filter(self._data(), float(inside), fs)
+            assert np.all(np.isfinite(out))
+
+    def test_the_cutoff_is_judged_before_the_order_as_on_main(self):
+        """Precedence is the siblings': the cutoff range before the order. A
+        cutoff in the newly refused margin combined with a bad order therefore
+        reports the cutoff, where `main` reported the order - not because the
+        order moved, but because `main` accepted 4.99. Pinned on a cutoff both
+        refuse, where `main` reports its cutoff message too."""
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), 5.0, self.FS, order=True)
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), 4.99, self.FS, order=True)
+
+    def test_a_rate_whose_nyquist_underflows_is_refused_by_name(self):
+        """5e-324 is the smallest positive float; it passes the shared rate
+        check (positive, finite) and its Nyquist is exactly 0.0. The first cut
+        divided by it and raised a bare ZeroDivisionError - a regression
+        against `main`, which only compared (review round 1)."""
+        with pytest.raises(InvalidParameterError, match="Nyquist frequency underflows"):
+            notch_filter(self._data(), 1.0, 5e-324)
+
+    def test_the_order_and_the_data_type_are_still_checked(self):
+        """The notch check sits in front of the delegated single-cutoff check,
+        which is what still validates the order and the data type. A mutant
+        that dropped the delegated call survived the tests above; this pins
+        that the notch validator is a superset of the sibling one, not a
+        replacement."""
+        from baseTs.filters import validate_notch_params
+
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            notch_filter(self._data(), 1.0, self.FS, order=True)
+        with pytest.raises(InvalidParameterError, match="numpy array or list"):
+            validate_notch_params((1.0, 2.0, 3.0), self.FS, 1.0, 5)
