@@ -781,10 +781,12 @@ class TestFiltfiltFiltersRejectNonFiniteData:
             run(self._gappy(), self.FS)
 
     @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)
-    def test_an_inf_is_rejected_the_same_way(self, name, run):
+    def test_an_inf_is_rejected_with_the_replace_step(self, name, run):
+        """Same guard, same exception type; since #81 the Inf half of the
+        message names the step that turns Inf into a gap."""
         d = self._gappy()
         d[300:304] = np.inf
-        with pytest.raises(InvalidParameterError, match="NaN or Inf"):
+        with pytest.raises(InvalidParameterError, match="Inf is not a gap"):
             run(d, self.FS)
 
     @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)

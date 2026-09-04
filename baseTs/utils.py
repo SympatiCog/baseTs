@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Union, Dict, Tuple, List, Any, Optional #, TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
 
@@ -143,22 +144,158 @@ def _complex_data_message(what: str) -> str:
     )
 
 
-def _holds_complex_numbers(arr: Any) -> bool:
-    """Whether an object array that failed the float cast is complex numbers.
+def _is_missing(x: Any) -> bool:
+    """Whether an object-array element is one of pandas' missing markers.
 
-    Inspects the elements rather than asking whether a complex cast would
-    succeed: complex('1+2j') parses where float('1+2j') does not, so a cast
-    probe would route a malformed text column to the complex message and
-    its `.real`/`.imag` remedies. Only genuine number objects count, and at
-    least one must be non-real; a string among them means the data is not
-    numeric, which is the more useful thing to say.
+    `None` and `pd.NA` are how a hole is spelled in an object column, so
+    they are read as a gap (NaN) rather than making the column "not
+    numeric". NaN itself is a float and needs no special case. NaT is not
+    here: it is a datetime concept, and a datetime among sample values is
+    not numeric.
     """
-    if arr.dtype.kind != "O":
-        return False
-    numbers_only = all(isinstance(x, numbers.Complex) for x in arr.flat)
-    return numbers_only and any(
-        not isinstance(x, numbers.Real) for x in arr.flat
-    )
+    return x is None or x is pd.NA
+
+
+def _object_target_dtype(arr: Any) -> Optional[type]:
+    """Which numeric dtype an object array's elements amount to, if any.
+
+    Classified by what the elements *are*, not by whether a cast would
+    succeed: float('1.5') parses where the column is text, and
+    float(np.complex128(1 + 2j)) truncates under a ComplexWarning where the
+    column is complex, so a cast probe would sort by parser leniency rather
+    than by the data (#43, the lesson applied to the real branch too). Every
+    element a numbers.Real or a missing marker gives float; numbers.Complex
+    with at least one non-real gives complex; anything else - text, Decimal
+    (a Number but deliberately not a Real), dicts - is not numeric, and
+    None says so.
+    """
+    complex_seen = False
+    for x in arr.flat:
+        if _is_missing(x) or isinstance(x, numbers.Real):
+            continue
+        if isinstance(x, numbers.Complex):
+            complex_seen = True
+            continue
+        return None
+    return complex if complex_seen else float
+
+
+def _not_numeric_message(dtype: Any, kind: str) -> str:
+    return (f"Time series data is not numeric: dtype '{dtype}' cannot be "
+            f"interpreted as {kind} numbers.")
+
+
+def coerce_numeric_data(data: Any, allow_complex: bool = False) -> np.ndarray:
+    """Return `data` as an array with a dtype numeric code can loop over.
+
+    The dtype half of validate_finite_data, on its own and returning its
+    result. Until #75 the guard cast an object array to float to check
+    finiteness and threw the cast away, so an object array of ordinary
+    floats passed validation and then died in scipy (`NotImplementedError:
+    input type 'object' not supported`) or pandas (`Series cannot
+    interpolate with object dtype`, #80) - the validator said the data was
+    usable and the consumer said it was not, for the same array. The cast
+    the validator discarded was the one the consumer needed; now there is
+    one classification, made here, and the consumers compute with what it
+    returns.
+
+    Numeric dtypes come back as they are, as the same object when the input
+    already is an ndarray: bool, integer and float always; complex only
+    when `allow_complex`. datetime64/timedelta64 are refused with the
+    datetime remedy. Object arrays are classified element by element - see
+    _object_target_dtype - and become float64 or complex128, with pandas'
+    missing markers (`None`, `pd.NA`) read as NaN. Everything else, text
+    dtypes included, is "not numeric".
+
+    Finiteness is not checked here. interpolate_gaps() needs the NaN to
+    reach it; validate_finite_data adds that rule on top.
+
+    Args:
+        data: The sample values, as any array-like
+        allow_complex: Accept complex values; see validate_finite_data
+
+    Returns:
+        An ndarray of bool, integer, float or (when allowed) complex dtype
+
+    Raises:
+        ValueError: If the data is complex (unless `allow_complex`), holds
+            datetimes or durations, or is not numeric
+    """
+    arr = np.asarray(data)
+
+    if arr.dtype.kind in "buif":
+        return arr
+
+    if arr.dtype.kind == "c":
+        if allow_complex:
+            return arr
+        raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
+
+    # datetime64 and timedelta64 are refused rather than cast, because a
+    # float cast SUCCEEDS on them and would wave NaT straight through: NaT
+    # is stored as the int64 sentinel -2**63, which converts to a large but
+    # perfectly finite float. np.isfinite then reports no problem, and the
+    # value reaches np.fft.fft to die there as a DTypePromotionError naming
+    # an internal promotion rule instead of the caller's data.
+    if arr.dtype.kind in "Mm":
+        # No remedy here mentions a cast through int64 or float. That is the
+        # obvious suggestion and it is actively wrong: it reinterprets the
+        # int64 storage, so NaT comes back as -9.22e18 - a large finite number
+        # the finiteness guard would then accept, reproducing one level up
+        # the exact silent-nonsense failure it exists to prevent. Subtracting
+        # or dividing goes through datetime semantics instead and maps NaT to
+        # NaN, landing the caller on the gap-filling message.
+        #
+        # Split by kind because the two need genuinely different remedies:
+        # dividing a datetime64 by a timedelta64 is not merely unhelpful, it
+        # raises UFuncTypeError. An earlier revision offered the duration
+        # remedy for both and left datetime callers to improvise, which is how
+        # they would have found the int64 cast.
+        if arr.dtype.kind == "m":
+            remedy = (
+                "Convert durations to a number of seconds first, e.g. "
+                "`values / np.timedelta64(1, 's')`."
+            )
+        else:
+            remedy = (
+                "Convert timestamps to elapsed seconds first, e.g. "
+                "`(values - values[0]) / np.timedelta64(1, 's')`."
+            )
+        raise ValueError(
+            f"Time series data is not numeric: dtype '{arr.dtype}' holds "
+            f"datetimes or durations, not sample values. {remedy} Note that "
+            f"casting via `.astype(float)` or `.astype('int64')` will not do: "
+            f"it exposes NaT's integer sentinel as a large finite number "
+            f"rather than NaN, which this check would then accept."
+        )
+
+    if arr.dtype.kind == "O":
+        target = _object_target_dtype(arr)
+        if target is complex and not allow_complex:
+            # 'is complex: dtype object' reads as a contradiction; name the
+            # values. The keyword has to reach this branch, not just the
+            # dtype check above: the first cut of #48 consulted it there
+            # only, so complex hiding in an object array was told to
+            # discard its imaginary part - the opposite of what allow_complex
+            # promises.
+            raise ValueError(_complex_data_message(
+                f"dtype '{arr.dtype}' holding complex values"))
+        if target is not None:
+            # The classification established every element is a number
+            # *object* - but numbers.Real and numbers.Complex are registrable
+            # ABCs, so membership does not imply a working __float__ or
+            # __complex__. The cast is guarded for that reason; a registered
+            # impostor is "not numeric", not a crash.
+            try:
+                return np.array(
+                    [np.nan if _is_missing(x) else x for x in arr.flat],
+                    dtype=target,
+                ).reshape(arr.shape)
+            except (TypeError, ValueError) as exc:
+                kind = "complex" if target is complex else "real"
+                raise ValueError(_not_numeric_message(arr.dtype, kind)) from exc
+
+    raise ValueError(_not_numeric_message(arr.dtype, "real"))
 
 
 def validate_non_empty(data: Any) -> None:
@@ -193,7 +330,7 @@ def validate_non_empty(data: Any) -> None:
         )
 
 
-def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
+def validate_finite_data(data: Any, allow_complex: bool = False) -> np.ndarray:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
     The companion to validate_sampling_freq: that one rejects a bad time base,
@@ -207,11 +344,20 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
     change the sample spacing, so the resulting bins would no longer be the
     frequencies they are labelled with, and the caller would not be told. The
     error names interpolate_gaps() because filling the gaps is the decision
-    the caller has to make, and it is theirs to make explicitly.
+    the caller has to make, and it is theirs to make explicitly. It names it
+    for NaN only: pandas interpolates NaN and leaves Inf in place, so an Inf
+    gets the step that turns it into a gap first (#81 - the #28 "remedy
+    reproduces the bug" pattern, for the other half of what used to be one
+    message's disjunction).
 
     This lives in one place because the four spectral entry points had already
     drifted: compute_fft_power and relative_band_power each carried their own
     copy with different wording, and get_frequency_content carried none.
+
+    The dtype rules are coerce_numeric_data's; this adds the finiteness rule
+    and returns the coerced array, which is the array a consumer must then
+    compute with. Until #75 the cast was made here and discarded, so an
+    object array of floats was pronounced usable and then refused by scipy.
 
     Args:
         data: The sample values to check, as any array-like
@@ -223,161 +369,88 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
             reasoning does not apply there and the NaN rule is the one it
             shares.
 
+    Returns:
+        The data as a numeric ndarray - the input itself when it already was
+        one, otherwise the coerced copy
+
     Raises:
         ValueError: If the data contains NaN or Inf, is complex (unless
             `allow_complex`), or is not numeric
     """
-    arr = np.asarray(data)
+    arr = coerce_numeric_data(data, allow_complex=allow_complex)
 
     # Integer and boolean dtypes cannot represent NaN or Inf at all, so they
-    # are accepted without inspection. Purely to avoid copying the whole array
-    # to float64 on every call - the accept/reject set is identical either
-    # way, since a cast integer is still finite.
+    # are accepted without inspection. Purely to avoid walking the whole
+    # array on every call - the accept/reject set is identical either way.
     if arr.dtype.kind in "bui":
-        return
-
-    # datetime64 and timedelta64 are rejected before the float cast below,
-    # because that cast SUCCEEDS on them and would wave NaT straight through:
-    # NaT is stored as the int64 sentinel -2**63, which converts to a large
-    # but perfectly finite float. np.isfinite then reports no problem, and the
-    # value reaches np.fft.fft to die there as a DTypePromotionError naming an
-    # internal promotion rule instead of the caller's data.
-    if arr.dtype.kind in "Mm":
-        # No remedy here mentions a cast through int64 or float. That is the
-        # obvious suggestion and it is actively wrong: it reinterprets the
-        # int64 storage, so NaT comes back as -9.22e18 - a large finite number
-        # this guard would then accept, reproducing one level up the exact
-        # silent-nonsense failure it exists to prevent. Subtracting or dividing
-        # goes through datetime semantics instead and maps NaT to NaN, landing
-        # the caller on the gap-filling message above.
-        #
-        # Split by kind because the two need genuinely different remedies:
-        # dividing a datetime64 by a timedelta64 is not merely unhelpful, it
-        # raises UFuncTypeError. An earlier revision offered the duration
-        # remedy for both and left datetime callers to improvise, which is how
-        # they would have found the int64 cast.
-        if arr.dtype.kind == "m":
-            remedy = (
-                "Convert durations to a number of seconds first, e.g. "
-                "`values / np.timedelta64(1, 's')`."
-            )
-        else:
-            remedy = (
-                "Convert timestamps to elapsed seconds first, e.g. "
-                "`(values - values[0]) / np.timedelta64(1, 's')`."
-            )
-        raise ValueError(
-            f"Time series data is not numeric: dtype '{arr.dtype}' holds "
-            f"datetimes or durations, not sample values. {remedy} Note that "
-            f"casting via `.astype(float)` or `.astype('int64')` will not do: "
-            f"it exposes NaT's integer sentinel as a large finite number "
-            f"rather than NaN, which this check would then accept."
-        )
-
-    # Complex is a dtype rejection, not a value one, so it comes before the
-    # finiteness check: a complex array with a NaN in it would otherwise be
-    # told to fill its gaps and then be rejected again for its dtype.
-    #
-    # Every consumer of this guard returns a one-sided spectrum - the
-    # non-negative bins only - which is correct for real input because the
-    # negative half is its mirror. Complex input has no such symmetry, so the
-    # discarded half is genuine content. Before #43 the entry points handled
-    # that in two different silent ways: relative_band_power cast to float
-    # and kept the real part under a ComplexWarning, while the others fed the
-    # complex data to np.fft.fft and threw away the negative half - which,
-    # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
-    # for a 0.05 Hz probe with no warning at all.
-    if arr.dtype.kind == "c" and not allow_complex:
-        raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
-
-    # Anything not already numeric (object arrays, most often) is converted so
-    # np.isfinite has a dtype it can loop over - it raises TypeError on object
-    # arrays. A complex array only reaches here when allowed, and np.isfinite
-    # handles it directly: a value is finite when both parts are.
-    if arr.dtype.kind not in "fc":
-        try:
-            arr = np.asarray(arr, dtype=float)
-        except (TypeError, ValueError) as exc:
-            # TypeError translated to ValueError to keep the promise this
-            # docstring makes, the same way validate_sampling_freq does.
-            # arr is unchanged here - the failed assignment above leaves the
-            # original bound, so this reports the caller's dtype, not float.
-            #
-            # An object array of complex numbers fails the float cast too,
-            # and deserves the complex message rather than "not numeric": the
-            # caller has complex data, and the remedy is the one above.
-            if _holds_complex_numbers(arr):
-                # The keyword has to reach this branch too. The first cut
-                # consulted it at the dtype check only, so complex hiding in
-                # an object array was told to discard its imaginary part -
-                # the opposite of what allow_complex promises.
-                #
-                # The helper has established every element is a number
-                # *object* - but numbers.Complex is a registrable ABC, so
-                # membership does not imply a working __complex__ any more
-                # than numbers.Real implied a working __float__ in filters.
-                # The cast is guarded like the float cast above for that
-                # reason; a registered impostor is "not numeric", not a crash.
-                if allow_complex:
-                    try:
-                        arr = np.asarray(arr, dtype=complex)
-                    except (TypeError, ValueError) as cast_exc:
-                        raise ValueError(
-                            f"Time series data is not numeric: dtype "
-                            f"'{arr.dtype}' cannot be interpreted as complex "
-                            f"numbers."
-                        ) from cast_exc
-                else:
-                    raise ValueError(_complex_data_message(
-                        f"dtype '{arr.dtype}' holding complex values")) from exc
-            else:
-                raise ValueError(
-                    f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
-                    f"be interpreted as real numbers."
-                ) from exc
+        return arr
 
     finite = np.isfinite(arr)
     if not finite.all():
-        # No finite sample at all: the remedy below presupposes a valid sample
-        # to interpolate from, and the leading-gap hint presupposes a first
-        # valid value to extend. Neither exists, so naming either would be a
-        # remedy that does not run (review of #77).
+        # No finite sample at all: the remedies below presuppose a valid
+        # sample to interpolate from, and the leading-gap hint presupposes a
+        # first valid value to extend. Neither exists, so naming either would
+        # be a remedy that does not run (review of #77).
         if not finite.any():
             raise ValueError(
                 "Time series data contains NaN or Inf values and no finite "
                 "ones: there is nothing to interpolate from."
             )
-        message = ("Time series data contains NaN or Inf values. Fill gaps "
-                   "first, e.g. with interpolate_gaps().")
-        # A gap at the *start* is the one case the remedy above does not
+        # Split by what was found. interpolate_gaps() - pandas' interpolate -
+        # fills NaN and leaves Inf where it is, in every direction and under
+        # every method, so for an Inf the old "NaN or Inf ... interpolate_gaps"
+        # message named a remedy that was a no-op and sent the caller round
+        # again (#81). The NaN-only text is unchanged. The replace step is
+        # spelled as the pandas call because that is what runs on a baseTs
+        # and keeps its metadata; the alternative, treating Inf as a gap
+        # inside interpolate_gaps(), would be a behaviour change and is not
+        # made here.
+        has_nan = bool(np.isnan(arr).any())
+        has_inf = bool(np.isinf(arr).any())
+        if not has_inf:
+            message = ("Time series data contains NaN or Inf values. Fill gaps "
+                       "first, e.g. with interpolate_gaps().")
+        else:
+            found = "NaN and Inf" if has_nan else "Inf"
+            closing = "which fills NaN only" if has_nan else "which leaves Inf in place on its own"
+            message = (
+                f"Time series data contains {found} values. Inf is not a gap: "
+                f"replace it with NaN first, e.g. "
+                f"`ts.replace([np.inf, -np.inf], np.nan)`, then fill the gaps "
+                f"with interpolate_gaps(), {closing}."
+            )
+        # A gap at the *start* is the one case the gap remedy does not
         # clear: interpolate_gaps() forwards pandas' default
         # limit_direction='forward', which fills nothing before the first
         # valid sample, so a caller who follows the message lands back on it
         # (#77 - the #28 "remedy reproduces the bug" pattern one level up). A
         # trailing gap is different: under the default method the forward
         # fill extends the last valid value over it, so the plain remedy
-        # works there and gets no hint. Keyed on the first sample being NaN,
-        # not merely non-finite: interpolate_gaps() does not fill Inf in any
-        # direction (#81), so a limit_direction hint would be a second remedy
-        # that does not run for a leading-Inf caller. A leading NaN with an
-        # Inf elsewhere still gets the hint: it is true of the leading gap
-        # and following it clears that gap; what remains is #81's. And only
-        # for 1-D input:
-        # "starts with" is a claim about a series, and [0] of a 2-D array is
-        # a row, not a sample (a 0-d NaN is all-NaN and never gets here, so
-        # arr[0] cannot raise). The hint's remedy is scoped to the default
-        # method because it is false for most others - measured over every
-        # method pandas accepts, on pandas 2.2 and 3.0: the pandas-native
-        # ones ('linear', 'time', 'index', 'values') extend the first valid
-        # value; every scipy-backed one either fills no edge ('cubic',
-        # 'polynomial', 'nearest', 'akima', ...) or extrapolates its fit
-        # ('spline', 'pchip', 'cubicspline', 'barycentric'). Stated as the
-        # rule rather than a list, because a two-name list missed 'cubic'
-        # (review). A `limit` caps the edge fill like any other (docstring,
-        # not message: it is the caller's own constraint).
-        if arr.ndim == 1 and np.isnan(arr[0]):
+        # works there and gets no hint. Keyed on the first sample being
+        # non-finite: a leading NaN is a gap now, a leading Inf becomes one
+        # once the replace step above has run, and the hint says which (#77
+        # keyed on NaN alone while #81 was open, so as not to name a second
+        # remedy that did not run). A leading NaN with an Inf elsewhere gets
+        # the hint too: it is true of the leading gap and following it clears
+        # that gap; what remains is the Inf, and the message now covers it.
+        # And only for 1-D input: "starts with" is a claim about a series,
+        # and [0] of a 2-D array is a row, not a sample (a 0-d non-finite is
+        # all-non-finite and never gets here, so arr[0] cannot raise). The
+        # hint's remedy is scoped to the default method because it is false
+        # for most others - measured over every method pandas accepts, on
+        # pandas 2.2 and 3.0: the pandas-native ones ('linear', 'time',
+        # 'index', 'values') extend the first valid value; every scipy-backed
+        # one either fills no edge ('cubic', 'polynomial', 'nearest',
+        # 'akima', ...) or extrapolates its fit ('spline', 'pchip',
+        # 'cubicspline', 'barycentric'). Stated as the rule rather than a
+        # list, because a two-name list missed 'cubic' (review). A `limit`
+        # caps the edge fill like any other (docstring, not message: it is
+        # the caller's own constraint).
+        if arr.ndim == 1 and not np.isfinite(arr[0]):
+            opening = ("The series starts with a gap" if np.isnan(arr[0])
+                       else "The series will then start with a gap")
             message += (
-                " The series starts with a gap, which interpolate_gaps() "
+                f" {opening}, which interpolate_gaps() "
                 "leaves in place by default (it fills forward from the first "
                 "valid sample): pass limit_direction='both', which with the "
                 "default method extends the first valid value back over the "
@@ -387,6 +460,7 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 "drop the samples before the first valid one."
             )
         raise ValueError(message)
+    return arr
 
 
 def round_values(x: Any, decimals: int = 4) -> Any:

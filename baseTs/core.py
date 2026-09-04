@@ -21,7 +21,8 @@ from typing import Optional, TYPE_CHECKING, Union, List, Tuple
 from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
 from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
 from dataclasses import replace
-from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
+from .utils import (coerce_numeric_data,
+                    find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq,
                     validate_finite_data, validate_non_empty, ValidationError)
@@ -1920,8 +1921,22 @@ class baseTs(TimeSeriesData):
             four-sample leading gap and leaves the rest. A series with no
             valid sample at all cannot be filled by any of these.
 
+        Object dtype:
+            An object-dtype series of numbers (the constructor keeps the
+            dtype it is given) is interpolated as float64, or complex128 if
+            any value is complex, with `None` and `pd.NA` read as gaps; the
+            result has that dtype. pandas refuses to interpolate object
+            dtype at all, so before #80 this raised a bare `TypeError` on
+            exactly the input the data guard's NaN message had sent here.
+            The classification is `utils.coerce_numeric_data`'s, the same
+            one the guard makes.
+
         Returns:
             Interpolated baseTs object
+
+        Raises:
+            ValueError: If the series is object dtype and its values are not
+                numbers (text, Decimal, ...), with the data guard's message.
             
         Examples:
             # Linear interpolation (default)
@@ -1939,11 +1954,23 @@ class baseTs(TimeSeriesData):
             # Time-based interpolation (works with numeric time index)
             ts_time = ts.interpolate_gaps(method='time')
         """
+        # An object-dtype series is settled to a numeric dtype first; pandas
+        # cannot interpolate object dtype and said so with a bare TypeError
+        # (#80). Only object dtype takes this path - every other dtype is
+        # interpolated as it is, exactly as before - and a non-numeric one
+        # raises the guard's own "not numeric" ValueError here.
+        values = self.values
+        if values.dtype.kind == "O":
+            values = coerce_numeric_data(values, allow_complex=True)
+            source = pd.Series(values, index=self.index)
+        else:
+            source = self
+
         # Handle special case for time method with numeric index
         if method == 'time':
             # For numeric time index, convert to timedelta for time interpolation
             time_index = pd.to_timedelta(self.index, unit='s')
-            temp_series = pd.Series(self.values, index=time_index)
+            temp_series = pd.Series(values, index=time_index)
             interpolated = temp_series.interpolate(method=method, limit=limit, **kwargs)
             # Convert back to numeric index
             interpolated.index = interpolated.index.total_seconds()
@@ -1957,9 +1984,9 @@ class baseTs(TimeSeriesData):
             
             # Apply interpolation with order parameter if needed
             if method in ['polynomial', 'spline'] and order is not None:
-                interpolated = self.interpolate(method=method, order=order, limit=limit, **kwargs)
+                interpolated = source.interpolate(method=method, order=order, limit=limit, **kwargs)
             else:
-                interpolated = self.interpolate(method=method, limit=limit, **kwargs)
+                interpolated = source.interpolate(method=method, limit=limit, **kwargs)
         
         if inplace:
             # Update current object

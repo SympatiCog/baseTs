@@ -408,7 +408,10 @@ def test_get_frequency_content_rejects_nonfinite_data(bad):
     get_frequency_content builds its own FFT and was the only spectral entry
     point without this check, so every consumer of it inherited the defect.
     """
-    with pytest.raises(ValueError, match="NaN or Inf"):
+    # Both halves name interpolate_gaps(); since #81 the Inf half names the
+    # replace step ahead of it, so the shared word is the remedy, not "NaN
+    # or Inf".
+    with pytest.raises(ValueError, match="interpolate_gaps"):
         _gappy_ts(bad).get_frequency_content()
 
 
@@ -487,10 +490,13 @@ def test_non_numeric_data_raises_the_same_way_at_all_four_entry_points():
     np.array([1.0, 2.0], dtype=object),    # object, but of real numbers
 ])
 def test_validate_finite_data_accepts_usable_dtypes(good):
-    """The guard rejects bad values, not unfamiliar dtypes."""
+    """The guard rejects bad values, not unfamiliar dtypes - and since #75
+    hands back the array it checked, coerced where it had to be."""
     from baseTs.utils import validate_finite_data
 
-    assert validate_finite_data(good) is None
+    out = validate_finite_data(good)
+    assert isinstance(out, np.ndarray)
+    assert out.dtype.kind in "biuf"
 
 
 def test_validate_finite_data_looks_inside_object_arrays():
@@ -552,7 +558,7 @@ def test_validate_finite_data_can_be_told_complex_is_fine():
 
     with pytest.raises(ValueError, match="NaN or Inf"):
         validate_finite_data(np.array([1 + 2j, complex(np.nan, 0)]), allow_complex=True)
-    with pytest.raises(ValueError, match="NaN or Inf"):
+    with pytest.raises(ValueError, match="Inf is not a gap"):
         validate_finite_data(np.array([1 + 2j, complex(0, np.inf)]), allow_complex=True)
     with pytest.raises(ValueError, match="complex"):
         validate_finite_data(np.array([1 + 2j, 3 + 4j]))
@@ -577,7 +583,7 @@ def test_allow_complex_reaches_complex_hiding_in_object_arrays():
 
 def test_allow_complex_cast_failure_is_still_a_valueerror():
     """numbers.Complex is a registrable ABC, so membership - which is all
-    _holds_complex_numbers checks - does not imply a working __complex__. The
+    the element classification checks - does not imply a working __complex__. The
     first cut ran the complex cast bare, so a registered impostor escaped as a
     TypeError from every filter, outside the contract (review round 2)."""
     import numbers
@@ -717,7 +723,7 @@ def test_datetime_remedy_does_not_recreate_the_bug_it_reports():
 
     for gappy, clean, remedy, wrong_remedy, expected_text in cases:
         # The wrong remedy: silently accepted, which is the failure mode.
-        assert validate_finite_data(wrong_remedy(gappy)) is None
+        assert isinstance(validate_finite_data(wrong_remedy(gappy)), np.ndarray)
         assert np.all(np.isfinite(wrong_remedy(gappy)))
 
         # The remedy the message names: NaT becomes NaN, so the caller lands
@@ -726,7 +732,7 @@ def test_datetime_remedy_does_not_recreate_the_bug_it_reports():
             validate_finite_data(remedy(gappy))
 
         # ...and it accepts cleanly once there is no NaT.
-        assert validate_finite_data(remedy(clean)) is None
+        assert isinstance(validate_finite_data(remedy(clean)), np.ndarray)
 
         # Pin the message against the exact remedy verified above. Asserting
         # merely that it says "np.timedelta64" is vacuous - both dtypes'
@@ -1040,31 +1046,43 @@ def test_a_leading_nan_gets_the_edge_hint_and_an_interior_one_does_not():
         assert "limit_direction" not in str(plain.value)
 
 
-def test_the_edge_hint_keys_on_a_leading_nan_not_on_inf():
-    """interpolate_gaps() does not fill Inf in any direction (#81), so
-    pointing a leading-Inf caller at limit_direction would be a second remedy
-    that does not run. The base message's remedy is already imprecise for
-    Inf; that is pre-existing and out of scope here, but the new hint must
-    not widen it.
+def test_the_edge_hint_keys_on_a_leading_non_finite_sample():
+    """While #81 was open the hint keyed on a leading NaN only: interpolate_gaps()
+    does not fill Inf in any direction, so pointing a leading-Inf caller at
+    limit_direction would have been a second remedy that does not run. Now
+    that the Inf message names the replace step first, the leading gap that
+    step leaves is real, and the hint applies to it - worded as what will
+    happen, since the sample is not a gap yet.
 
-    A leading NaN with an Inf *elsewhere* still gets the hint, on purpose
-    (review, round 3): the hint's claim is about the leading gap, and
-    following it does clear that gap. What remains is the Inf, which is
-    #81's problem and gets #81's plain message."""
+    A leading NaN with an Inf *elsewhere* gets the hint too, on purpose
+    (review of #77, round 3): the hint's claim is about the leading gap.
+    And the message's step order - replace, *then* interpolate - is
+    load-bearing there, measured rather than assumed: pandas counts Inf as
+    a valid sample, so an edge fill run before the replace extends the Inf
+    back over the leading NaN, and the caller lands on the Inf message with
+    the hint now reading "will then start with a gap". Taken in the order
+    given, the two steps clear everything."""
     from baseTs.utils import validate_finite_data
 
-    with pytest.raises(ValueError, match="NaN or Inf") as exc:
+    with pytest.raises(ValueError, match=r"limit_direction='both'") as exc:
         validate_finite_data(np.array([np.inf, 1.0, 2.0]))
-    assert "limit_direction" not in str(exc.value)
+    assert "will then start with a gap" in str(exc.value)
 
-    with pytest.raises(ValueError, match=r"limit_direction='both'"):
+    with pytest.raises(ValueError, match=r"limit_direction='both'") as exc:
         validate_finite_data(np.array([np.nan, np.inf, 1.0, 2.0]))
-    followed = baseTs(np.array([np.nan, np.inf, 1.0, 2.0]), np.arange(4) / 10.0)
-    followed = followed.interpolate_gaps(limit_direction='both')
-    assert not np.isnan(followed.values).any()             # the hint's remedy ran
-    with pytest.raises(ValueError, match="NaN or Inf") as exc:
-        validate_finite_data(followed.values)               # ...and only the Inf is left
-    assert "limit_direction" not in str(exc.value)
+    assert "The series starts with a gap" in str(exc.value)
+    assert "NaN and Inf" in str(exc.value)
+
+    ts = baseTs(np.array([np.nan, np.inf, 1.0, 2.0]), np.arange(4) / 10.0)
+    out_of_order = ts.interpolate_gaps(limit_direction='both')
+    assert np.isinf(out_of_order.values[:2]).all()          # the edge fill copied the Inf
+    with pytest.raises(ValueError, match="Inf is not a gap") as exc:
+        validate_finite_data(out_of_order.values)
+    assert "will then start with a gap" in str(exc.value)
+
+    in_order = ts.replace([np.inf, -np.inf], np.nan).interpolate_gaps(limit_direction='both')
+    np.testing.assert_array_equal(in_order.values, [1.0, 1.0, 1.0, 2.0])
+    assert isinstance(validate_finite_data(in_order.values), np.ndarray)
 
 
 def test_the_hint_names_a_positional_remedy_that_does_not_need_an_api():
