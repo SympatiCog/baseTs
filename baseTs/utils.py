@@ -1165,7 +1165,7 @@ def time_to_idx(lag_secs: float, freq: float) -> int:
         Rounded rather than truncated (issue #51). A derived rate is rarely
         exact - a nominal 100 Hz series derives to 99.99999999999999 - so
         `int(0.5 * rate)` was 49 for a caller who asked for half a second,
-        in 7% of a 5601-case sweep. The residue is ~1e-14 relative, far
+        in 7% of a 5703-case sweep. The residue is ~1e-14 relative, far
         inside half a sample, so rounding lands on the sample meant every
         time. A lag that falls exactly between two samples has no nearest
         one; either neighbour is as honest as the other, and `get_lags`
@@ -1251,12 +1251,17 @@ def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
     was fine, the container could not hold the sentinel. A datetime64 index
     died on `Could not convert object to NumPy datetime` the same way.
 
-    The rule: a dtype with a missing value of its own gets it - NaN for float
-    and complex, NaT for datetime and timedelta, NaN into an object slot -
-    and a dtype with none (integer, unsigned, bool) is widened to float64
-    first, which is what `pd.Series([1, 2, 3]).shift(1)` does. `astype(float)`
-    is deliberately not applied to the datetime kinds: it reinterprets the
-    int64 storage and turns NaT into -9.2e18.
+    The rule, by dtype kind: a dtype with a missing value of its own gets it
+    - NaN for float and complex, NaT for datetime and timedelta, NaN into an
+    object slot; a *numeric* dtype with none (integer, unsigned, bool) is
+    widened to float64 first; and a non-numeric dtype with none (bytes, str,
+    void) is refused, because "widen" would mean parsing, and a bytes array
+    whose entries happen to read as numbers would flip dtype silently.
+    Integer widening is what `pd.Series([1, 2, 3]).shift(1)` does; bool
+    deliberately diverges from pandas, which shifts a bool Series to object,
+    because a float sentinel is what this function's contract promises.
+    `astype(float)` is deliberately not applied to the datetime kinds: it
+    reinterprets the int64 storage and turns NaT into -9.2e18.
 
     Args:
         arr: The array to blank, not modified
@@ -1266,8 +1271,7 @@ def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
         A new array of the same length
 
     Raises:
-        ValidationError: If the dtype has no missing value and does not
-            convert to float either (a string array, say)
+        ValidationError: If the dtype has no missing value and is not numeric
     """
     kind = arr.dtype.kind
     if kind in "mM":
@@ -1276,14 +1280,13 @@ def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
         return out
     if kind in "fcO":
         out = arr.copy()
+    elif kind in "biu":
+        out = arr.astype(float)
     else:
-        try:
-            out = arr.astype(float)
-        except (TypeError, ValueError) as exc:
-            raise ValidationError(
-                f"cannot blank the shifted-out samples of a {arr.dtype} array: "
-                f"the dtype has no missing value and does not convert to float."
-            ) from exc
+        raise ValidationError(
+            f"cannot blank the shifted-out samples of a {arr.dtype} array: "
+            f"the dtype has no missing value and is not numeric."
+        )
     out[:k] = np.nan
     return out
 
@@ -1305,7 +1308,7 @@ def shift_timeseries(
             series' own dtype. False returns the full length with the first
             `lag_idx` entries blanked - NaN, or NaT for a timestamp index -
             which widens an integer or bool array to float64, as pandas'
-            `shift` does (issue #52).
+            `shift` does for integers (issue #52).
 
     Returns:
         Dictionary containing lagged data, times, and lag information.

@@ -180,6 +180,18 @@ class TestTheResultReportsTheLagItApplied:
         assert res["lag_idx"] == 50
         assert res["lag_secs"] == 0.5
 
+    def test_a_lag_whose_applied_seconds_overflow_is_refused_not_echoed(self):
+        """Accepted, and pinned so it is not re-raised: review round 1 found
+        a call that succeeded before and raises now. At a rate of 1e-308 Hz
+        a lag of 1.7e308 s rounds to 2 samples, and 2 / 1e-308 is inf - the
+        seconds actually applied have no float, so `idx_to_time`'s existing
+        overflow guard refuses them. The old code returned the echoed
+        1.7e308 s, which was not what the 2-sample shift did. The input is
+        three hundred orders of magnitude outside any sampling rate."""
+        assert time_to_idx(1.7e308, 1e-308) == 2
+        with pytest.raises(ValidationError, match="conversion overflows"):
+            get_lags(1.7e308, "seconds", 1e-308)
+
     def test_seconds_mode_reports_a_float_whatever_the_caller_passed(self):
         """A Decimal or a bool used to be echoed back as itself."""
         assert type(get_lags(Decimal("0.5"), "seconds", 100.0)[0]) is float
@@ -338,20 +350,31 @@ class TestTheBlankingRuleIsStatedNotListed:
         assert res["lagged_data"].dtype == np.float64
         np.testing.assert_array_equal(res["lagged_data"], [np.nan, np.nan, 1, 2, 3])
 
-    def test_a_dtype_with_no_missing_value_that_cannot_widen_is_diagnosed(self):
-        """A bytes array has no missing value and `astype(float)` refuses it
-        with a bare `ValueError: could not convert string to float`. That is
-        the raw-conversion leak this chain keeps closing; it is reachable,
-        since the constructor takes a bytes array, so it is named instead."""
+    def test_a_non_numeric_dtype_with_no_missing_value_is_refused(self):
+        """A bytes array has no missing value, and it is not numeric, so
+        there is nothing honest to widen it to. It is reachable, since the
+        constructor takes a bytes array, so it is named rather than left to
+        die in `astype(float)` with a bare "could not convert string"."""
         ts = baseTs(np.array([b"a", b"b", b"c", b"d", b"e"]), np.array([0.0, 1, 2, 3, 4]))
 
-        with pytest.raises(ValidationError, match="does not convert to float") as excinfo:
+        with pytest.raises(ValidationError, match="is not numeric") as excinfo:
             shift_timeseries(ts, 2, "index", drop_nan=False)
         assert "|S1" in str(excinfo.value)
 
         # Dropping the head writes no sentinel, so the same series shifts.
         np.testing.assert_array_equal(shift_timeseries(ts, 2, "index")["lagged_data"],
                                       [b"a", b"b", b"c"])
+
+    def test_numeric_looking_text_is_refused_not_parsed(self):
+        """Review round 1 (codex): an outcome-based fallback - try
+        `astype(float)`, refuse on failure - let `['1.0', '2.0', ...]` flip
+        from text to float64 silently, because those entries happen to
+        parse. The rule is by kind, so text is refused whatever it says."""
+        from baseTs.utils import _blank_head
+
+        for arr in (np.array(["1.0", "2.0", "3.0"]), np.array([b"1", b"2", b"3"])):
+            with pytest.raises(ValidationError, match="is not numeric"):
+                _blank_head(arr, 1)
 
     def test_a_complex_array_holds_nan_without_widening(self):
         ts = baseTs(np.array([1 + 1j, 2, 3, 4, 5]), np.array([0.0, 1, 2, 3, 4]))

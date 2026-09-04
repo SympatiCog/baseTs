@@ -93,11 +93,17 @@ With `drop_nan=True` the blanked samples are sliced off anyway, so no
 sentinel is written and the series' own dtype survives — an int64 series
 returns int64, a timestamp index returns timestamps. With `drop_nan=False`
 the head is blanked with the dtype's own missing value where it has one (NaN
-for float, complex and object; NaT for datetime and timedelta), and a dtype
-with none (integer, unsigned, bool) is widened to float64 first, which is
-what `pd.Series([1, 2, 3]).shift(1)` does. `astype(float)` is deliberately
-not the route for the datetime kinds: it reinterprets the int64 storage and
-turns NaT into -9.2e18, the trap #28 documented. A float series returns
+for float, complex and object; NaT for datetime and timedelta); a
+*numeric* dtype with none (integer, unsigned, bool) is widened to float64
+first, which for integers is what `pd.Series([1, 2, 3]).shift(1)` does
+(bool deliberately diverges — pandas shifts a bool Series to object, and a
+float sentinel is what this contract promises); and a non-numeric dtype with
+none (bytes, str) is refused by name, because "widen" would mean parsing,
+and review round 1 (codex) showed an outcome-based fallback let
+`['1.0', '2.0', ...]` flip from text to float64 silently when its entries
+happened to parse. `astype(float)` is deliberately not the route for the
+datetime kinds: it reinterprets the int64 storage and turns NaT into
+-9.2e18, the trap #28 documented. A float series returns
 exactly the arrays it did before, pinned against the old code inlined in the
 test; the result is still a fresh array, not a view of the series.
 
@@ -139,7 +145,13 @@ conversion the lag was meant for.
   before.
 - `shift_timeseries(..., drop_nan=False)` on an integer or bool series
   returns float64 with NaN, on a timestamp index returns NaT, where both
-  raised before.
+  raised before. A bytes or str series raises `ValidationError` naming the
+  dtype where it raised numpy's bare conversion error.
+- One call that succeeded now raises, at the edge of float range (review
+  round 1): a lag of 1.7e308 s at 1e-308 Hz rounds to 2 samples, and the
+  seconds those 2 samples span overflow, so `idx_to_time`'s existing guard
+  refuses the derived `lag_secs` where the old code echoed 1.7e308 back.
+  Accepted and pinned: the echo described a shift the call did not make.
 - A lag of the series length or more raises `ValidationError` where it
   returned an empty (or all-NaN) result. #32's outcome census had one row
   affected — a 50 s lag on a 3 s series — and it is updated.
@@ -151,7 +163,9 @@ conversion the lag was meant for.
 four; the 5703-case rounding sweep; the tie rule; the two halves agreeing by
 construction across lags at the derived rate; the blanking rule across
 int64, uint8, bool, object, complex, datetime64 and timedelta64; the
-`drop_nan=False` float path pinned against the old code; the boundary at
+`drop_nan=False` float path pinned against the old code; text refused by
+kind, not by whether it parses; the float-range overflow accepted above; an
+array `lag_unit` diagnosed rather than compared elementwise; the boundary at
 `len - 1` / `len`; the seconds-mode bound on the rounded index; the unit
 refused through `get_lags`, `validate_lag`, `shift_timeseries` and
 `lag_plot`, and judged before the rate. Three pins in
