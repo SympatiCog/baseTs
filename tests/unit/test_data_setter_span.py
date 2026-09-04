@@ -71,22 +71,26 @@ class TestGrowingASeriesWithNoSpanIsRefused:
         with pytest.raises(ValidationError, match=REFUSAL):
             ts.data = np.arange(5.0)
 
-    def test_shrinking_a_zero_span_index_to_a_non_empty_length_refuses(self):
-        """Fewer duplicates are still invented duplicates."""
-        ts = baseTs(np.array([1.0, 2.0, 3.0]), times=np.array([5.0, 5.0, 5.0]))
-        with pytest.raises(ValidationError, match=REFUSAL):
-            ts.data = np.array([1.0, 2.0])
+    def test_a_nan_endpoint_refuses(self):
+        """`nan == nan` is False, so an equality test alone let a NaN
+        endpoint through to `linspace(nan, 1.0, 5)` - four invented NaN
+        labels and one real one (round 2, glm; measured on `main`)."""
+        ts = baseTs(np.array([1.0, 2.0]), times=np.array([np.nan, 1.0]))
+        with pytest.raises(ValidationError, match="unmeasurable"):
+            ts.data = np.arange(5.0)
 
-    def test_the_message_says_why_for_each_kind_of_source(self):
-        cases = [
-            (empty(), "empty"),
-            (one_sample(), "single sample"),
-            (baseTs(np.array([1.0, 2.0]), times=np.array([5.0, 5.0])),
-             "coincide"),
-        ]
-        for ts, word in cases:
-            with pytest.raises(ValidationError, match=word):
-                ts.data = np.array([1.0, 2.0, 3.0])
+    @pytest.mark.parametrize("source, word", [
+        (empty, "empty"),
+        (one_sample, "single sample"),
+        (lambda: baseTs(np.array([1.0, 2.0]), times=np.array([5.0, 5.0])),
+         "coincide"),
+        (lambda: baseTs(np.array([1.0, 2.0]), times=np.array([np.nan, 1.0])),
+         "unmeasurable"),
+    ], ids=['empty', 'one-sample', 'zero-span', 'nan-endpoint'])
+    def test_the_message_says_why_for_each_kind_of_source(self, source, word):
+        ts = source()
+        with pytest.raises(ValidationError, match=word):
+            ts.data = np.array([1.0, 2.0, 3.0])
 
     def test_a_declared_rate_does_not_change_the_answer(self):
         """The rule is about the span; a rate is not a span.
@@ -97,6 +101,7 @@ class TestGrowingASeriesWithNoSpanIsRefused:
         not discovered.
         """
         ts = baseTs(np.array([1.0]), freq=100.0)
+        assert ts.freq == 100.0            # the declaration is attached
         with pytest.raises(ValidationError, match=REFUSAL):
             ts.data = np.array([1.0, 2.0, 3.0])
 
@@ -155,6 +160,19 @@ class TestWhatIsStillAllowed:
         ts.data = np.arange(5.0) * 2
         np.testing.assert_array_equal(ts.times, irregular)
 
+    def test_shrinking_a_zero_span_index_keeps_its_one_label(self):
+        """A no-span index cannot grow; it can shrink, and what it keeps are
+        labels it already had. Round 2 (glm): refusing the shrink too broke
+        `diff_ts` on two samples at one timestamp, which `main` handled."""
+        ts = baseTs(np.array([1.0, 2.0, 3.0]), times=np.array([5.0, 5.0, 5.0]))
+        ts.data = np.array([1.0, 2.0])
+        assert ts.times.tolist() == [5.0, 5.0]
+
+    def test_shrinking_a_nan_endpoint_index_keeps_its_labels(self):
+        ts = baseTs(np.array([1.0, 2.0, 3.0]), times=np.array([np.nan, 0.5, 1.0]))
+        ts.data = np.array([1.0, 2.0])
+        assert np.isnan(ts.times[0]) and ts.times[1] == 0.5
+
     def test_shrinking_a_one_sample_series_to_empty(self):
         ts = one_sample()
         ts.data = np.array([])
@@ -184,7 +202,8 @@ class TestWhatIsStillAllowed:
     @pytest.mark.parametrize("n_old", [2, 3, 7])
     @pytest.mark.parametrize("n_new", [0, 1, 2, 5, 11])
     def test_a_unique_index_never_becomes_a_duplicated_one(self, n_old, n_new):
-        """The property the single-sample case violated, over a sweep."""
+        """Regression guard over spanning sources: true on `main` too. The
+        no-span cases are the refusal tests above, not this sweep."""
         ts = baseTs(np.arange(float(n_old)), times=np.arange(n_old) * 0.25)
         ts.data = np.arange(float(n_new))
         assert len(ts) == n_new
@@ -205,6 +224,13 @@ class TestTheTwoStepRouteStillWorks:
         out = ts.diff_ts()
         assert out.data.tolist() == [3.0]
         assert out.times.tolist() == [1.0]
+
+    def test_diff_ts_on_two_samples_at_one_timestamp(self):
+        """The shrinker round 2 (glm) caught: `main` gave `[3.0] @ [5.0]`."""
+        ts = baseTs(np.array([1.0, 4.0]), times=np.array([5.0, 5.0]))
+        out = ts.diff_ts()
+        assert out.data.tolist() == [3.0]
+        assert out.times.tolist() == [5.0]
 
     def test_diff_ts_on_one_sample_gives_an_empty_series(self):
         out = one_sample().diff_ts()

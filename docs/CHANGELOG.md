@@ -68,20 +68,28 @@ duplicated index and a `freq` derived from a zero-duration grid; on an empty
 series it minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for. Neither
 was announced.
 
-The rule is kept and its precondition is now stated: a length change to a
-non-zero length on a series whose index has no span — empty, a single
-sample, or first and last timestamps coinciding — raises `ValidationError`
+The rule is kept and its precondition is now stated: *growing* a series
+whose index has no measurable span — empty, a single sample, first and last
+timestamps coinciding, or a NaN at either end — raises `ValidationError`
 before anything is mutated, naming what was asked (`cannot place 3 samples
 on a series of 1`), why this source has no span, and the two remedies that
 exist — `baseTs(new_data, times=...)` or `baseTs(new_data, freq=...)`.
-Both are exercised by the test that pins the message. Shrinking to empty
-places nothing and needs no span, so it is not refused.
+Both are exercised by the test that pins the message. A no-span index can
+still shrink, keeping the first n of the labels it already has (they are
+all one label, or one NaN), and shrinking to empty places nothing; neither
+is refused.
 
-The first cut keyed the refusal on "fewer than two samples". Review round 1
-(codex and agy, independently) showed that a two-sample index at one
-timestamp grew into the same fully duplicated `linspace(x, x, n)` one
-sample further along — the count was a proxy for the span, and the rule is
-the span.
+Three review rounds shaped the rule. The first cut keyed on "fewer than two
+samples"; round 1 (codex and agy, independently) showed a two-sample index
+at one timestamp growing into the same fully duplicated `linspace(x, x, n)`
+one sample further along. The second cut refused every length change on a
+no-span index; round 2 (glm-5.3) showed that refused a *shrink* `main` had
+handled — `diff_ts` on two samples at one timestamp gave `[3.0] @ [5.0]`
+and now raised with advice about an assignment the caller never wrote —
+and that `nan == nan` being False let a NaN endpoint through to
+`linspace(nan, 1.0, 5)`, four invented NaN labels and one real one. The
+count was a proxy for the span; the span is what is checked, and only
+growth invents labels.
 
 **Why refuse rather than build a grid from a declared rate.** A one-sample
 series constructed with `freq=100.0` could plausibly grow onto
@@ -107,29 +115,41 @@ source span, so on `main` a one-sample source came back as n copies of one
 value at n copies of one timestamp, and on the first cut it raised the
 setter's message. It now checks the precondition `interpto_hz` has checked
 since #38 — a finite, positive duration — in its own words and before
-anything runs; the check is one shared helper, `_resampling_duration`, and
-`interpto_hz`'s message is byte-identical across the extraction (five
-degenerate sources compared against `main`). Every other length-changing
-method either cannot grow (`diff_ts`, `remove_outliers`,
-`trimto_timepoints`, ...) or refuses a degenerate source at its own door
-first (`interpto_hz`, `interp_to_uniform_grid`, `filter_outliers`); the
-review ran each. A new two-step method must check its own precondition
-too, and the setter's docstring says so.
+anything runs, whatever `new_len` (so `interpto_samples(1)` on one sample,
+an identity on `main`, is refused too); the check is one shared helper,
+`_resampling_duration`, and `interpto_hz`'s message is byte-identical
+across the extraction (five degenerate sources compared against `main`).
+Every other length-changing method either only shrinks (`diff_ts`,
+`remove_outliers`, `trimto_timepoints`, ...), which a no-span index
+permits, or refuses a degenerate source at its own door first
+(`interpto_hz`, `interp_to_uniform_grid`, `filter_outliers`); the reviews
+ran each. A new two-step method that grows must check its own
+precondition, and the setter's docstring says so.
 
 ### Changed
 
-- `ts.data = x` with `len(x) > 0` and `len(x) != len(ts)` on a series
-  whose index has no span — empty, one sample, or `index[0] == index[-1]`
-  — raises `ValidationError` (a `ValueError`) and leaves the object
-  untouched. Before: a duplicated index (one sample, or several at one
-  timestamp) or an invented unit-spaced one (empty), silently.
-  `apply_function` on such a series with a length-changing function
-  reaches the same refusal, since it assigns `data` and never `times`.
+- `ts.data = x` with `len(x) > len(ts)` on a series whose index has no
+  measurable span — empty, one sample, `index[0] == index[-1]`, or a NaN
+  at either end — raises `ValidationError` (a `ValueError`) and leaves the
+  object untouched. Before: a duplicated index (one sample, or several at
+  one timestamp), an invented unit-spaced one (empty), or invented NaN
+  labels (NaN endpoint), silently. `apply_function` on such a series with
+  a growing function reaches the same refusal, since it assigns `data` and
+  never `times`. Shrinking such a series (`0 < len(x) < len(ts)`) keeps
+  the first `len(x)` labels rather than rebuilding them; for a zero-span
+  index that is the same labels `linspace` gave before, and for a NaN
+  endpoint it is the labels the index had instead of `linspace`'s NaNs.
+- On a single-sample series that declared `allows_duplicate_labels=False`,
+  `ts.data = [1., 2., 3.]` now raises this span refusal where it used to
+  raise the #35/#39 duplicate-label refusal; the message and remedy a
+  caller matched on have changed. The three tests that pinned that route
+  now exercise `_adopt_data_inplace` directly, which is the door they pin.
 - `interpto_samples(n)` on a source with no positive, finite duration
   (empty, one sample, coinciding or reversed endpoints, or a
   `DatetimeIndex`) raises `ValueError("Cannot interpolate to n samples:
   the source time base is degenerate (duration ...)")`, the shape of
-  `interpto_hz`'s refusal. Before (measured on `main`): a one-sample
+  `interpto_hz`'s refusal, for every `n` — including `n` equal to the
+  source length, which was an identity on `main`. Before (measured on `main`): a one-sample
   source, or two or more at one timestamp, came back as n copies of one
   value at n copies of one timestamp with `freq` NaN; an empty source
   raised numpy's `IndexError`; a `DatetimeIndex` raised numpy's
@@ -140,7 +160,9 @@ too, and the setter's docstring says so.
   slices the existing index to nothing rather than building an empty float
   grid). On a `DatetimeIndex` this used to raise inside numpy
   (`np.linspace` on `Timestamp` endpoints); it now yields an empty
-  `DatetimeIndex`. Pinned.
+  `DatetimeIndex`. Pinned. Growing a zero-span `DatetimeIndex` used to
+  raise numpy's `UFuncTypeError` from the same `linspace`; it now raises
+  the `ValidationError` above, a different exception family.
 - The `#35/#39` test `test_the_declaration_is_refused_before_anything_is_mutated`
   and two neighbours reached the duplicate-label door through
   `ts.data = [1., 2., 3.]` on a single sample. That route no longer derives

@@ -122,12 +122,14 @@ def data(self) -> np.ndarray:
 Assigning `ts.data = x` replaces the values. With the same length the index is
 kept. With a different length the index is resampled over the existing span
 (`linspace(first, last, len(x))`, the grid `interpto_samples` builds) — which
-needs a span, so a series whose index has none (empty, one sample, or first
-and last timestamps coinciding) raises `ValidationError` naming the remedy:
-build a new object with
-`baseTs(x, times=...)` or `baseTs(x, freq=...)` (#65). Shrinking to empty is
-allowed. To change both values and timestamps, assign `data` first and
-`times` second; the `times` setter alone rejects a length mismatch.
+needs a measurable span, so *growing* a series whose index has none (empty,
+one sample, first and last timestamps coinciding, or a NaN at either end)
+raises `ValidationError` naming the remedy: build a new object with
+`baseTs(x, times=...)` or `baseTs(x, freq=...)` (#65). Shrinking such a
+series keeps the labels it has; shrinking any series to empty is allowed.
+To change both values and timestamps on a series with a span, assign
+`data` first and `times` second; the `times` setter alone rejects a length
+mismatch, and on a series without a span the only route is a new object.
 
 #### `times`
 ```python

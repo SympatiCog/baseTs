@@ -433,44 +433,58 @@ class baseTs(TimeSeriesData):
         transient those methods overwrite; it is kept only by a caller who
         changes the length and supplies no times.
 
-        Resampling needs a span, and an index whose first and last
-        timestamps coincide has none - an empty series, a single sample, or
-        several samples at one timestamp. It used to invent one (#65): on a
-        single sample `first == last`, so every replacement timestamp was
-        identical and the object silently acquired a fully duplicated index
-        - reported as a `freq` derived from a zero-duration grid; on an
-        empty series it minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked
-        for. The first cut of this fix keyed on sample count, and review
-        round 1 showed that a two-sample index at one timestamp grew into
-        the same duplicated grid one sample further along; the rule is the
-        span, and the count was only its proxy. All refuse now, before
-        anything is mutated. Shrinking to empty places nothing and needs no
-        span, so it is not refused.
+        Resampling needs a measurable span, and an index has none when it
+        is empty, holds one sample, has coinciding first and last
+        timestamps, or has a NaN at either end. Such an index cannot
+        *grow*: it used to (#65), and every added sample landed on a label
+        the index could not separate - on a single sample `first == last`,
+        so the object silently acquired a fully duplicated index and a
+        `freq` derived from a zero-duration grid; on an empty series it
+        minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for; with a NaN
+        endpoint, `linspace` invented NaN labels. Growth refuses now, before
+        anything is mutated. A no-span index can still *shrink*, keeping
+        the first n of the labels it already has - they are all the same
+        label, or the same NaN - so `diff_ts` on two samples at one
+        timestamp behaves as it always did. Shrinking to empty places
+        nothing and needs no span either.
 
-        A package method that changes the length takes the two-step route
+        The first cut of this fix keyed on sample count, and review found
+        in turn a two-sample index at one timestamp growing into the same
+        duplicated grid, a NaN endpoint passing an equality test, and a
+        shrink refused that `main` had handled. The rule is the span; the
+        count was its proxy.
+
+        A package method that *grows* the length takes the two-step route
         (`data` then `times`) and must check the span itself first, in its
         own words: this refusal describes an assignment and offers remedies
         for one, which is wrong advice for a caller of `interpto_samples`.
-        That method checks; a new one has to.
+        That method checks; a new one has to. Methods that only shrink
+        (`diff_ts`, `remove_outliers`, `trimto_timepoints`, ...) never
+        reach the refusal.
 
         Raises:
-            ValidationError: if the length changes to a non-zero value on a
-                series whose index has no span.
+            ValidationError: if the length grows on a series whose index
+                has no measurable span.
         """
         n_new = len(new_data)
         n_old = len(self.index)
+        if n_old == 0:
+            no_span, why = True, "an empty series has no span to resample over"
+        elif pd.isna(self.index[0]) or pd.isna(self.index[-1]):
+            no_span, why = True, ("an endpoint of its index is not a number "
+                                  "(it holds a NaN), so its span is unmeasurable")
+        elif n_old == 1:
+            no_span, why = True, "a single sample has no span to resample over"
+        elif self.index[0] == self.index[-1]:
+            no_span, why = True, (f"its first and last timestamps coincide at "
+                                  f"{self.index[0]!r}, so it has no span to "
+                                  "resample over")
+        else:
+            no_span, why = False, ""
+
         if n_new == n_old:
             new_index = self.index
-        elif n_new == 0:
-            new_index = self.index[:0]
-        elif n_old == 0 or self.index[0] == self.index[-1]:
-            if n_old == 0:
-                why = "an empty series has no span to resample over"
-            elif n_old == 1:
-                why = "a single sample has no span to resample over"
-            else:
-                why = (f"its first and last timestamps coincide at "
-                       f"{self.index[0]!r}, so it has no span to resample over")
+        elif no_span and n_new > n_old:
             raise ValidationError(
                 f"cannot place {n_new} samples on a series of {n_old}: a "
                 "length-changing `ts.data = ...` resamples the new values "
@@ -478,6 +492,11 @@ class baseTs(TimeSeriesData):
                 "object instead: `baseTs(new_data, times=...)` or "
                 "`baseTs(new_data, freq=...)`."
             )
+        elif no_span or n_new == 0:
+            # A shrink of a no-span index keeps labels it already has; an
+            # empty result places nothing. Sliced rather than rebuilt so the
+            # index keeps its dtype (a DatetimeIndex used to fail in numpy).
+            new_index = self.index[:n_new]
         else:
             new_index = np.linspace(self.index[0], self.index[-1], n_new)
 
@@ -880,9 +899,9 @@ class baseTs(TimeSeriesData):
 
         Raises:
             ValueError: if the source spans no positive, finite duration
-                (empty, a single sample, or first and last timestamps
-                coinciding) - there is nothing to spread the new grid
-                across.
+                (empty, a single sample, first and last timestamps
+                coinciding, reversed, or a non-numeric index) - there is
+                nothing to spread the new grid across, whatever `new_len`.
         """
         self._resampling_duration(
             f"Cannot interpolate to {new_len} samples",
