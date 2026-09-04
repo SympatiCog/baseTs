@@ -126,6 +126,11 @@ floats, and always did.
 the in-place demeaning (`Cannot cast ufunc 'subtract' output from
 dtype('float64') to dtype('int64')`), on `main` as here. Surfaced while
 verifying that the guard returns numeric arrays untouched; filed as #96.
+Its sibling, found by review round two: `compute_fft_power`'s own
+constancy check (`np.std(data) < 1e-15`) is taken in the input's native
+precision, so the float32 series above reports a DC power 600x the float64
+series' - on `main` as here, and the one `astype(float)` that would settle
+it is the change #96 asks for. Noted on #96 rather than folded in.
 
 `gauss_filter` on a **float16** series still dies in scipy (`array type
 dtype('float16') not supported`): the coercer passes every numeric dtype
