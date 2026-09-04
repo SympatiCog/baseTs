@@ -438,6 +438,39 @@ width is a decision rather than a drift.
 """
 
 
+def _notch_bounds_hz(nyquist: float) -> tuple:
+    """The accepted notch range in Hz, as bounds that pass the check.
+
+    The check is scipy's, on the normalised band `cutoff / nyquist +/-
+    NOTCH_HALF_WIDTH`; the message speaks Hz. `NOTCH_HALF_WIDTH * nyquist`
+    and `cutoff / nyquist - NOTCH_HALF_WIDTH` are not exact inverses in
+    float64, so at some rates (3.0 Hz, 0.7 Hz) the obvious Hz bound is one
+    ulp on the wrong side, and a cutoff the message's own range called
+    accepted was refused by the same message (#76, review round 2).
+
+    Each bound is therefore nudged inward until the float just inside it
+    passes the predicate. Division by a fixed positive rate is monotone,
+    so every cutoff strictly inside the returned pair passes too:
+    "lo < cutoff_hz < hi" is a true sufficient condition, and a refused
+    cutoff is never inside it. The bound itself may be refused (at 10 Hz,
+    0.05 is exactly on the boundary and prints as 0.05); the accepted range
+    may exceed the printed one by an ulp and never falls short of it. The
+    loop runs at most a couple of steps; the cap is a guard against a
+    pathological float, not a budget.
+    """
+    lo = NOTCH_HALF_WIDTH * nyquist
+    for _ in range(64):
+        if np.nextafter(lo, np.inf) / nyquist - NOTCH_HALF_WIDTH > 0:
+            break
+        lo = float(np.nextafter(lo, np.inf))
+    hi = nyquist - NOTCH_HALF_WIDTH * nyquist
+    for _ in range(64):
+        if np.nextafter(hi, -np.inf) / nyquist + NOTCH_HALF_WIDTH < 1:
+            break
+        hi = float(np.nextafter(hi, -np.inf))
+    return lo, hi
+
+
 def validate_notch_params(data: ArrayLike,
                           sampling_freq: float,
                           cutoff_hz: float,
@@ -526,13 +559,13 @@ def validate_notch_params(data: ArrayLike,
     # spellings can disagree by an ulp.
     if not (low > 0) or not (high < 1):
         half_width_hz = NOTCH_HALF_WIDTH * nyquist
+        lo_hz, hi_hz = _notch_bounds_hz(nyquist)
         raise InvalidParameterError(
-            f"Notch frequency must be more than {half_width_hz} Hz "
-            f"({NOTCH_HALF_WIDTH:.0%} of Nyquist) from both 0 Hz and the "
-            f"Nyquist frequency ({nyquist} Hz), because the stopped band is "
-            f"the notch frequency +/- {half_width_hz} Hz: "
-            f"{half_width_hz} < cutoff_hz < {nyquist - half_width_hz} Hz; "
-            f"got cutoff_hz={cutoff_hz!r}")
+            f"Notch frequency must satisfy {lo_hz} < cutoff_hz < {hi_hz} Hz: "
+            f"the stopped band is the notch frequency +/- {half_width_hz} Hz "
+            f"({NOTCH_HALF_WIDTH:.0%} of the Nyquist frequency, {nyquist} Hz) "
+            f"and both of its edges must lie strictly between 0 Hz and "
+            f"Nyquist; got cutoff_hz={cutoff_hz!r}")
 
     # The data type, the order, and the rate again through the same door.
     # Its cutoff range check cannot fire: the notch check above is strictly

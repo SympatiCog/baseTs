@@ -102,6 +102,16 @@ shared rate check admits any positive finite float, and halving 5e-324
 underflows to exactly 0.0, which the new division turned into a bare
 `ZeroDivisionError` where `main` only compared. Refused by name now.
 
+A second harness caught the message being a hair wider than the check:
+the predicate is scipy's, on the normalised band, and
+`NOTCH_HALF_WIDTH * nyquist` does not invert `cutoff / nyquist` exactly,
+so at 3 Hz a cutoff one ulp above the printed lower bound was refused by
+a message whose own range said it was accepted. The printed bounds are
+now nudged inward until they pass the predicate themselves; division by
+a fixed positive rate is monotone, so "lo < cutoff_hz < hi" is a true
+sufficient condition and a refused value is never inside it. Pinned at
+seven rates, five ulps either side of both boundaries.
+
 ### Changed
 
 - `notch_filter(data, cutoff_hz, fs_hz)`, `ts.notch_at(cutoff_hz)` and
@@ -115,7 +125,8 @@ underflows to exactly 0.0, which the new division turned into a bare
   raises the notch message rather than the generic `Cutoff frequency must
   be positive and less than Nyquist frequency ...`. Same exception type;
   the wording a caller matched on has changed. The message names the
-  half-width, Nyquist and the accepted range, all in Hz.
+  accepted range, the half-width and Nyquist, all in Hz; the range is
+  rounded inward so that anything inside it is accepted.
 - `notch_filter` with a sampling rate of `5e-324` Hz, the smallest positive
   float and the only one whose Nyquist underflows to zero, raises `InvalidParameterError(... Nyquist frequency
   underflows to 0 Hz)`; on `main` the same call raised the generic cutoff
