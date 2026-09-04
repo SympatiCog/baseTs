@@ -865,3 +865,110 @@ class TestFiltfiltFiltersRejectNonFiniteData:
             bad = np.isnan(out)
             assert 4 <= bad.sum() < 60           # wider than the gap, not the series
             assert not bad[:250].any() and not bad[350:].any()
+
+
+class TestTheNaNRemedyClearsAnEdgeGap:
+    """#77: the NaN message names `interpolate_gaps()`, which forwards pandas'
+    default `limit_direction='forward'` - so a gap at the *start* of the series
+    survives it, and a caller who follows the remedy is rejected again with the
+    exact message they just obeyed. The #28 pattern (a remedy that reproduces
+    the bug it reports) one level up: #48 tested the remedy end to end, but only
+    for an interior gap.
+
+    A leading NaN is realistic in the documented filter_outliers() -> filter
+    chain: a late acquisition start, or an outlier at sample 0.
+    """
+
+    FS = 30.0
+
+    @classmethod
+    def _with_gap(cls, where):
+        d = np.sin(2 * np.pi * 0.5 * np.arange(600) / cls.FS)
+        d[where] = np.nan
+        return baseTs(d, np.arange(600) / cls.FS)
+
+    def test_a_leading_gap_survives_the_named_remedy_and_the_message_says_what_it_needs(self):
+        cleaned = self._with_gap(slice(0, 4)).filter_outliers()     # keeps the 4 NaN (#36)
+        followed = cleaned.interpolate_gaps()                        # the remedy, as named
+
+        assert np.isnan(followed.values[:4]).all()                   # ...which did not clear it
+
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'") as exc:
+            followed.lowpass_at(5.0)
+        assert "starts with" in str(exc.value)
+        assert "NaN or Inf" in str(exc.value)          # the hint is appended, not substituted
+        assert "constant fill, not an interpolation" in str(exc.value)
+
+    def test_the_edge_remedy_the_message_names_works_end_to_end(self):
+        """Executed, not just named - the whole point of #77."""
+        cleaned = self._with_gap(slice(0, 4)).filter_outliers()
+
+        filled = cleaned.interpolate_gaps(limit_direction='both')
+        out = filled.lowpass_at(5.0)
+
+        assert np.all(np.isfinite(out.values))
+        assert len(out) == 600
+        # The caveat the message states, measured: the edge fill is the first
+        # valid value extended back, not a value interpolated towards anything.
+        assert np.all(filled.values[:4] == filled.values[4])
+        assert filled.values[4] == cleaned.values[4]
+
+    def test_a_trailing_gap_is_cleared_by_the_plain_remedy(self):
+        """The asymmetry the hint is built on, pinned: pandas' forward fill
+        extends the last valid value over a trailing gap, so the plain remedy
+        works there and the message must not send that caller to
+        limit_direction - a hint that is not needed is noise the next caller
+        learns to ignore."""
+        ts = self._with_gap(slice(596, 600))
+
+        with pytest.raises(InvalidParameterError, match="interpolate_gaps") as exc:
+            ts.lowpass_at(5.0)
+        assert "limit_direction" not in str(exc.value)
+
+        out = ts.interpolate_gaps().lowpass_at(5.0)
+        assert np.all(np.isfinite(out.values))
+
+    def test_an_interior_gap_keeps_the_plain_message(self):
+        with pytest.raises(InvalidParameterError, match="interpolate_gaps") as exc:
+            self._with_gap(slice(300, 304)).lowpass_at(5.0)
+        assert "limit_direction" not in str(exc.value)
+
+    @pytest.mark.parametrize("call", [
+        lambda ts: ts.lowpass_at(5.0),
+        lambda ts: ts.highpass_filter(0.1),
+        lambda ts: ts.notch_at(5.0),
+        lambda ts: ts.bandpass_filter(0.1, 5.0),
+        lambda ts: ts.butterpass_at(0.1, 5.0),
+    ], ids=["lowpass_at", "highpass_filter", "notch_at", "bandpass_filter", "butterpass_at"])
+    def test_the_hint_survives_the_InvalidParameterError_wrap_at_every_entry_point(self, call):
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
+            call(self._with_gap(slice(0, 4)))
+
+    def test_a_limit_caps_the_edge_fill_too(self):
+        """`limit` is the caller's own constraint and it applies to the edge
+        fill like any other: with limit=2 the hint's remedy clears two of a
+        four-sample leading gap and the guard fires again. Documented in the
+        docstring rather than the message (review, round 1)."""
+        partly = self._with_gap(slice(0, 4)).interpolate_gaps(limit=2, limit_direction='both')
+
+        assert np.isnan(partly.values[:2]).all()
+        assert np.all(np.isfinite(partly.values[2:]))
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
+            partly.lowpass_at(5.0)
+
+    def test_the_edge_remedy_also_runs_inplace_and_on_complex_data(self):
+        """Two paths the hint's caller may be on (review, round 3): the
+        in-place form of interpolate_gaps forwards the kwarg, and pandas
+        interpolates complex128, so a complex series with a leading NaN -
+        accepted by the filters since #48 - gets a hint whose remedy runs."""
+        ts = self._with_gap(slice(0, 4))
+        assert ts.interpolate_gaps(limit_direction='both', inplace=True) is ts
+        assert np.all(np.isfinite(ts.lowpass_at(5.0).values))
+
+        c = np.exp(2j * np.pi * 0.5 * np.arange(600) / self.FS)
+        c[:4] = np.nan
+        cts = baseTs(c, np.arange(600) / self.FS)
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
+            cts.lowpass_at(5.0)
+        out = cts.interpolate_gaps(limit_direction='both').lowpass_at(5.0)
+        assert out.dtype.kind == "c" and np.all(np.isfinite(out.values))

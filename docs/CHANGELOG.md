@@ -54,6 +54,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the NaN message says what a leading gap needs (#77)
+
+### Fixed — a remedy that reproduced the bug it reported, one level up
+
+`validate_finite_data` rejects NaN with "Fill gaps first, e.g. with
+`interpolate_gaps()`", and since #48 the Butterworth filters raise the same
+message. But `interpolate_gaps()` forwards pandas' default
+`limit_direction='forward'`, which fills nothing before the first valid
+sample, so a gap at the *start* of the series survived the remedy and the
+caller who followed it was rejected again with the exact message they had
+just obeyed:
+
+```python
+d[0:4] = np.nan
+baseTs(d, t).interpolate_gaps().lowpass_at(5.0)   # InvalidParameterError: ...interpolate_gaps()
+```
+
+A leading NaN is realistic in the documented `filter_outliers() → filter`
+chain: a late acquisition start, or an outlier at sample 0. #28's own first
+attempt named a remedy that reproduced the bug it reported, and #48 tested
+its remedy end to end for that reason — but only for an interior gap.
+
+The validator sees the array, so it now says which case the caller is in.
+When the first sample is NaN the message adds that the series starts with a
+gap, that `interpolate_gaps()` leaves it in place by default, and that
+`limit_direction='both'` extends the first valid value back over the edge —
+a constant fill, not an interpolation — or that the samples before the
+first valid one can be dropped. An interior or trailing gap keeps the plain
+message: measured on pandas 3.0 and 2.2, under the default method the
+forward fill already extends the last valid value over a *trailing* gap, so
+that caller needs no hint and gets none. The
+hint is keyed on NaN rather than on non-finite, because `interpolate_gaps()`
+does not fill Inf in any direction and pointing an Inf caller at
+`limit_direction` would be a second remedy that does not run. Both families
+share the helper, so `get_peak_freq` and the other spectral entry points say
+the same thing.
+
+Review round 1 (both panelists) caught the first cut of the hint making that
+promise for every `method`: `'polynomial'` fills no edge in any direction
+and `'spline'` fills one by extrapolating its fit, not by a constant — so a
+caller on either method who followed the hint verbatim landed on the message
+again, the very pattern being fixed one level deeper. Round 2 then found the
+two-name carve-out that fixed it was itself a list that missed: `'cubic'`,
+named on the docstring's own `method` line, behaves like `'polynomial'`. The
+whole method set was measured on pandas 2.2 and 3.0, and it splits cleanly:
+the four pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`)
+extend the first valid value, and every scipy-backed method either leaves the
+edge unfilled or extrapolates a fit. The message states that rule; the
+docstring and `API.md` list which method does which. The hint also
+presupposed a first valid value to extend; a series with no finite sample at
+all now gets its own message — there is nothing to interpolate from —
+instead of either remedy, since neither runs, and that branch is not scoped
+to 1-D because it is true of any shape. The positional hint *is* appended
+only for 1-D input: "starts with" is a claim about a series, and `[0]` of a
+2-D array is a row, not a sample — so 2-D input with a finite sample
+(reachable only by importing the helper directly) keeps exactly the message
+it had. A `limit` caps the edge fill like any other; that is the caller's
+own constraint, so it is documented in the docstring rather than the
+message, and pinned by a test.
+
+Round 3, a third harness, went at the prose. It found the trailing-gap
+rationale stated without the default-method qualifier the diff itself had
+just introduced for the leading edge (the whole method set was then measured
+at the trailing edge too: same split, in both directions); the "drop the
+leading samples" alternative reading as attached to the scipy clause and
+naming no position (now "drop the samples before the first valid one"); a
+0-d pin that could not fail once the hint's key became `ndim == 1` (deleted,
+the all-NaN test covers 0-d); and the method rule pinned for five names but
+stated for eighteen (now pinned for all eighteen). It also asked whether a
+leading NaN with an Inf *elsewhere* should get the hint. It does, on
+purpose: the hint's claim is about the leading gap and following it clears
+that gap; what remains is the Inf, which is #81's, and the decision is
+pinned. Complex data with a leading NaN, and the in-place form, both run the
+remedy; pinned too.
+
+**The default is unchanged.** Making `'both'` the default would have
+`interpolate_gaps()` invent edge values by constant extension without being
+asked, which is what #36 stopped `filter_outliers` from doing; the caller
+makes the fill decision explicitly. The `interpolate_gaps` docstring and
+`API.md` now document `limit_direction`, the edge asymmetry, and that
+which methods fill an edge and how. The remedies are executed in the tests,
+not just named: through `interpolate_gaps(limit_direction='both')`, a
+600-sample series with a leading gap filters to 600 finite samples, and a
+separate 500-sample series with a leading gap recovers its true 0.16 Hz
+peak.
+
 ## [Unreleased] — the Butterworth filters reject non-finite data (#48)
 
 ### Fixed — four NaN samples in, six hundred NaN out, silently

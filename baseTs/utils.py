@@ -304,11 +304,57 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                     f"be interpreted as real numbers."
                 ) from exc
 
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(
-            "Time series data contains NaN or Inf values. Fill gaps first, "
-            "e.g. with interpolate_gaps()."
-        )
+    finite = np.isfinite(arr)
+    if not finite.all():
+        # No finite sample at all: the remedy below presupposes a valid sample
+        # to interpolate from, and the leading-gap hint presupposes a first
+        # valid value to extend. Neither exists, so naming either would be a
+        # remedy that does not run (review of #77).
+        if not finite.any():
+            raise ValueError(
+                "Time series data contains NaN or Inf values and no finite "
+                "ones: there is nothing to interpolate from."
+            )
+        message = ("Time series data contains NaN or Inf values. Fill gaps "
+                   "first, e.g. with interpolate_gaps().")
+        # A gap at the *start* is the one case the remedy above does not
+        # clear: interpolate_gaps() forwards pandas' default
+        # limit_direction='forward', which fills nothing before the first
+        # valid sample, so a caller who follows the message lands back on it
+        # (#77 - the #28 "remedy reproduces the bug" pattern one level up). A
+        # trailing gap is different: under the default method the forward
+        # fill extends the last valid value over it, so the plain remedy
+        # works there and gets no hint. Keyed on the first sample being NaN,
+        # not merely non-finite: interpolate_gaps() does not fill Inf in any
+        # direction (#81), so a limit_direction hint would be a second remedy
+        # that does not run for a leading-Inf caller. A leading NaN with an
+        # Inf elsewhere still gets the hint: it is true of the leading gap
+        # and following it clears that gap; what remains is #81's. And only
+        # for 1-D input:
+        # "starts with" is a claim about a series, and [0] of a 2-D array is
+        # a row, not a sample (a 0-d NaN is all-NaN and never gets here, so
+        # arr[0] cannot raise). The hint's remedy is scoped to the default
+        # method because it is false for most others - measured over every
+        # method pandas accepts, on pandas 2.2 and 3.0: the pandas-native
+        # ones ('linear', 'time', 'index', 'values') extend the first valid
+        # value; every scipy-backed one either fills no edge ('cubic',
+        # 'polynomial', 'nearest', 'akima', ...) or extrapolates its fit
+        # ('spline', 'pchip', 'cubicspline', 'barycentric'). Stated as the
+        # rule rather than a list, because a two-name list missed 'cubic'
+        # (review). A `limit` caps the edge fill like any other (docstring,
+        # not message: it is the caller's own constraint).
+        if arr.ndim == 1 and np.isnan(arr[0]):
+            message += (
+                " The series starts with a gap, which interpolate_gaps() "
+                "leaves in place by default (it fills forward from the first "
+                "valid sample): pass limit_direction='both', which with the "
+                "default method extends the first valid value back over the "
+                "edge - a constant fill, not an interpolation; the "
+                "scipy-backed methods ('cubic', 'polynomial', 'spline', ...) "
+                "leave an edge unfilled or extrapolate a fit. Alternatively, "
+                "drop the samples before the first valid one."
+            )
+        raise ValueError(message)
 
 
 def round_values(x: Any, decimals: int = 4) -> Any:
