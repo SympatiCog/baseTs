@@ -16,7 +16,10 @@ than poisoning the whole output - see the sg_filter/gauss_filter note in
 API.md).
 """
 
+import decimal
+
 import numpy as np
+import pandas as pd
 import pytest
 
 from baseTs import baseTs
@@ -88,25 +91,59 @@ class TestObjectArraysOfFloatsCompute:
         _same(got, expected)
 
     def test_constant_object_data_takes_the_dc_branch_like_float_data(self):
-        """compute_fft_power's constant-signal branch reads the mean off the
-        series again rather than off the validated array; it has to give the
-        same DC power either way."""
-        const = np.full(N, 3.0)
+        """compute_fft_power's constant-signal branch computes the DC power
+        from a mean of its own. Read off the raw series, an object array's
+        mean is a sequential Python sum and a float64 array's is numpy's
+        pairwise one, and for 600 copies of 0.1 they differ in the last
+        ulp (review). Read off the validated array, they are the same
+        number. 0.1 rather than 3.0 on purpose: 3.0 sums exactly both ways
+        and cannot tell the two reads apart."""
+        const = np.full(N, 0.1)
         expected = _ts(const).compute_fft_power(demean=False, scale_power=False)
 
         got = _ts(_as_object(const)).compute_fft_power(demean=False, scale_power=False)
 
         _same(got, expected)
 
+    def test_relative_band_power_judges_constancy_in_float64_for_every_dtype(self):
+        """The constancy threshold (`np.std(data) < 1e-15`) was always taken
+        on a float64 cast of the data. Computing it with the guard's array
+        as returned would take it in float32 for a float32 series, and the
+        panel found a series the two disagree on: alternating between two
+        adjacent float32 values near 2.9e-8, its float64 std is 8.9e-16
+        (constant, raises) and its float32 std is 1.3e-15 (not constant,
+        returns a ratio). The verdict has to be main's, whatever the
+        input's precision (review, both harnesses)."""
+        f32 = np.where(np.arange(N) % 2 == 0, np.float32(2.8994840e-08),
+                       np.float32(2.8994842e-08)).astype(np.float32)
+        assert np.std(f32.astype(np.float64)) < 1e-15 < np.std(f32)
+
+        with pytest.raises(ValueError, match="no spectral power outside the DC"):
+            _ts(f32).relative_band_power()
+
     def test_the_spectral_family_still_reads_the_callers_series_after_demeaning(self):
         """compute_fft_power demeans in place on the array it computes with.
         The guard hands a numeric ndarray back *as is* - the same object -
         so computing with its return value must not demean the caller's
-        series. Pins the copy the refactor keeps."""
+        series. A pin, not a proof: it passes before #93 too, when the copy
+        was taken before the guard ran; it fails if the copy goes."""
         ts = _ts(_sine() + 5.0)
         before = ts.values.copy()
 
         ts.compute_fft_power(demean=True)
+
+        np.testing.assert_array_equal(ts.values, before)
+
+    @pytest.mark.parametrize("window", [None, "hann"])
+    def test_get_frequency_content_leaves_the_callers_series_alone(self, window):
+        """#93 dropped get_frequency_content's copy on the strength of
+        "nothing below writes into data". For a numeric series the guard's
+        array *is* the caller's values, so that claim is now load-bearing
+        and this pins it, windowed and not (review)."""
+        ts = _ts(_sine())
+        before = ts.values.copy()
+
+        ts.get_frequency_content(window=window)
 
         np.testing.assert_array_equal(ts.values, before)
 
@@ -115,16 +152,21 @@ class TestObjectArraysOfFloatsCompute:
 
 class TestTheGuardsRefusalsReachTheCaller:
 
+    @pytest.mark.parametrize("bad", [["1.5"] * N, [decimal.Decimal("1.5")] * N],
+                             ids=["numeric-text", "Decimal"])
     @pytest.mark.parametrize("name, run", ENTRY_POINTS, ids=ENTRY_POINT_IDS)
-    def test_non_numeric_object_data_raises_the_guards_message(self, name, run):
+    def test_non_numeric_object_data_raises_the_guards_message(self, name, run, bad):
+        """For the spectral family this held before #93 (the guard ran,
+        its result was merely discarded); for gauss_filter it is new."""
         with pytest.raises(ValueError, match="not numeric"):
-            run(_ts(_as_object(["1.5"] * N)))
+            run(_ts(_as_object(bad)))
 
     @pytest.mark.parametrize("name, run", SPECTRAL, ids=SPECTRAL_IDS)
     def test_complex_hiding_in_object_is_refused_by_the_spectral_family(self, name, run):
         """The spectral family refuses complex data (#43); an object array
         holding a complex value is the same input in a different box, and
-        it is the guard - not the FFT - that has to say so."""
+        it is the guard - not the FFT - that has to say so. A pin: the
+        guard raised this before #93 too."""
         z = _sine() + 0j
         with pytest.raises(ValueError, match="holding complex values"):
             run(_ts(_as_object(z)))
@@ -161,9 +203,10 @@ class TestGaussFilterOnObjectDtype:
         assert np.isnan(got.values).any()
         np.testing.assert_array_equal(got.values, expected.values)
 
-    def test_none_is_a_gap_here_too(self):
+    @pytest.mark.parametrize("marker", [None, pd.NA], ids=["None", "pd.NA"])
+    def test_pandas_missing_markers_are_gaps_here_too(self, marker):
         obj = _as_object(_sine())
-        obj[300] = None
+        obj[300] = marker
 
         got = _ts(obj).gauss_filter(2.0)
 
@@ -180,12 +223,17 @@ class TestGaussFilterOnObjectDtype:
         assert ts.dtype == np.float64
         np.testing.assert_array_equal(ts.values, _ts(_sine()).gauss_filter(2.0).values)
 
-    def test_a_numeric_series_is_filtered_as_given(self):
-        """The coercer hands numeric arrays back untouched, so an integer
-        series still filters the way scipy filters integers."""
-        ints = (np.sin(2 * np.pi * 0.05 * np.arange(N) / FS) * 100).astype(int)
+    @pytest.mark.parametrize("values", [
+        (np.sin(2 * np.pi * 0.05 * np.arange(N) / FS) * 100).astype(int),
+        np.arange(N) % 3 == 0,
+    ], ids=["int", "bool"])
+    def test_a_numeric_series_is_filtered_as_given(self, values):
+        """The coercer hands numeric arrays back untouched, so an integer or
+        bool series still filters the way scipy filters it (integers in,
+        integers out; bools in, bools out). A pin: true before #93 too."""
         from scipy.ndimage import gaussian_filter
 
-        got = _ts(ints).gauss_filter(2.0)
+        got = _ts(values).gauss_filter(2.0)
 
-        np.testing.assert_array_equal(got.values, gaussian_filter(ints, 2.0))
+        assert got.dtype == values.dtype
+        np.testing.assert_array_equal(got.values, gaussian_filter(values, 2.0))

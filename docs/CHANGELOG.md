@@ -80,12 +80,23 @@ complex array is. Two details, each pinned:
 - `compute_fft_power` demeans **in place** on the array it computes with,
   and for a numeric array the guard hands back the caller's own array, so
   the copy stays. The caller's series is unchanged after a call.
-- `relative_band_power` took `np.asarray(ts.values, dtype=float)` after
-  the guard: a second classification that disagrees with the guard's (it
-  parses numeric text the guard refuses) and was only ever reached on data
-  the guard had already passed. It now uses the guard's array. No result
-  changes: the cast fed `np.std` and `len`, which read integers and bools
-  the same.
+- `relative_band_power` took `np.asarray(ts.values, dtype=float)` of the
+  raw values after the guard, a second classification of the same array.
+  It now casts the guard's array. **The cast to float64 stays**, and a
+  test says why: the constancy check (`np.std(data) < 1e-15`) has always
+  been taken in float64, and the first cut of this fix, which computed
+  with the guard's array as returned, took it in a float32 series' own
+  precision. Both review harnesses caught that, and one produced a series
+  the two verdicts disagree on (alternating between two adjacent float32
+  values near 2.9e-8: float64 std 8.9e-16, raises as constant; float32
+  std 1.3e-15, returns a ratio). `main`'s verdict is pinned for it.
+- `compute_fft_power`'s constant-signal branch read its DC mean off the
+  raw series (`np.mean(ts.data)`) rather than the validated array. An
+  object array's mean is a sequential Python sum and float64's is numpy's
+  pairwise one; for 600 copies of 0.1 they differ in the last ulp, so the
+  DC power of a constant object series was not the float series' (review).
+  It reads the validated array now; for a numeric series that is the same
+  array and the same number.
 
 ### Fixed — `gauss_filter` raised scipy's bare `RuntimeError` on object dtype
 
@@ -111,10 +122,15 @@ floats, and always did.
 
 ### Not folded in
 
-`compute_fft_power(demean=True)` on an **integer** series fails in the
-in-place demeaning (`Cannot cast ufunc 'subtract' output from
+`compute_fft_power(demean=True)` on an **integer or bool** series fails in
+the in-place demeaning (`Cannot cast ufunc 'subtract' output from
 dtype('float64') to dtype('int64')`), on `main` as here. Surfaced while
 verifying that the guard returns numeric arrays untouched; filed as #96.
+
+`gauss_filter` on a **float16** series still dies in scipy (`array type
+dtype('float16') not supported`): the coercer passes every numeric dtype
+through as it is, and ndimage does not take that one. Not an object-dtype
+case and not changed here.
 
 ## [Unreleased] — integer parameters follow one rule (#78)
 

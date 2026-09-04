@@ -643,7 +643,11 @@ def compute_fft_power(
         freqs = np.fft.fftfreq(n, d=1/ts.freq)[:n//2]
         power = np.zeros_like(freqs)
         if not demean and len(freqs) > 0:
-            power[0] = np.mean(ts.data)**2  # DC power for constant signal
+            # Off the validated array, not ts.data (#93): `data` is the
+            # undemeaned data on this branch, and an object array's mean
+            # is a sequential Python sum that differs from float64's
+            # pairwise one in the last ulp.
+            power[0] = np.mean(data)**2  # DC power for constant signal
     else:
         # Normal FFT computation
         fft_result = np.fft.fft(data)
@@ -869,10 +873,16 @@ def relative_band_power(
     # helper is not the drifting local copy the comment above warns about:
     # there is one definition, so it cannot say something different. The
     # array it returns is the one to compute with (#75, #93): this used to
-    # discard it and take `np.asarray(ts.values, dtype=float)` instead, which
-    # is a second classification that disagrees with the guard's (it parses
-    # numeric text the guard refuses) and reads only the non-empty check.
-    data = validate_finite_data(ts.values)
+    # discard it and take `np.asarray(ts.values, dtype=float)` of the raw
+    # values instead, a second classification of the same array. The cast
+    # to float64 stays, on the guard's array: the constancy check below has
+    # always been taken in float64, and taken in a float32 series' own
+    # precision it can reach the other verdict (review of #93 - a series
+    # alternating between two adjacent float32 values near 2.9e-8 has a
+    # float64 std below the threshold and a float32 std above it). For a
+    # float64 array this is the guard's array itself; the uses below are
+    # read-only.
+    data = validate_finite_data(ts.values).astype(float, copy=False)
     # And this one for the same reason, one line further on: np.std of an
     # empty array warns "Degrees of freedom <= 0" before get_frequency_content
     # would have raised, so the diagnosis arrived with a RuntimeWarning

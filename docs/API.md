@@ -862,8 +862,9 @@ Get frequency domain representation using enhanced FFT with optional windowing.
 - **Object dtype is settled to numbers first**, here and in every method that reaches this one
   (`get_peak_freq()`, `relative_band_power()`, `falff()`, `plot_fft_power()`) as well as
   `compute_fft_power()`. An object series of reals gives the float64 series' spectrum exactly
-  (`None`/`pd.NA` read as gaps, so they hit the NaN rule above); one holding a complex value is
-  refused as complex data is; text, `Decimal` or anything else in it is rejected as "not numeric".
+  (`None`/`pd.NA` are read as NaN, so they hit the NaN rule above and raise); one holding a
+  complex value is refused as complex data is; text, `Decimal` or anything else in it is rejected
+  as "not numeric".
   Until #93 an object array of ordinary floats passed the guard and died in numpy's FFT with a
   bare `TypeError`.
 
