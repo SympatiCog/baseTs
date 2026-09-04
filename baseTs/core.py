@@ -1174,8 +1174,8 @@ class baseTs(TimeSeriesData):
         Returns:
             Gaussian filtered baseTs object. An object-dtype series of reals
             comes back as float64 and one holding complex as complex128; a
-            numeric series keeps its dtype (scipy filters integers as
-            integers).
+            numeric series is passed to scipy as it is and keeps its dtype
+            (integers in, integers out).
 
         Raises:
             ValueError: If the data is not numeric (text, `Decimal`, ...) or
@@ -1183,6 +1183,9 @@ class baseTs(TimeSeriesData):
                 messages. NaN is not an error here: a windowed convolution
                 widens a gap rather than poisoning the output (see the
                 sg_filter/gauss_filter note in API.md).
+            RuntimeError: scipy's own, for a numeric dtype ndimage does not
+                take - float16 is the one in practice. Cast to float32 or
+                float64 first.
         """
         def gauss_func(data):
             # The dtype half of the shared guard only (#93): gaussian_filter

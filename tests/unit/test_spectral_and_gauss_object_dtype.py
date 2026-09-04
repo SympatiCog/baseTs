@@ -134,6 +134,17 @@ class TestObjectArraysOfFloatsCompute:
 
         np.testing.assert_array_equal(ts.values, before)
 
+    def test_relative_band_power_leaves_the_callers_series_alone(self):
+        """`astype(float, copy=False)` hands a float64 series' own array
+        back, so relative_band_power's uses of it have to stay read-only.
+        They do (np.std and len); pinned like get_frequency_content's."""
+        ts = _ts(_sine())
+        before = ts.values.copy()
+
+        ts.relative_band_power()
+
+        np.testing.assert_array_equal(ts.values, before)
+
     @pytest.mark.parametrize("window", [None, "hann"])
     def test_get_frequency_content_leaves_the_callers_series_alone(self, window):
         """#93 dropped get_frequency_content's copy on the strength of
@@ -160,6 +171,17 @@ class TestTheGuardsRefusalsReachTheCaller:
         its result was merely discarded); for gauss_filter it is new."""
         with pytest.raises(ValueError, match="not numeric"):
             run(_ts(_as_object(bad)))
+
+    @pytest.mark.parametrize("marker", [None, pd.NA], ids=["None", "pd.NA"])
+    @pytest.mark.parametrize("name, run", SPECTRAL, ids=SPECTRAL_IDS)
+    def test_a_missing_marker_in_object_data_hits_the_nan_rule(self, name, run, marker):
+        """API.md: `None`/`pd.NA` are read as NaN, so the spectral family
+        raises the gap message for them rather than a bare error from
+        numpy (the disease #93 treats, in the guard's own remedy path)."""
+        obj = _as_object(_sine())
+        obj[300] = marker
+        with pytest.raises(ValueError, match="interpolate_gaps"):
+            run(_ts(obj))
 
     @pytest.mark.parametrize("name, run", SPECTRAL, ids=SPECTRAL_IDS)
     def test_complex_hiding_in_object_is_refused_by_the_spectral_family(self, name, run):
@@ -212,6 +234,14 @@ class TestGaussFilterOnObjectDtype:
 
         assert got.dtype == np.float64
         assert np.isnan(got.values[300])
+
+    def test_datetimes_are_refused_with_the_guards_message(self):
+        """The docstring's other ValueError: the coercer refuses
+        datetime64/timedelta64 rather than casting them, since a cast would
+        wave NaT through as a large finite number."""
+        stamps = np.arange(N).astype("datetime64[s]")
+        with pytest.raises(ValueError, match="holds datetimes or durations"):
+            _ts(stamps).gauss_filter(2.0)
 
     def test_inplace_settles_the_dtype_on_the_series_itself(self):
         ts = _ts(_as_object(_sine()))
