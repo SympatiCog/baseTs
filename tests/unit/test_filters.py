@@ -955,3 +955,20 @@ class TestTheNaNRemedyClearsAnEdgeGap:
         assert np.all(np.isfinite(partly.values[2:]))
         with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
             partly.lowpass_at(5.0)
+
+    def test_the_edge_remedy_also_runs_inplace_and_on_complex_data(self):
+        """Two paths the hint's caller may be on (review, round 3): the
+        in-place form of interpolate_gaps forwards the kwarg, and pandas
+        interpolates complex128, so a complex series with a leading NaN -
+        accepted by the filters since #48 - gets a hint whose remedy runs."""
+        ts = self._with_gap(slice(0, 4))
+        assert ts.interpolate_gaps(limit_direction='both', inplace=True) is ts
+        assert np.all(np.isfinite(ts.lowpass_at(5.0).values))
+
+        c = np.exp(2j * np.pi * 0.5 * np.arange(600) / self.FS)
+        c[:4] = np.nan
+        cts = baseTs(c, np.arange(600) / self.FS)
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
+            cts.lowpass_at(5.0)
+        out = cts.interpolate_gaps(limit_direction='both').lowpass_at(5.0)
+        assert out.dtype.kind == "c" and np.all(np.isfinite(out.values))

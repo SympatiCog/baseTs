@@ -80,10 +80,11 @@ The validator sees the array, so it now says which case the caller is in.
 When the first sample is NaN the message adds that the series starts with a
 gap, that `interpolate_gaps()` leaves it in place by default, and that
 `limit_direction='both'` extends the first valid value back over the edge —
-a constant fill, not an interpolation — or that the leading samples can be
-dropped. An interior or trailing gap keeps the plain message: measured on
-pandas 3.0 and 2.2, the default forward fill already extends the last valid
-value over a *trailing* gap, so that caller needs no hint and gets none. The
+a constant fill, not an interpolation — or that the samples before the
+first valid one can be dropped. An interior or trailing gap keeps the plain
+message: measured on pandas 3.0 and 2.2, under the default method the
+forward fill already extends the last valid value over a *trailing* gap, so
+that caller needs no hint and gets none. The
 hint is keyed on NaN rather than on non-finite, because `interpolate_gaps()`
 does not fill Inf in any direction and pointing an Inf caller at
 `limit_direction` would be a second remedy that does not run. Both families
@@ -112,6 +113,21 @@ only for 1-D input: "starts with" is a claim about a series, and `[0]` of a
 it had. A `limit` caps the edge fill like any other; that is the caller's
 own constraint, so it is documented in the docstring rather than the
 message, and pinned by a test.
+
+Round 3, a third harness, went at the prose. It found the trailing-gap
+rationale stated without the default-method qualifier the diff itself had
+just introduced for the leading edge (the whole method set was then measured
+at the trailing edge too: same split, in both directions); the "drop the
+leading samples" alternative reading as attached to the scipy clause and
+naming no position (now "drop the samples before the first valid one"); a
+0-d pin that could not fail once the hint's key became `ndim == 1` (deleted,
+the all-NaN test covers 0-d); and the method rule pinned for five names but
+stated for eighteen (now pinned for all eighteen). It also asked whether a
+leading NaN with an Inf *elsewhere* should get the hint. It does, on
+purpose: the hint's claim is about the leading gap and following it clears
+that gap; what remains is the Inf, which is #81's, and the decision is
+pinned. Complex data with a leading NaN, and the in-place form, both run the
+remedy; pinned too.
 
 **The default is unchanged.** Making `'both'` the default would have
 `interpolate_gaps()` invent edge values by constant extension without being

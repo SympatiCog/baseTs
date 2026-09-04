@@ -1782,7 +1782,7 @@ class baseTs(TimeSeriesData):
             towards - which is why it is not the default: this method does not
             invent values unless asked, for the same reason #36 stopped
             `filter_outliers` doing so. A *trailing* gap is already extended
-            by the default. Both statements hold for the pandas-native
+            by the default. These statements hold for the pandas-native
             methods ('linear', 'time', 'index', 'values'); the scipy-backed
             methods behave differently at an edge in either direction:
             'cubic', 'quadratic', 'slinear', 'zero', 'nearest', 'polynomial',

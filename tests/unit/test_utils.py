@@ -1,6 +1,8 @@
 """
 Unit tests for baseTs utility functions.
 """
+import warnings
+
 import pytest
 import numpy as np
 from baseTs.utils import (find_closest, find_closest_time, compute_fft_power,
@@ -1038,27 +1040,43 @@ def test_a_leading_nan_gets_the_edge_hint_and_an_interior_one_does_not():
         assert "limit_direction" not in str(plain.value)
 
 
-def test_the_edge_hint_keys_on_nan_not_on_inf():
-    """interpolate_gaps() does not fill Inf in any direction, so pointing an
-    Inf caller at limit_direction would be a third remedy that does not run.
-    The base message's remedy is already imprecise for Inf; that is
-    pre-existing and out of scope here, but the new hint must not widen it."""
+def test_the_edge_hint_keys_on_a_leading_nan_not_on_inf():
+    """interpolate_gaps() does not fill Inf in any direction (#81), so
+    pointing a leading-Inf caller at limit_direction would be a second remedy
+    that does not run. The base message's remedy is already imprecise for
+    Inf; that is pre-existing and out of scope here, but the new hint must
+    not widen it.
+
+    A leading NaN with an Inf *elsewhere* still gets the hint, on purpose
+    (review, round 3): the hint's claim is about the leading gap, and
+    following it does clear that gap. What remains is the Inf, which is
+    #81's problem and gets #81's plain message."""
     from baseTs.utils import validate_finite_data
 
     with pytest.raises(ValueError, match="NaN or Inf") as exc:
         validate_finite_data(np.array([np.inf, 1.0, 2.0]))
     assert "limit_direction" not in str(exc.value)
 
+    with pytest.raises(ValueError, match=r"limit_direction='both'"):
+        validate_finite_data(np.array([np.nan, np.inf, 1.0, 2.0]))
+    followed = baseTs(np.array([np.nan, np.inf, 1.0, 2.0]), np.arange(4) / 10.0)
+    followed = followed.interpolate_gaps(limit_direction='both')
+    assert not np.isnan(followed.values).any()             # the hint's remedy ran
+    with pytest.raises(ValueError, match="NaN or Inf") as exc:
+        validate_finite_data(followed.values)               # ...and only the Inf is left
+    assert "limit_direction" not in str(exc.value)
 
-def test_a_zero_dimensional_nan_still_raises_the_documented_valueerror():
-    """The hint inspects `arr[0]`, which raises IndexError on a 0-d input.
-    It never gets there: a 0-d NaN is all-NaN, and that branch raises first.
-    Pinned so reordering the branches cannot turn the documented ValueError
-    into an IndexError."""
+
+def test_the_hint_names_a_positional_remedy_that_does_not_need_an_api():
+    """The alternative to the edge fill is to drop what precedes the first
+    valid sample. Said positionally, since the guard is positional (review,
+    round 3: "drop the leading samples" read as attached to the scipy
+    clause, and named nothing)."""
     from baseTs.utils import validate_finite_data
 
-    with pytest.raises(ValueError, match="NaN or Inf"):
-        validate_finite_data(np.float64(np.nan))
+    with pytest.raises(ValueError) as exc:
+        validate_finite_data(np.array([np.nan, 1.0, 2.0]))
+    assert "Alternatively, drop the samples before the first valid one." in str(exc.value)
 
 
 def test_a_leading_gap_survives_interpolate_gaps_and_every_spectral_entry_point_says_so():
@@ -1117,19 +1135,30 @@ def test_the_hint_scopes_its_remedy_to_the_pandas_native_methods():
     assert "scipy-backed methods" in str(exc.value)
     assert "leave an edge unfilled or extrapolate a fit" in str(exc.value)
 
+    # Every method pandas accepts, classified exactly as the docstring and
+    # API.md list them - so a pandas change to any one of them fails here
+    # rather than leaving the user-facing message false (review, round 3).
     d = np.sin(np.arange(500) / 10.0)
     d[:4] = np.nan
     t = np.arange(500) / 10.0
-    for unfilled in ({'method': 'cubic'}, {'method': 'polynomial', 'order': 2}, {'method': 'nearest'}):
-        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **unfilled)
-        assert np.isnan(out.values[:4]).all(), unfilled
-    for extrapolated in ({'method': 'spline', 'order': 3}, {'method': 'pchip'}):
-        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **extrapolated)
-        assert np.all(np.isfinite(out.values[:4])), extrapolated
-        assert not np.all(out.values[:4] == out.values[4]), extrapolated   # a fit, not a constant
-    for constant in ({'method': 'linear'}, {'method': 'time'}):
-        out = baseTs(d, t).interpolate_gaps(limit_direction='both', **constant)
-        assert np.all(out.values[:4] == out.values[4]), constant
+
+    def edge_kind(**kw):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = baseTs(d, t).interpolate_gaps(limit_direction='both', **kw).values
+        if np.isnan(out[:4]).any():
+            return "unfilled"
+        return "constant" if np.all(out[:4] == out[4]) else "extrapolated"
+
+    for method in ('linear', 'time', 'index', 'values'):
+        assert edge_kind(method=method) == "constant", method
+    for method in ('cubic', 'quadratic', 'slinear', 'zero', 'nearest', 'krogh',
+                   'piecewise_polynomial', 'akima', 'from_derivatives'):
+        assert edge_kind(method=method) == "unfilled", method
+    assert edge_kind(method='polynomial', order=2) == "unfilled"
+    for method in ('pchip', 'cubicspline', 'barycentric'):
+        assert edge_kind(method=method) == "extrapolated", method
+    assert edge_kind(method='spline', order=3) == "extrapolated"
 
 
 def test_a_two_dimensional_input_gets_the_plain_message_only():

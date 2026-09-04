@@ -304,12 +304,13 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                     f"be interpreted as real numbers."
                 ) from exc
 
-    if not np.all(np.isfinite(arr)):
+    finite = np.isfinite(arr)
+    if not finite.all():
         # No finite sample at all: the remedy below presupposes a valid sample
         # to interpolate from, and the leading-gap hint presupposes a first
         # valid value to extend. Neither exists, so naming either would be a
         # remedy that does not run (review of #77).
-        if not np.any(np.isfinite(arr)):
+        if not finite.any():
             raise ValueError(
                 "Time series data contains NaN or Inf values and no finite "
                 "ones: there is nothing to interpolate from."
@@ -321,11 +322,15 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
         # limit_direction='forward', which fills nothing before the first
         # valid sample, so a caller who follows the message lands back on it
         # (#77 - the #28 "remedy reproduces the bug" pattern one level up). A
-        # trailing gap is different: the forward fill extends the last valid
-        # value over it, so the plain remedy works there and gets no hint.
-        # Keyed on NaN, not on non-finite: interpolate_gaps() does not fill
-        # Inf in any direction, so a limit_direction hint would be a second
-        # remedy that does not run for an Inf caller. And only for 1-D input:
+        # trailing gap is different: under the default method the forward
+        # fill extends the last valid value over it, so the plain remedy
+        # works there and gets no hint. Keyed on the first sample being NaN,
+        # not merely non-finite: interpolate_gaps() does not fill Inf in any
+        # direction (#81), so a limit_direction hint would be a second remedy
+        # that does not run for a leading-Inf caller. A leading NaN with an
+        # Inf elsewhere still gets the hint: it is true of the leading gap
+        # and following it clears that gap; what remains is #81's. And only
+        # for 1-D input:
         # "starts with" is a claim about a series, and [0] of a 2-D array is
         # a row, not a sample (a 0-d NaN is all-NaN and never gets here, so
         # arr[0] cannot raise). The hint's remedy is scoped to the default
@@ -346,8 +351,8 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 "default method extends the first valid value back over the "
                 "edge - a constant fill, not an interpolation; the "
                 "scipy-backed methods ('cubic', 'polynomial', 'spline', ...) "
-                "leave an edge unfilled or extrapolate a fit - or drop the "
-                "leading samples."
+                "leave an edge unfilled or extrapolate a fit. Alternatively, "
+                "drop the samples before the first valid one."
             )
         raise ValueError(message)
 

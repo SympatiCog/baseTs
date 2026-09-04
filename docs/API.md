@@ -513,7 +513,7 @@ Interpolate missing values (NaN) in the time series with enhanced capabilities.
   of the series survives the default call** and the spectral and filter guards reject the result
   with the same message that named this method (#77). Pass `limit_direction='both'` to extend the
   first valid value back over the edge. That is a constant extension, not an interpolation, which
-  is why it is not the default. A trailing gap is already extended by the default. Both hold for
+  is why it is not the default. A trailing gap is already extended by the default. These hold for
   the pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`). The scipy-backed
   methods differ at an edge in either direction: `'cubic'`, `'quadratic'`, `'slinear'`, `'zero'`,
   `'nearest'`, `'polynomial'`, `'krogh'`, `'piecewise_polynomial'`, `'akima'` and
