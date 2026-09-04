@@ -433,18 +433,29 @@ class baseTs(TimeSeriesData):
         transient those methods overwrite; it is kept only by a caller who
         changes the length and supplies no times.
 
-        Resampling needs a span, and a series with fewer than two samples
-        has none. It used to invent one (#65): on a single sample
-        `first == last`, so every replacement timestamp was identical and
-        the object silently acquired a fully duplicated index - reported as
-        a `freq` derived from a zero-duration grid; on an empty series it
-        minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for. Both refuse
-        now, before anything is mutated. Shrinking to empty places nothing
-        and needs no span, so it is not refused.
+        Resampling needs a span, and an index whose first and last
+        timestamps coincide has none - an empty series, a single sample, or
+        several samples at one timestamp. It used to invent one (#65): on a
+        single sample `first == last`, so every replacement timestamp was
+        identical and the object silently acquired a fully duplicated index
+        - reported as a `freq` derived from a zero-duration grid; on an
+        empty series it minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked
+        for. The first cut of this fix keyed on sample count, and review
+        round 1 showed that a two-sample index at one timestamp grew into
+        the same duplicated grid one sample further along; the rule is the
+        span, and the count was only its proxy. All refuse now, before
+        anything is mutated. Shrinking to empty places nothing and needs no
+        span, so it is not refused.
+
+        A package method that changes the length takes the two-step route
+        (`data` then `times`) and must check the span itself first, in its
+        own words: this refusal describes an assignment and offers remedies
+        for one, which is wrong advice for a caller of `interpto_samples`.
+        That method checks; a new one has to.
 
         Raises:
             ValidationError: if the length changes to a non-zero value on a
-                series with fewer than two samples.
+                series whose index has no span.
         """
         n_new = len(new_data)
         n_old = len(self.index)
@@ -452,12 +463,18 @@ class baseTs(TimeSeriesData):
             new_index = self.index
         elif n_new == 0:
             new_index = self.index[:0]
-        elif n_old < 2:
+        elif n_old == 0 or self.index[0] == self.index[-1]:
+            if n_old == 0:
+                why = "an empty series has no span to resample over"
+            elif n_old == 1:
+                why = "a single sample has no span to resample over"
+            else:
+                why = (f"its first and last timestamps coincide at "
+                       f"{self.index[0]!r}, so it has no span to resample over")
             raise ValidationError(
                 f"cannot place {n_new} samples on a series of {n_old}: a "
                 "length-changing `ts.data = ...` resamples the new values "
-                "over the existing time span, and a series with fewer than "
-                "two samples has no span to resample over. Build a new "
+                f"over the existing time span, and {why}. Build a new "
                 "object instead: `baseTs(new_data, times=...)` or "
                 "`baseTs(new_data, freq=...)`."
             )
@@ -761,22 +778,11 @@ class baseTs(TimeSeriesData):
         """
         new_freq = validate_sampling_freq(new_freq)
 
-        # duration() is float(index[-1] - index[0]), which raises TypeError on
-        # a non-numeric index (a DatetimeIndex yields a Timedelta). Caught so
-        # this method keeps the ValueError contract its docstring promises
-        # rather than leaking a conversion error from two frames down.
-        try:
-            duration = self.duration()
-        except (TypeError, ValueError):
-            duration = np.nan
-        if not np.isfinite(duration) or duration <= 0:
-            raise ValueError(
-                f"Cannot interpolate to {new_freq} Hz: the source time base is "
-                f"degenerate (duration {duration}). A zero, negative or "
-                f"unmeasurable span has no rate to resample from, and stamping "
-                f"the requested rate on the empty result would report a healthy "
-                f"number for a series that has none."
-            )
+        duration = self._resampling_duration(
+            f"Cannot interpolate to {new_freq} Hz",
+            "has no rate to resample from, and stamping the requested rate "
+            "on the empty result would report a healthy number for a series "
+            "that has none.")
 
         # Rounded before flooring. The product lands just below the integer
         # for an exact-rate source - (np.arange(1000)/30.0) spans
@@ -828,6 +834,38 @@ class baseTs(TimeSeriesData):
         )
         return target
 
+    def _resampling_duration(self, what: str, consequence: str) -> float:
+        """The source span the two resamplers spread their grid across.
+
+        Shared by `interpto_hz` and `interpto_samples`, which both build
+        `linspace(first, last, n)` and both have nothing to build it over
+        when the span is zero, negative or unmeasurable. `interpto_hz` has
+        checked since #38; `interpto_samples` did not, and on a one-sample
+        source returned n copies of one value at n copies of one timestamp
+        - then, once the `data` setter refused a length change on such a
+        source (#65), failed there instead, with a message about an
+        assignment the caller never wrote (review round 1). One check, two
+        wordings: `what` names the request, `consequence` says why the
+        degenerate span defeats it.
+
+        `duration()` is `float(index[-1] - index[0])`, which raises
+        TypeError on a non-numeric index (a DatetimeIndex yields a
+        Timedelta). Caught so both methods keep the ValueError contract
+        their docstrings promise rather than leaking a conversion error
+        from two frames down.
+        """
+        try:
+            duration = self.duration()
+        except (TypeError, ValueError):
+            duration = np.nan
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError(
+                f"{what}: the source time base is degenerate (duration "
+                f"{duration}). A zero, negative or unmeasurable span "
+                f"{consequence}"
+            )
+        return duration
+
     def interpto_samples(self, new_len: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
         """
         Interpolate the times to a new length.
@@ -839,7 +877,17 @@ class baseTs(TimeSeriesData):
 
         Returns:
             baseTs: Interpolated data
+
+        Raises:
+            ValueError: if the source spans no positive, finite duration
+                (empty, a single sample, or first and last timestamps
+                coinciding) - there is nothing to spread the new grid
+                across.
         """
+        self._resampling_duration(
+            f"Cannot interpolate to {new_len} samples",
+            "has nothing to spread the new grid across.")
+
         def interp_func(data):
             new_ts = np.linspace(self.times[0], self.times[-1], new_len)
             f1 = interpolate.interp1d(self.times, data, kind=kind)

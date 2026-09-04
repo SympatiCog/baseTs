@@ -68,13 +68,20 @@ duplicated index and a `freq` derived from a zero-duration grid; on an empty
 series it minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for. Neither
 was announced.
 
-The rule is kept and its precondition is now stated: growing a series that
-has fewer than two samples raises `ValidationError` before anything is
-mutated, naming what was asked (`cannot place 3 samples on a series of 1`)
-and the two remedies that exist — `baseTs(new_data, times=...)` or
-`baseTs(new_data, freq=...)`. Both are exercised by the test that pins the
-message. Shrinking to empty places nothing and needs no span, so it is not
-refused.
+The rule is kept and its precondition is now stated: a length change to a
+non-zero length on a series whose index has no span — empty, a single
+sample, or first and last timestamps coinciding — raises `ValidationError`
+before anything is mutated, naming what was asked (`cannot place 3 samples
+on a series of 1`), why this source has no span, and the two remedies that
+exist — `baseTs(new_data, times=...)` or `baseTs(new_data, freq=...)`.
+Both are exercised by the test that pins the message. Shrinking to empty
+places nothing and needs no span, so it is not refused.
+
+The first cut keyed the refusal on "fewer than two samples". Review round 1
+(codex and agy, independently) showed that a two-sample index at one
+timestamp grew into the same fully duplicated `linspace(x, x, n)` one
+sample further along — the count was a proxy for the span, and the rule is
+the span.
 
 **Why refuse rather than build a grid from a declared rate.** A one-sample
 series constructed with `freq=100.0` could plausibly grow onto
@@ -91,17 +98,49 @@ takes it, overwriting the resampled grid with its own `times` a line later.
 The resampled index is therefore a transient for the package and a kept
 result only for a caller who changes the length and supplies no times.
 
+**One method could reach the refusal from inside.** The transient is only
+overwritten if the `data` line succeeds, and a package method that *grows*
+a no-span source fails there, with a message about `ts.data = ...` and
+remedies for an assignment the caller never wrote. Review round 1 found
+the one such method: `interpto_samples` builds its own `linspace` over the
+source span, so on `main` a one-sample source came back as n copies of one
+value at n copies of one timestamp, and on the first cut it raised the
+setter's message. It now checks the precondition `interpto_hz` has checked
+since #38 — a finite, positive duration — in its own words and before
+anything runs; the check is one shared helper, `_resampling_duration`, and
+`interpto_hz`'s message is byte-identical across the extraction (five
+degenerate sources compared against `main`). Every other length-changing
+method either cannot grow (`diff_ts`, `remove_outliers`,
+`trimto_timepoints`, ...) or refuses a degenerate source at its own door
+first (`interpto_hz`, `interp_to_uniform_grid`, `filter_outliers`); the
+review ran each. A new two-step method must check its own precondition
+too, and the setter's docstring says so.
+
 ### Changed
 
-- `ts.data = x` with `len(x) > 0` and `len(x) != len(ts)` on a series of
-  zero or one samples raises `ValidationError` (a `ValueError`) and leaves
-  the object untouched. Before: a duplicated index (one sample) or an
-  invented unit-spaced one (empty), silently. `apply_function` on a
-  single-sample series with a length-changing function reaches the same
-  refusal, since it assigns `data` and never `times`.
-- `ts.data = np.array([])` on a one-sample series now keeps the index's
-  dtype (it slices the existing index to nothing rather than building an
-  empty float grid).
+- `ts.data = x` with `len(x) > 0` and `len(x) != len(ts)` on a series
+  whose index has no span — empty, one sample, or `index[0] == index[-1]`
+  — raises `ValidationError` (a `ValueError`) and leaves the object
+  untouched. Before: a duplicated index (one sample, or several at one
+  timestamp) or an invented unit-spaced one (empty), silently.
+  `apply_function` on such a series with a length-changing function
+  reaches the same refusal, since it assigns `data` and never `times`.
+- `interpto_samples(n)` on a source with no positive, finite duration
+  (empty, one sample, coinciding or reversed endpoints, or a
+  `DatetimeIndex`) raises `ValueError("Cannot interpolate to n samples:
+  the source time base is degenerate (duration ...)")`, the shape of
+  `interpto_hz`'s refusal. Before (measured on `main`): a one-sample
+  source, or two or more at one timestamp, came back as n copies of one
+  value at n copies of one timestamp with `freq` NaN; an empty source
+  raised numpy's `IndexError`; a `DatetimeIndex` raised numpy's
+  `DTypePromotionError`; a reversed two-sample index interpolated onto a
+  reversed grid. The last is the one that used to succeed with a
+  defensible result and is refused now, as `interpto_hz` refuses it.
+- `ts.data = np.array([])` on any series now keeps the index's dtype (it
+  slices the existing index to nothing rather than building an empty float
+  grid). On a `DatetimeIndex` this used to raise inside numpy
+  (`np.linspace` on `Timestamp` endpoints); it now yields an empty
+  `DatetimeIndex`. Pinned.
 - The `#35/#39` test `test_the_declaration_is_refused_before_anything_is_mutated`
   and two neighbours reached the duplicate-label door through
   `ts.data = [1., 2., 3.]` on a single sample. That route no longer derives
@@ -110,7 +149,7 @@ result only for a caller who changes the length and supplies no times.
 
 ### Observed, not changed
 
-- `ts.data = x` on a two-sample series still rescales the spacing of every
+- `ts.data = x` on a two-or-more-sample series with a span still rescales the spacing of every
   new sample to fit the old span. That is the rule (resample over the span),
   and it is what `interpto_samples` does; it is now stated in the setter's
   docstring rather than left to be inferred from `linspace`.

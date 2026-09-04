@@ -19,12 +19,13 @@ caller has. The rule therefore only ever bites where the transient would have
 been *kept*: a caller who changes the length and does not supply times.
 """
 import numpy as np
+import pandas as pd
 import pytest
 
 from baseTs import baseTs
 from baseTs.utils import ValidationError
 
-REFUSAL = "fewer than two samples"
+REFUSAL = "no span"
 
 
 def one_sample(**kwargs) -> baseTs:
@@ -52,6 +53,40 @@ class TestGrowingASeriesWithNoSpanIsRefused:
         ts = empty()
         with pytest.raises(ValidationError, match=REFUSAL):
             ts.data = np.array([1.0])
+
+    def test_two_samples_at_one_timestamp_refuse(self):
+        """The rule is about the span, and sample count was only its proxy.
+
+        Review round 1 (codex + agy): a two-sample index whose first and last
+        timestamps coincide has no span either, and grew into a fully
+        duplicated `linspace(x, x, n)` - the hazard #65 was opened to kill,
+        one sample further along.
+        """
+        ts = baseTs(np.array([1.0, 2.0]), times=np.array([5.0, 5.0]))
+        with pytest.raises(ValidationError, match=REFUSAL):
+            ts.data = np.array([1.0, 2.0, 3.0])
+
+    def test_a_longer_index_whose_ends_coincide_refuses(self):
+        ts = baseTs(np.array([1.0, 2.0, 3.0]), times=np.array([0.0, 1.0, 0.0]))
+        with pytest.raises(ValidationError, match=REFUSAL):
+            ts.data = np.arange(5.0)
+
+    def test_shrinking_a_zero_span_index_to_a_non_empty_length_refuses(self):
+        """Fewer duplicates are still invented duplicates."""
+        ts = baseTs(np.array([1.0, 2.0, 3.0]), times=np.array([5.0, 5.0, 5.0]))
+        with pytest.raises(ValidationError, match=REFUSAL):
+            ts.data = np.array([1.0, 2.0])
+
+    def test_the_message_says_why_for_each_kind_of_source(self):
+        cases = [
+            (empty(), "empty"),
+            (one_sample(), "single sample"),
+            (baseTs(np.array([1.0, 2.0]), times=np.array([5.0, 5.0])),
+             "coincide"),
+        ]
+        for ts, word in cases:
+            with pytest.raises(ValidationError, match=word):
+                ts.data = np.array([1.0, 2.0, 3.0])
 
     def test_a_declared_rate_does_not_change_the_answer(self):
         """The rule is about the span; a rate is not a span.
@@ -126,6 +161,15 @@ class TestWhatIsStillAllowed:
         assert len(ts) == 0
         assert len(ts.times) == 0
 
+    def test_shrinking_a_datetime_index_to_empty_keeps_its_dtype(self):
+        """Incidental: on `main` this crashed inside numpy (`linspace` on
+        `Timestamp` endpoints with n=0). Review round 1 measured it."""
+        stamps = pd.date_range("2024-01-01", periods=3, freq="s")
+        ts = baseTs(np.arange(3.0), times=stamps)
+        ts.data = np.array([])
+        assert len(ts) == 0
+        assert isinstance(ts.index, pd.DatetimeIndex)
+
     def test_two_samples_resample_over_their_span(self):
         ts = baseTs(np.array([1.0, 2.0]), times=np.array([0.0, 1.0]))
         ts.data = np.arange(5.0)
@@ -169,6 +213,33 @@ class TestTheTwoStepRouteStillWorks:
     def test_remove_outliers_on_one_sample(self):
         out = one_sample().remove_outliers()
         assert len(out) == 1
+
+    @pytest.mark.parametrize("source", [
+        lambda: one_sample(),
+        lambda: baseTs(np.array([1.0, 2.0]), times=np.array([5.0, 5.0])),
+    ], ids=['one-sample', 'zero-span'])
+    def test_interpto_samples_refuses_a_degenerate_source_at_its_own_door(
+            self, source):
+        """The one package method that grew a no-span source.
+
+        Review round 1 (codex + agy): `interpto_samples` builds its own
+        `linspace` over the source span - on `main` a one-sample source came
+        back as five copies of one value at five copies of one timestamp -
+        and its `self.data = ...` line then hit the setter's refusal, whose
+        message talks about `ts.data` and offers remedies for an assignment
+        the caller never wrote. It now checks the precondition `interpto_hz`
+        already checks, in its own words, before anything runs.
+        """
+        with pytest.raises(ValueError, match="degenerate") as caught:
+            source().interpto_samples(5)
+        assert "ts.data" not in str(caught.value)
+        assert "5 samples" in str(caught.value)
+
+    def test_interpto_samples_still_works_on_a_two_sample_span(self):
+        ts = baseTs(np.array([0.0, 4.0]), times=np.array([0.0, 1.0]))
+        out = ts.interpto_samples(5)
+        np.testing.assert_allclose(out.data, [0.0, 1.0, 2.0, 3.0, 4.0])
+        np.testing.assert_allclose(out.times, np.linspace(0.0, 1.0, 5))
 
     def test_apply_function_that_grows_a_one_sample_series_is_refused(self):
         """The one package route that could keep the transient.
