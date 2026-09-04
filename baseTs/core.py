@@ -466,10 +466,20 @@ class baseTs(TimeSeriesData):
         # post-construction re-assert that used to live here were a second
         # implementation of the "did the index change?" rule, which is
         # precisely how it came to disagree with __finalize__ (#29).
-        new_kwargs = {'signal_name': self.signal_name}
-        new_kwargs.update(kwargs)
+        new_obj = baseTs(new_data, new_times, **kwargs)
 
-        new_obj = baseTs(new_data, new_times, **new_kwargs)
+        # The name is inherited, not re-minted. Handing it back to the
+        # constructor as a keyword ran it through the constructor's
+        # upper-casing a second time, so zscale() and iloc[:5] disagreed about
+        # the name of one series (#56). The rule: the constructor normalises
+        # its own argument, and a derivation copies the parent's - so a name
+        # the caller passes in kwargs is a constructor argument and keeps the
+        # constructor's rule, while the parent's goes through the label
+        # normaliser like every other copying door, so a None still lands as
+        # "". Outside the preserve_metadata block because the name never was
+        # part of what that flag withholds.
+        if 'signal_name' not in kwargs:
+            new_obj.signal_name = normalise_label(self.signal_name)
 
         if preserve_metadata:
             # Copy metadata
@@ -479,8 +489,8 @@ class baseTs(TimeSeriesData):
                             'outlier_filter']
 
             # Not iterating self._metadata: this list is deliberately curated
-            # and excludes history and signal_name, which are handled above and
-            # below. _freq_declaration must be added by name, and is skipped
+            # and excludes signal_name and history, which are handled above
+            # and below. _freq_declaration must be added by name, and is skipped
             # when the caller declared a rate explicitly - otherwise this copy
             # would silently overwrite their kwarg with the parent's.
             if 'freq' not in kwargs:
@@ -2439,11 +2449,16 @@ class baseTs(TimeSeriesData):
             baseTs: A new instance of baseTs with the same data.
         """
         if deep:
-            # Create a new baseTs object to avoid pandas deepcopy recursion
+            # Create a new baseTs object to avoid pandas deepcopy recursion.
+            # No signal_name kwarg: the loop below copies it with the rest of
+            # _metadata. Passing it here as well meant the name went through
+            # the constructor's upper-casing and was then overwritten by the
+            # copy - so this path preserved case by accident while
+            # _create_new_with_data, which had no second assignment, did not
+            # (#56).
             new_obj = baseTs(
                 data=self.values.copy(),
                 times=self.index.values.copy(),
-                signal_name=self.signal_name
             )
             
             # Deep copy metadata. The allow-list bounds what gets copied:
@@ -2473,8 +2488,7 @@ class baseTs(TimeSeriesData):
             copied = super().copy(deep=False)
             # Ensure it's still a baseTs object
             if not isinstance(copied, baseTs):
-                copied = baseTs(copied.values, copied.index.values,
-                              signal_name=self.signal_name)
+                copied = baseTs(copied.values, copied.index.values)
                 # Copy metadata
                 for attr in self._metadata:
                     if hasattr(self, attr):
