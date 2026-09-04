@@ -11,10 +11,10 @@ carries the parent's name unchanged, whichever path built it. A mixed-case
 name can only arrive by assignment after construction, which is what every
 case below does.
 
-Out of scope, and not pinned either way: `plotting.lag_plot` upper-cases the
-name when it builds its *title*, which is #61's neighbourhood; and the free
-functions in utils.py and `LowessOutlierFilter.filter` drop the name outright,
-which is #66's.
+`plotting.lag_plot` used to upper-case the name when it built its *title*;
+#61 removed that, and test_lag_plot_labels.py pins the title verbatim. Still
+out of scope: the free functions in utils.py and `LowessOutlierFilter.filter`
+drop the name outright, which is #66's.
 """
 import numpy as np
 import pytest

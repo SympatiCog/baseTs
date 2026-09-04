@@ -117,6 +117,53 @@ def _values_match(obj, stamp: pd.Index) -> bool:
     return stamp.equals(pd.Index(obj.to_numpy()))
 
 
+def _label_property(public: str, private: str, what: str) -> property:
+    """Build a label attribute that is always a string.
+
+    `signal_name` and `last_process` are read by every plot title, axis label
+    and legend entry as `signal_name + " " + last_process`. #33 made them
+    strings on every derivation path and through both constructors by
+    normalising at the chokepoints, and pinned its own boundary: the object
+    you *mutate* was not healed, so `ts.signal_name = None` stored `None`
+    until the next derivation. That half is what let `lag_plot` fail on
+    `.upper()` and fall back to a printed diagnostic and a placeholder label
+    (#61). Coercing in the setter closes it the way #33's note said it
+    would be closed - the `freq` / `lowess_fit` shape, validate where the
+    value enters the object rather than guard every place it is read.
+
+    The public name stays in `_metadata`, deliberately. pandas propagates
+    those entries with `object.__setattr__`, which honours data descriptors,
+    so `__finalize__`, `copy` and `__setstate__` all run this setter. For the
+    positional slots that is laundering (#20); for a label it is the
+    normalisation wanted, and it is what turns a legacy pickle carrying
+    `None` under the public name into `""` on restore.
+
+    The getter defaults to `""` rather than raising, because pandas can
+    build a subclass instance without running `__init__` and finalize it
+    later; and this class's own `copy()` loop reads each `_metadata` name
+    through `hasattr` first, so a raising getter would silently skip the
+    label there. It reads `__dict__` directly rather than `getattr`, because
+    a miss in `getattr` falls through to NDFrame.__getattr__, which consults
+    the block manager - and on an instance that has none yet (a `__new__`
+    without `__init__`) that recursed instead of raising.
+
+    `del ts.signal_name` returns the label to `""` rather than removing it:
+    a plain attribute could be deleted and then raise on the next read,
+    which is one more way for the label to stop being a string.
+    """
+    def getter(self):
+        return self.__dict__.get(private, "")
+
+    def setter(self, value):
+        object.__setattr__(self, private, normalise_label(value))
+
+    def deleter(self):
+        self.__dict__.pop(private, None)
+
+    return property(getter, setter, deleter,
+                    doc=f"{what} Always a string; see normalise_label.")
+
+
 def _positional_property(public: str, private: str, what: str) -> property:
     """
     Build a property that hands back `value` only while the index it was
@@ -572,17 +619,15 @@ def _detach_shared_metadata(obj):
     handed the None to every object derived from it, where `.config` is read
     unguarded by get_outlier_filter_params, info and filter_outliers alike.
 
-    `signal_name` and `last_process` are coerced to strings for the same
-    reason: plotting builds every title, axis label and legend entry with
-    `signal_name + " " + last_process`, so a propagated None raises TypeError
-    there instead of AttributeError. See normalise_label.
+    `signal_name` and `last_process` used to be coerced here too, for the
+    same reason: plotting builds every title, axis label and legend entry
+    with `signal_name + " " + last_process`. Since #61 they are normalising
+    properties, so every assignment - this one included - already coerces,
+    and an arm here would be redundant with the setter. See _label_property.
     """
     object.__setattr__(obj, 'history', normalise_history(getattr(obj, 'history', None)))
     if getattr(obj, 'outlier_filter', None) is None:
         object.__setattr__(obj, 'outlier_filter', LowessOutlierFilter())
-    for label in ('signal_name', 'last_process'):
-        object.__setattr__(obj, label,
-                           normalise_label(getattr(obj, label, None)))
     stored = getattr(obj, '_outlier_indices', None)
     if stored is not None and isinstance(stored[0], (list, np.ndarray)):
         # ndarray as well as list: the constructor types this parameter as
@@ -826,6 +871,11 @@ class TimeSeriesData(pd.Series):
         'lowess_fit', '_lowess_fit',
         "LOWESS fit produced by filter_outliers or lowess_detrend, one value "
         "per sample.")
+    signal_name = _label_property(
+        'signal_name', '_signal_name', "Name of the signal.")
+    last_process = _label_property(
+        'last_process', '_last_process',
+        "Name of the last processing step applied.")
     outlier_indices = _positional_property(
         'outlier_indices', '_outlier_indices',
         "Positions of the samples filter_outliers rejected.")
@@ -949,18 +999,20 @@ class TimeSeriesData(pd.Series):
                     setattr(self, attr, False)
                 elif attr in ['ts_offset']:
                     setattr(self, attr, 0)
-                elif attr in ['signal_name', 'last_process']:
-                    setattr(self, attr, "")
                 else:
                     # What reaches here is None-tolerant by design:
                     # _lowess_fit and _outlier_indices carry the index they
                     # describe (#20), and _freq_declaration is absent until
-                    # someone declares a rate (#29/#31/#23). outlier_filter is
-                    # not - but it needs no arm of its own, because the
-                    # _detach_shared_metadata call at the end of this method
-                    # restores a default for exactly that name. An arm here
-                    # would be unreachable in effect: neutralising it leaves
-                    # every test in test_metadata_defaults.py green.
+                    # someone declares a rate (#29/#31/#23). signal_name and
+                    # last_process are normalising properties (#61), so the
+                    # None lands as "" - the arm that used to assign "" for
+                    # them was redundant with the setter. outlier_filter is
+                    # not None-tolerant - but it needs no arm of its own,
+                    # because the _detach_shared_metadata call at the end of
+                    # this method restores a default for exactly that name.
+                    # An arm here would be unreachable in effect:
+                    # neutralising it leaves every test in
+                    # test_metadata_defaults.py green.
                     setattr(self, attr, None)
 
         # attrs and flags are not in _metadata, so the loop above cannot
@@ -1238,7 +1290,8 @@ class TimeSeriesData(pd.Series):
         # Copy metadata. freq is no longer special-cased out: the rate is not
         # in _metadata any more, _freq_declaration is, and the constructed
         # object derives from an index identical to this one. Nor is
-        # signal_name: _detach_shared_metadata below normalises the labels.
+        # signal_name: it is a normalising property (#61), so the setattr
+        # below coerces a None to "" on its own.
         for attr in self._metadata:
             if hasattr(self, attr):
                 setattr(base_ts, attr, getattr(self, attr))
@@ -1415,8 +1468,8 @@ class TimeSeriesData(pd.Series):
         # signal_name= either, for the same reason and one more: through the
         # constructor the operand's name came back upper-cased, so
         # `ts + 1` was titled differently from `ts` (#56). The loop below
-        # copies it verbatim and _detach_shared_metadata, further down,
-        # normalises it, so a None operand name still lands as "".
+        # copies it verbatim; signal_name is a normalising property (#61),
+        # so a None operand name still lands as "" at the assignment.
         new_basets = baseTs(
             data=result.values,
             times=result.index.values,

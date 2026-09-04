@@ -54,6 +54,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the label metadata is always a string, in place too (#61)
+
+### Fixed — `lag_plot` printed a failure to stdout and labelled the plot `Signal`
+
+`plotting.lag_plot` wrapped `ts.signal_name.upper()` in a bare
+`except Exception`, wrote the failure to **stdout** with `print`, and labelled
+the title, x-axis and y-axis `Signal` as if that were the name. The same shape
+#34 removed from `plot_fft_power`, one function down and weaker:
+`shift_timeseries` was already outside the `try`, so #32's guards propagated,
+and the consequence was a mislabelled plot rather than a wrong one. It fired
+only on a hand-assigned non-string — since #33 every derivation and both
+constructors made the labels strings — which is exactly the boundary #33
+pinned and left open: it stopped a `None` *propagating*; it did not heal the
+object you mutate.
+
+**Fixed at the production site, not the reader.** `signal_name` and
+`last_process` are now normalising properties on `TimeSeriesData`
+(`_label_property`), the `freq` / `lowess_fit` shape #33's own note pointed
+at: the setter runs `normalise_label`, so `ts.signal_name = None` stores `""`
+and `ts.last_process = 12` stores `"12"` at the assignment, on the object
+itself. Both labels, because the rule (#33: "the label metadata is always a
+string") is about the label metadata, and a property on one with a plain
+attribute on the other would be a carve-out from it. With no non-string
+possible, `lag_plot`'s `try`/`except`/`print` is deleted rather than narrowed,
+and the `.upper()` with it — the title is built from the name verbatim, which
+is what the other seven titles in `plotting.py` already did. #56 settled that
+a derivation carries the name unchanged; the lag plot was the one title that
+still re-cased it, and #56's own entry deferred that to here.
+
+The private slots are `_signal_name` / `_last_process`. **`_metadata` keeps
+the public names, deliberately.** pandas propagates `_metadata` entries with
+`object.__setattr__`, which honours data descriptors, so `__finalize__`,
+`copy` and `__setstate__` all run the setter. For the positional slots that
+was laundering (#20); for a label it is the normalisation wanted, and it is
+what makes a pickle written before this change, carrying `None` under the
+public name, restore as `""`. Pinned. The getter reads `__dict__` rather than
+`getattr`, because a miss in `getattr` falls through to `NDFrame.__getattr__`,
+which consults the block manager and recursed on an instance built by
+`__new__` before `__setstate__` — found by the test for that case.
+
+Verified on a `pd.Series` subclass prototype before touching the class: the
+property survives `iloc`, `copy` (both depths), arithmetic, `head`, `dropna`,
+`deepcopy` and a pickle round trip on pandas 3.0.1; the branch suite pins
+each of those on the real class, plus `zscale()` for the hand-copy path.
+
+### Changed
+
+- `ts.signal_name = None` and `ts.last_process = None` now store `""`
+  immediately; a number stores its `str`. Before, the attribute held whatever
+  was assigned until the next derivation normalised it, so the mutated object
+  itself could not be plotted (`TypeError` from `signal_name + " " +
+  last_process`) while every object derived from it could. `type(ts.signal_name)`
+  and `type(ts.last_process)` are now always `str`.
+- `lag_plot` on a series whose name was assigned after construction in mixed
+  or lower case now titles and labels the plot with that name verbatim
+  (`Heart Rate Lag Plot at ...`); before, `HEART RATE Lag Plot at ...`. A
+  name from the constructor is already upper-case and is unaffected.
+- `lag_plot` no longer writes to stdout and never labels a plot `Signal`; an
+  empty name yields an empty prefix (` Lag Plot at ...`), the same as every
+  other plot.
+- `del ts.signal_name` / `del ts.last_process` return the label to `""`.
+  Before, they deleted a plain attribute and the next read raised
+  `AttributeError` out of pandas. A property with no deleter would have made
+  `del` itself raise, which is a wart rather than a rule; the deleter is the
+  "always a string" rule applied to one more door.
+
+### Removed — three normalisers the setter made redundant
+
+- The `signal_name` / `last_process` arm of `_detach_shared_metadata` (#33's
+  chokepoint), and the `""`-defaulting arm for the same two names in
+  `_copy_metadata_from_basetseries` — the bare `else` now assigns `None`
+  through the setter and lands `""`.
+- The explicit `normalise_label` calls on `baseTs.__init__`'s `last_process`
+  keyword and on `_create_new_with_data`'s name copy. `TimeSeriesData.__init__`
+  keeps its call, because `.upper()` runs on the result before assignment.
+
+Each deletion leaves the suite green with the property in place, which is the
+sense in which they were redundant; every case those arms existed for is
+still pinned in `test_metadata_defaults.py` and `test_signal_name_case.py`.
+
+### Unchanged
+
+- The constructor upper-cases its own `signal_name` argument (#56); the
+  attribute setter does not re-case. `baseTs(..., signal_name="hr")` is `"HR"`
+  and `ts.signal_name = "Heart Rate"` is `"Heart Rate"`. Pinned.
+- `normalise_label`'s rule: `None` → `""`, anything else → `str(value)`.
+- Every plot other than `lag_plot`, which already used the name verbatim.
 ## [Unreleased] — an empty series is rejected by every spectral entry point (#62)
 
 ### Fixed — five of six routes raised `ZeroDivisionError` from inside numpy

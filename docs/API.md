@@ -143,11 +143,16 @@ def signal_name(self) -> Optional[str]:
 
 The constructor upper-cases the `signal_name` keyword it is given, so
 `baseTs(..., signal_name="Heart Rate").signal_name` is `"HEART RATE"`. A name
-assigned afterwards is stored as written, and every object derived from the
+assigned afterwards keeps its case, and every object derived from the
 series — a slice, a copy, a processing method, an arithmetic result, a
-conversion such as `baseTs(ts)` — carries the source's name as it was, with
-one coercion: a `None` name arrives as `""`, as it does on every copying
-path. The keyword is normalised; an inherited name is copied.
+conversion such as `baseTs(ts)` — carries the source's name as it was. The
+keyword is normalised; an inherited name is copied.
+
+`signal_name` and `last_process` are always strings. Assigning `None` stores
+`""` and assigning anything else stores its `str`, on the object itself and at
+the moment of assignment (they are normalising properties); `del` returns the
+label to `""`. Every plot title, axis label and legend entry is built from the
+two, so there is no value they can hold that a plot cannot render.
 
 #### `freq`
 ```python

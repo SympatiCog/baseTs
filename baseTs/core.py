@@ -27,7 +27,7 @@ from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak
                     validate_finite_data, validate_non_empty)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
-                     normalise_label, _UNSET, _UnsetType,
+                     _UNSET, _UnsetType,
                      _carries_metadata, _carry_identity,
                      _apply_duplicate_label_declaration,
                      _refuse_undeclarable_index)
@@ -245,14 +245,15 @@ class baseTs(TimeSeriesData):
             if not isinstance(_value, _UnsetType):
                 setattr(self, _name, _value)
         # The one label door that does not pass through
-        # TimeSeriesData.__init__:
-        # signal_name is handed to the superclass and normalised there, while
-        # this is assigned straight onto the object. Without the same coercion
-        # baseTs(..., last_process=None) returned an object whose every plot
-        # label raised TypeError, from a supported keyword and with nothing
-        # mutated afterwards.
+        # TimeSeriesData.__init__: signal_name is handed to the superclass,
+        # while this is assigned straight onto the object. It used to need
+        # its own normalise_label call - without it baseTs(...,
+        # last_process=None) returned an object whose every plot label raised
+        # TypeError, from a supported keyword. Since #61 the assignment
+        # itself normalises (last_process is a property), pinned in
+        # test_metadata_defaults.py.
         if not isinstance(last_process, _UnsetType):
-            self.last_process = normalise_label(last_process)
+            self.last_process = last_process
 
         # Handle timestamp offset. The `else` used to zero both names
         # unconditionally, which is how a converted series lost an offset it
@@ -474,12 +475,14 @@ class baseTs(TimeSeriesData):
         # the name of one series (#56). The rule: the constructor normalises
         # its own argument, and a derivation copies the parent's - so a name
         # the caller passes in kwargs is a constructor argument and keeps the
-        # constructor's rule, while the parent's goes through the label
-        # normaliser like every other copying door, so a None still lands as
-        # "". Outside the preserve_metadata block because the name never was
-        # part of what that flag withholds.
+        # constructor's rule, while the parent's is copied verbatim. The
+        # assignment normalises on its own since #61 (signal_name is a
+        # property), so a None still lands as "" without an explicit call;
+        # #56 pinned that on the preserve_metadata=False path, where nothing
+        # else runs. Outside the preserve_metadata block because the name
+        # never was part of what that flag withholds.
         if 'signal_name' not in kwargs:
-            new_obj.signal_name = normalise_label(self.signal_name)
+            new_obj.signal_name = self.signal_name
 
         if preserve_metadata:
             # Copy metadata
