@@ -24,7 +24,7 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq,
-                    validate_finite_data)
+                    validate_finite_data, validate_non_empty)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      normalise_label, _UNSET, _UnsetType,
@@ -2051,14 +2051,16 @@ class baseTs(TimeSeriesData):
             Tuple of (frequencies, power_spectrum)
 
         Raises:
-            ValueError: If the sampling frequency is not usable (NaN, zero, or
-                negative), if the data is complex or contains NaN or Inf, or
-                if the window function is unknown
+            ValueError: If the series is empty, if the sampling frequency is
+                not usable (NaN, zero, or negative), if the data is complex or
+                contains NaN or Inf, or if the window function is unknown
         """
         from scipy import signal
 
         # This method builds its own FFT rather than routing through
-        # compute_fft_power, so it needs both guards in its own right.
+        # compute_fft_power, so it needs all three guards in its own right.
+        # get_peak_freq, relative_band_power, falff and plot_fft_power all
+        # arrive here, so this is where the family agrees (#28, #62).
         #
         # Checked against self.values rather than the windowed copy below, so
         # the error describes what the caller passed in. That placement is a
@@ -2066,6 +2068,7 @@ class baseTs(TimeSeriesData):
         # through rather than removing it, so a check after windowing catches
         # the same inputs. Verified by mutation - moving it below does not
         # fail any test, and no test claims otherwise.
+        validate_non_empty(self.values)
         validate_sampling_freq(self.freq)
         validate_finite_data(self.values)
 
@@ -2131,10 +2134,11 @@ class baseTs(TimeSeriesData):
             Single peak frequency (if num_pks=1) or list of peak frequencies
 
         Raises:
-            ValueError: If the sampling frequency is not usable, if the data is
-                complex, or if it contains NaN or Inf. Fill gaps first, e.g. with
-                interpolate_gaps() - an FFT over data containing NaN returns an
-                all-NaN spectrum, from which any peak is meaningless.
+            ValueError: If the series is empty, if the sampling frequency is
+                not usable, if the data is complex, or if it contains NaN or
+                Inf. Fill gaps first, e.g. with interpolate_gaps() - an FFT
+                over data containing NaN returns an all-NaN spectrum, from
+                which any peak is meaningless.
 
         Examples:
             # Basic peak frequency

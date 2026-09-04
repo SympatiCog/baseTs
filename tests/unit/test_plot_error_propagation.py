@@ -433,22 +433,20 @@ def test_a_value_error_from_a_custom_float_is_translated_not_leaked():
         plot_fft_power(ts, max_rate=Awkward())
 
 
-def test_an_empty_series_raises_zerodivisionerror_as_documented():
-    """Pins the one documented hole in the "all ValueError" contract.
+def test_an_empty_series_is_a_valueerror_like_everything_else():
+    """The hole #34 documented in the "all ValueError" contract is closed.
 
-    Pre-existing and family-wide (issue #62): get_frequency_content,
-    get_peak_freq, relative_band_power and falff all divide by a zero-length
-    index, and only compute_fft_power guards it. Not fixed here because the
-    fix belongs in the shared spectral door rather than in one of its callers,
-    and this test exists so that closing #62 has to come back and update the
-    docstring that currently promises ZeroDivisionError.
-
-    The draws-nothing guarantee still holds, which is what this pins hardest:
-    the failure happens in the compute phase, before setup_plot.
+    It was a ZeroDivisionError from inside np.fft.fftfreq, family-wide, and
+    this test pinned it as the one documented exception so that closing #62
+    would have to come back here. #62 put the check in the shared spectral
+    door (utils.validate_non_empty), so the contract now has no exceptions.
+    The family-wide pins live in test_spectral_empty_series.py; this one
+    keeps the plotting half: the failure happens in the compute phase, before
+    setup_plot, so the draws-nothing guarantee holds for it too.
     """
     empty = baseTs(np.array([]), np.array([]), freq=10.0)
     before = set(plt.get_fignums())
-    with pytest.raises(ZeroDivisionError):
+    with pytest.raises(ValueError, match="Time series data is empty"):
         plot_fft_power(empty)
     assert set(plt.get_fignums()) == before
 

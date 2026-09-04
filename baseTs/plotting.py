@@ -351,13 +351,8 @@ def plot_fft_power(ts,
             - [min_rate, max_rate] selects no frequency bins
             - `highlight_band` is not a pair of real finite frequencies, or is
               not strictly increasing
-
-        ZeroDivisionError: If the series is empty. Pre-existing and not
-            specific to plotting - `get_frequency_content`, `get_peak_freq`,
-            `relative_band_power` and `falff` all divide by a zero-length
-            index, while only `compute_fft_power` guards it (issue #62). It is
-            listed here rather than guarded here because the fix belongs in
-            the shared spectral door, not in one of its five callers.
+            - the series is empty (since #62; it was a `ZeroDivisionError`
+              from inside numpy before, the one hole in this list)
 
     The bounds are validated before the series, so a call that is wrong in both
     ways reports the bound first. That is deliberate: the bounds are arguments
@@ -412,8 +407,8 @@ def plot_fft_power(ts,
 
     # Pre-existing, and it has no reachable trigger: get_frequency_content
     # returns at least the DC bin for any n >= 1 (measured: n=1 -> 1 bin,
-    # n=2 -> 1, n=3 -> 2, n=4 -> 2), and n == 0 raises ZeroDivisionError inside
-    # np.fft.fftfreq before reaching here (issue #62). Kept as defence in depth
+    # n=2 -> 1, n=3 -> 2, n=4 -> 2), and n == 0 is rejected by the shared
+    # validate_non_empty before reaching here (#62). Kept as defence in depth
     # rather than deleted, but deliberately left out of the docstring's Raises
     # list: documenting an unreachable branch as a contract invites callers to
     # write handling for something that cannot happen.
