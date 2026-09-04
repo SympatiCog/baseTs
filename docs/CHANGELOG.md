@@ -54,6 +54,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — object-dtype data reaches numeric code as numbers, and Inf gets its own remedy (#75, #80, #81)
+
+Three issues of one shape: an object-dtype series passing the shared data
+guard - which cast a copy to float for its own check and threw the cast
+away - and then reaching scipy or pandas as the original object array; and
+the guard's one message naming a NaN remedy for Inf.
+
+### Fixed — the Butterworth filters raised scipy's bare `NotImplementedError` on object dtype (#75)
+
+`lowpass_filter`, `highpass_filter`, `notch_filter` and `bandpass_filter`
+(and the `_at` methods through them) passed the caller's array to
+`filtfilt` as given. Since #48 the guard ran first, so an object array of
+ordinary floats was pronounced usable and then died inside scipy with
+`NotImplementedError: input type 'object' not supported`, outside the
+`InvalidParameterError` contract every docstring makes.
+
+The cast now lives in one place, `utils.coerce_numeric_data`, which
+`validate_finite_data` calls and whose result it **returns** (it returned
+`None`). Each filter computes with that array, coerced *after* validation
+so that #48's "bad call before bad data" precedence holds (pinned: a
+non-numeric array with a bad cutoff still reports the cutoff), on an array
+the guard has just proved coercible. The second pass is paid on object
+arrays only, and is translated like the guard's own: review built a
+`numbers.Real`-registered object whose `__float__` gives out after the
+guard's pass, and the first cut let it escape as a bare `ValueError` on the
+strength of a docstring saying that could not happen. An object array of
+floats now filters to the
+bit-identical output of the float array, on all four; an object array of
+complex filters as complex128.
+
+### Fixed — `interpolate_gaps()` raised pandas' bare `TypeError` on object dtype (#80)
+
+The constructor keeps an object dtype it is given, the guard's NaN message
+names `interpolate_gaps()`, and pandas refuses to interpolate object dtype
+(`Series cannot interpolate with object dtype`) - so the remedy the message
+named could not run. `interpolate_gaps` now settles an object-dtype series
+through the same coercer, to float64 or complex128, on both method
+branches and both `inplace` forms; every other dtype is interpolated
+exactly as before. Non-numeric object data raises `ValueError` with the
+guard's own "not numeric" message; the docstring gained its `Raises`.
+
+### Fixed — the NaN remedy was named for Inf, which it does not fill (#81)
+
+"Time series data contains NaN or Inf values. Fill gaps first, e.g. with
+interpolate_gaps()." pandas' `interpolate` fills NaN and leaves Inf where
+it is, so an Inf caller followed the remedy and landed on the same message:
+the #28 "remedy reproduces the bug" pattern, for the other half of the
+message's own disjunction. Split by what was found:
+
+- NaN only: unchanged, verbatim (pinned - 17 tests match on it).
+- Inf only: "Time series data contains Inf values. Inf is not a gap:
+  replace it with NaN first, e.g. `ts.replace([np.inf, -np.inf], np.nan)`,
+  then fill the gaps with interpolate_gaps(), which leaves Inf in place on
+  its own."
+- Both: "Time series data contains NaN and Inf values. Inf is not a gap:
+  replace it with NaN first, e.g. ..., then fill the gaps with
+  interpolate_gaps(), which fills NaN only."
+- No finite sample at all: unchanged ("nothing to interpolate from").
+
+The #77 leading-gap hint now keys on a leading *non-finite* sample rather
+than a leading NaN: a leading Inf becomes a gap once replaced, and for it
+the hint reads "The series will then start with a gap" (#77 keyed on NaN
+alone while #81 was open, so as not to name a second remedy that did not
+run). **The step order is load-bearing**, measured rather than assumed:
+pandas counts Inf as a valid sample, so an edge fill run *before* the
+replace copies the Inf back over a leading NaN. Taken in the order given,
+the two steps clear everything; pinned both ways.
+
+The alternative the issue offered - treating Inf as a gap inside
+`interpolate_gaps()` - is a behaviour change and was not made.
+
+### Changed — how an object array is classified, by the guard and everywhere it is used
+
+`validate_finite_data` sorted an object array by whether
+`np.asarray(arr, dtype=float)` succeeded: a parser-leniency probe, #43's
+lesson previously applied to the complex branch only. It is now element
+inspection. Every element a `numbers.Real` (bool and `np.bool_` included) or a pandas
+missing marker (`None`, `pd.NA`, read as NaN) gives float64;
+`numbers.Complex` with at least one non-real gives complex128, or the
+complex message unless `allow_complex`; anything else - text, `Decimal`
+(a `Number` but deliberately not a `Real`), dicts - is "not numeric".
+Measured over 35 input classes against `main`, both keyword settings:
+
+- Numeric text (`['1.5', '2']` as object, `<U` or bytes) and `Decimal`
+  in an object array were accepted and then died in `np.fft` or `filtfilt`
+  with a bare `TypeError`/`NotImplementedError`. Now "not numeric".
+- `np.complex128` scalars in an object array: `float()` truncates those
+  under a `ComplexWarning` rather than refusing, so they passed with
+  `allow_complex=False`. Now the complex message.
+- `pd.NA` in an object array was "not numeric". Now a gap, and the NaN
+  message - which `interpolate_gaps()` can now act on.
+- Return value: `None` → the checked array, the input itself when it was
+  already a numeric ndarray. Two tests that asserted `is None` changed.
+
+No call that reached a result on `main` through any guarded path is
+refused now: no object array ever did, on any of the five spectral entry
+points or the four filters (checked on a `main` worktree).
+
+`coerce_numeric_data` is new and importable from `baseTs.utils`;
+`_holds_complex_numbers` is folded into it.
+
+### Observed, not changed — filed as #93
+
+`get_frequency_content`, `get_peak_freq`, `compute_fft_power`,
+`relative_band_power` and `falff` on an object array of floats still die
+in `np.fft` with a bare `TypeError`: the guard now hands back the coerced
+array and those sites do not consume it yet. `gauss_filter` dies with a
+`RuntimeError`. `sg_filter` works on object dtype and always did.
+
 ## [Unreleased] — the notch filter validates the band it stops (#76)
 
 ### Fixed — a notch within 1% of Nyquist of either end died in scipy

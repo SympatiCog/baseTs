@@ -15,7 +15,7 @@ from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
 from scipy import signal
 
-from .utils import validate_finite_data, validate_sampling_freq
+from .utils import coerce_numeric_data, validate_finite_data, validate_sampling_freq
 
 if TYPE_CHECKING:
     from .core import baseTs
@@ -179,6 +179,36 @@ def _require_finite_data(data: ArrayLike) -> None:
     """
     try:
         validate_finite_data(data, allow_complex=True)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+
+def _as_filterable(data: ArrayLike) -> np.ndarray:
+    """The array a validated filter computes with.
+
+    Every filter passed the caller's array to filtfilt as given, so an
+    object array of ordinary floats - pronounced usable by the data guard,
+    which had cast a copy to float for its own check and thrown the cast
+    away - died inside scipy with a bare `NotImplementedError: input type
+    'object' not supported` (#75), outside the InvalidParameterError
+    contract each docstring makes.
+
+    Called *after* the validator, not before it, on purpose: #48's rule is
+    that a bad call is reported before bad data, and the O(n) look at an
+    object array's elements must not get to speak ahead of a cutoff the
+    caller mistyped. The price is a second pass over object arrays only;
+    numeric input comes back as the same object.
+
+    For ordinary data that second pass cannot fail: the validator's guard
+    ran the same classification on the same array and it passed. But the
+    classification asks numbers.Real, a registrable ABC, and a registered
+    object's __float__ need not answer the same way twice - the first cut
+    said "cannot raise" and left the translation out, and a stateful
+    impostor escaped as a bare ValueError (review). So the same translation
+    _require_finite_data makes, on the same terms: one call in the try.
+    """
+    try:
+        return coerce_numeric_data(data, allow_complex=True)
     except ValueError as exc:
         raise InvalidParameterError(str(exc)) from exc
 
@@ -599,10 +629,12 @@ def notch_filter(data: ArrayLike,
         
     Raises:
         InvalidParameterError: If parameters are invalid, the notch lies
-            within the half-width of either end, or the data has gaps
+            within the half-width of either end, or the data has gaps or is
+            not numeric
     """
     data = np.asarray(data)
     fs_hz, low, high, order = validate_notch_params(data, fs_hz, cutoff_hz, order)
+    data = _as_filterable(data)
 
     b, a = butter(order, [low, high], btype='bandstop')
     return filtfilt(b, a, data)
@@ -624,11 +656,13 @@ def highpass_filter(data: ArrayLike,
         Filtered data array
         
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If parameters are invalid, or the data has
+            gaps or is not numeric
     """
     data = np.asarray(data)
     sampling_freq, highpass_freq, order = validate_filter_params(
         data, sampling_freq, highpass_freq, order)
+    data = _as_filterable(data)
 
     nyquist_rate = sampling_freq / 2.0
     high = highpass_freq / nyquist_rate
@@ -652,10 +686,12 @@ def lowpass_filter(data: ArrayLike,
         Filtered data array
         
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If parameters are invalid, or the data has
+            gaps or is not numeric
     """
     data = np.asarray(data)
     fs, cutoff, order = validate_filter_params(data, fs, cutoff, order)
+    data = _as_filterable(data)
 
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
@@ -685,7 +721,8 @@ def bandpass_filter(data: ArrayLike,
         Filtered data array
         
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If parameters are invalid, or the data has
+            gaps or is not numeric
     """
     data = np.asarray(data)
 
@@ -705,6 +742,7 @@ def bandpass_filter(data: ArrayLike,
     # value and computing with another is not validation (#30).
     effective_fs, hp_hz, lp_hz = validate_band_params(
         data, sample_Hz, hp_hz, lp_hz, 3, window_step=window_step)
+    data = _as_filterable(data)
 
     nyq = effective_fs / 2
     b, a = signal.butter(3, [hp_hz/nyq, lp_hz/nyq], btype='band')

@@ -253,6 +253,14 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   `'index'`, `'values'`); the scipy-backed methods (`'cubic'`, `'polynomial'`, `'spline'`, ...)
   leave an edge unfilled or extrapolate a fit. Complex data is accepted: the real and imaginary
   parts are filtered independently.
+- **Inf is not a gap.** `interpolate_gaps()` fills NaN only, so an Inf needs
+  `ts.replace([np.inf, -np.inf], np.nan)` first, then `interpolate_gaps()`; the error says which
+  it found (#81). In that order: pandas counts Inf as a valid sample, so an edge fill run before
+  the replace copies an Inf back over a leading NaN.
+- **Object dtype is settled to numbers first.** An object array of reals filters as float64 and
+  one holding complex as complex128 (pandas' `None`/`pd.NA` read as gaps); text, `Decimal` or
+  anything else in it is rejected as "not numeric". Until #75 an object array of ordinary floats
+  passed validation and died in scipy with a bare `NotImplementedError`.
 - `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
   they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
   deliberate and pinned by a test.
@@ -559,8 +567,18 @@ Interpolate missing values (NaN) in the time series with enhanced capabilities.
   series with no valid sample cannot be filled at all, and the guards say so instead of naming
   this method.
 
+An object-dtype series (the constructor keeps the dtype it is given) is interpolated as float64,
+or complex128 if it holds a complex value, with `None` and `pd.NA` read as gaps; the result has
+that dtype. pandas refuses to interpolate object dtype, so until #80 this raised a bare
+`TypeError` on exactly the input the guards' NaN message had sent here. Inf is not a gap and is
+left in place: replace it with NaN first (`ts.replace([np.inf, -np.inf], np.nan)`).
+
 **Returns:**
 - `baseTs`: New baseTs object with interpolated data
+
+**Raises:**
+- `ValueError`: If the series is object dtype and holds values that are not numbers (text,
+  `Decimal`, ...), with the data guard's "not numeric" message
 
 **Example:**
 ```python
@@ -831,6 +849,9 @@ Get frequency domain representation using enhanced FFT with optional windowing.
   default fills forward only, and the error says so when that is the case (#77). That holds for
   the pandas-native methods (`'linear'`, `'time'`, `'index'`, `'values'`); the scipy-backed
   methods (`'cubic'`, `'polynomial'`, `'spline'`, ...) leave an edge unfilled or extrapolate a fit.
+  Inf is not a gap: `interpolate_gaps()` leaves it in place, so an Inf needs
+  `ts.replace([np.inf, -np.inf], np.nan)` first, and the error says so when that is what it found
+  (#81).
 
 **Example:**
 ```python
@@ -1043,7 +1064,8 @@ untouched. Until #34 these errors were swallowed and drawn as text on the axes, 
 returned a normal `Axes` and a batch pipeline saved a bogus figure with a success exit code.
 
 Gappy data needs an `interpolate_gaps()` first: since #36 `filter_outliers` leaves the gaps it did
-not create as NaN, and since #28 the spectral guards reject them.
+not create as NaN, and since #28 the spectral guards reject them. An Inf is not a gap and needs
+`ts.replace([np.inf, -np.inf], np.nan)` before that step (#81).
 
 ```python
 ts.filter_outliers().interpolate_gaps().plot_fft_power()

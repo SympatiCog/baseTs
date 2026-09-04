@@ -162,7 +162,8 @@ Get frequency domain representation using pandas-optimized FFT.
 
 **Raises:** `ValueError` on an unusable sampling frequency, an unknown window function, or NaN/Inf
 in the data. An FFT over data containing NaN returns an all-NaN spectrum, so fill gaps first with
-`interpolate_gaps()`.
+`interpolate_gaps()`. That fills NaN only: an Inf needs `ts.replace([np.inf, -np.inf], np.nan)`
+before it, and the error says which it found.
 
 **Examples:**
 ```python
