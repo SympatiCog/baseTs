@@ -54,6 +54,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the spectral family and `gauss_filter` compute with the array the guard returns (#93)
+
+The same shape as #75 and #80, in the consumers those did not cover. Since
+#75 the shared data guard, `validate_finite_data`, coerces an object array
+and **returns** the coerced array. The spectral entry points called it and
+discarded the result, so an object array of ordinary floats passed the
+guard and reached `np.fft.fft` as the original object array, dying with a
+bare `TypeError: ufunc 'fft' not supported for the input types` - outside
+the `ValueError` contract every one of them documents. `gauss_filter` never
+called the guard at all and died inside `scipy.ndimage.gaussian_filter`
+with a bare `RuntimeError: array type dtype('O') not supported`.
+
+### Fixed — `get_frequency_content`, `get_peak_freq`, `compute_fft_power`, `relative_band_power` and `falff` raised numpy's bare `TypeError` on object dtype
+
+The three sites that call the guard now compute with what it returns:
+`get_frequency_content` (which `get_peak_freq`, `falff`, `plot_fft_power`
+and `relative_band_power` reach), `utils.compute_fft_power` and
+`utils.relative_band_power`. An object array of floats now gives the
+bit-identical spectrum, peak, band ratio and `BandPowerResult` of the
+float array, on all five, windowed or not; an object array holding a
+complex value is refused by the guard with the #43 complex message, as a
+complex array is. Two details, each pinned:
+
+- `compute_fft_power` demeans **in place** on the array it computes with,
+  and for a numeric array the guard hands back the caller's own array, so
+  the copy stays. The caller's series is unchanged after a call.
+- `relative_band_power` took `np.asarray(ts.values, dtype=float)` after
+  the guard: a second classification that disagrees with the guard's (it
+  parses numeric text the guard refuses) and was only ever reached on data
+  the guard had already passed. It now uses the guard's array. No result
+  changes: the cast fed `np.std` and `len`, which read integers and bools
+  the same.
+
+### Fixed — `gauss_filter` raised scipy's bare `RuntimeError` on object dtype
+
+`gauss_filter` deliberately does not call `validate_finite_data`: it is a
+windowed convolution, so a gap stays a gap, widened by the window, rather
+than poisoning the whole output the way it does an FFT (the
+`sg_filter`/`gauss_filter` note in API.md). It therefore had no dtype rule
+either. It now settles its dtype through `utils.coerce_numeric_data`, the
+guard's dtype half on its own: an object series of reals filters as
+float64 (`None`/`pd.NA` read as gaps, and a NaN in an object series still
+does not raise), one holding complex as complex128 - `gaussian_filter`
+handles complex part by part, as `filtfilt` does for the Butterworth
+family - and a numeric series is filtered exactly as before, scipy's
+integer-in integer-out included. Non-numeric object data (text, `Decimal`)
+and datetimes raise `ValueError` with the guard's own messages; the
+docstring gained its `Raises`. It is the guard's `ValueError`, not the
+filter module's `InvalidParameterError`: the method lives in `core`, has
+never made the filter module's contract, and takes its rule from the same
+place the spectral family does. `except ValueError` catches both.
+
+`sg_filter` is untouched: `savgol_filter` accepts an object array of
+floats, and always did.
+
+### Not folded in
+
+`compute_fft_power(demean=True)` on an **integer** series fails in the
+in-place demeaning (`Cannot cast ufunc 'subtract' output from
+dtype('float64') to dtype('int64')`), on `main` as here. Surfaced while
+verifying that the guard returns numeric arrays untouched; filed as #96.
+
 ## [Unreleased] — integer parameters follow one rule (#78)
 
 ### Fixed — three validation policies for "an integer parameter" became one

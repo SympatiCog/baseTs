@@ -617,9 +617,12 @@ def compute_fft_power(
     validate_non_empty(ts.data)
     validate_sampling_freq(ts.freq)
 
-    data = ts.data.copy()
-
-    validate_finite_data(data)
+    # Computed on what the guard returns, not on ts.data (#93): the guard
+    # coerces an object array and hands the coerced copy back (#75), and
+    # until #93 this function threw that away and ran np.fft on the object
+    # array. The copy is still needed: for a numeric array the guard returns
+    # the caller's own array, and the demeaning below is in place.
+    data = validate_finite_data(ts.data).copy()
 
     if demean:
         data_mean = data.mean()
@@ -859,19 +862,22 @@ def relative_band_power(
             f"({nyquist} Hz)"
         )
 
-    # Called here, not left to get_frequency_content, because the cast on the
-    # next line runs first and raises TypeError of its own on an object array
+    # Called here, not left to get_frequency_content, because np.std below
+    # runs first and would raise a TypeError of its own on an object array
     # of non-numbers - so the "all four raise the same ValueError" contract
     # held for NaN data but not for this dtype class. Calling the shared
     # helper is not the drifting local copy the comment above warns about:
-    # there is one definition, so it cannot say something different.
-    validate_finite_data(ts.values)
+    # there is one definition, so it cannot say something different. The
+    # array it returns is the one to compute with (#75, #93): this used to
+    # discard it and take `np.asarray(ts.values, dtype=float)` instead, which
+    # is a second classification that disagrees with the guard's (it parses
+    # numeric text the guard refuses) and reads only the non-empty check.
+    data = validate_finite_data(ts.values)
     # And this one for the same reason, one line further on: np.std of an
     # empty array warns "Degrees of freedom <= 0" before get_frequency_content
     # would have raised, so the diagnosis arrived with a RuntimeWarning
     # attached (issue #62).
     validate_non_empty(ts.values)
-    data = np.asarray(ts.values, dtype=float)
 
     # Effectively constant data has no oscillatory content, so any ratio would
     # be pure floating-point roundoff. Same threshold used by compute_fft_power.
