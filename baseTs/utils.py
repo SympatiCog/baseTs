@@ -305,8 +305,8 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 ) from exc
 
     if not np.all(np.isfinite(arr)):
-        message = ("Time series data contains NaN or Inf values. Fill gaps first, "
-                   "e.g. with interpolate_gaps().")
+        message = ("Time series data contains NaN or Inf values. Fill gaps "
+                   "first, e.g. with interpolate_gaps().")
         # A gap at the *start* is the one case the remedy above does not
         # clear: interpolate_gaps() forwards pandas' default
         # limit_direction='forward', which fills nothing before the first
