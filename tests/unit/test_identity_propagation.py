@@ -706,13 +706,13 @@ class TestFlagsAssignmentAssumption:
         the new data and index and reset the flag to pandas' default, so a
         caught error left a mutated object with its protection silently off.
         """
-        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        ts = seeded(n=3, rate=1.0)
         ts.flags.allows_duplicate_labels = False
         before = (ts.values.tolist(), ts.index.tolist(),
                   ts.flags.allows_duplicate_labels)
 
         with pytest.raises(ValidationError, match="duplicate time labels"):
-            ts.data = np.array([1.0, 2.0, 3.0])
+            ts._adopt_data_inplace(np.array([4.0, 5.0, 6.0]), [0.0, 0.0, 0.0])
 
         assert (ts.values.tolist(), ts.index.tolist(),
                 ts.flags.allows_duplicate_labels) == before
@@ -778,17 +778,21 @@ class TestDuplicateLabelRefusal:
         against any wording at all - including the earlier one that advised
         giving the result a unique index, which no path here accepts.
         """
-        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        # Through the primitive rather than `ts.data = [1., 2., 3.]` on a
+        # single sample: since #65 the setter refuses that earlier, for
+        # having no span, so it no longer reaches this door.
+        ts = seeded(n=3, rate=1.0)
         ts.flags.allows_duplicate_labels = False
+        duplicated = [0.0, 0.0, 0.0]
 
         with pytest.raises(ValidationError) as caught:
-            ts.data = np.array([1.0, 2.0, 3.0])
+            ts._adopt_data_inplace(np.array([1.0, 2.0, 3.0]), duplicated)
         assert "ts.flags.allows_duplicate_labels = True" in str(caught.value)
 
         ts.flags.allows_duplicate_labels = True   # exactly what it says
-        ts.data = np.array([1.0, 2.0, 3.0])
+        ts._adopt_data_inplace(np.array([1.0, 2.0, 3.0]), duplicated)
 
-        assert len(ts) == 3
+        assert ts.index.tolist() == duplicated
 
     def test_the_message_does_not_offer_an_index_the_caller_cannot_give(self):
         """The remedy that was there before, and why it was wrong.
@@ -798,11 +802,11 @@ class TestDuplicateLabelRefusal:
         result a unique index" therefore named an action with no parameter
         behind it.
         """
-        ts = baseTs(np.array([1.0]), times=np.array([0.0]))
+        ts = seeded(n=3, rate=1.0)
         ts.flags.allows_duplicate_labels = False
 
         with pytest.raises(ValidationError) as caught:
-            ts.data = np.array([1.0, 2.0, 3.0])
+            ts._adopt_data_inplace(np.array([1.0, 2.0, 3.0]), [0.0, 0.0, 0.0])
 
         assert "unique index" not in str(caught.value)
 

@@ -562,9 +562,12 @@ def _apply_duplicate_label_declaration(target, declared):
     **Not reachable through the re-initialisation path any more**, and the
     docstring said otherwise until a review pointed at the contradiction.
     `_refuse_undeclarable_index` now rejects a duplicate-bearing index before
-    `_adopt_data_inplace` commits anything, with this same wording, so
-    `ts.data = [1., 2., 3.]` on a single-sample series raises there and never
-    arrives here. What can still reach this arm is `_carry_identity`, which
+    `_adopt_data_inplace` commits anything, with this same wording, so a
+    derived duplicate index raises there and never arrives here. (The case
+    that used to illustrate this, `ts.data = [1., 2., 3.]` on a single-sample
+    series, no longer derives a duplicated index at all: since #65 the setter
+    refuses it earlier, for having no span.) What can still reach this arm is
+    `_carry_identity`, which
     has no pre-check because its target takes its source's index. The arm is
     kept and unit-tested directly rather than deleted on that reasoning.
     """

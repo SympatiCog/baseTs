@@ -119,6 +119,15 @@ def data(self) -> np.ndarray:
     """Access the underlying data array."""
 ```
 
+Assigning `ts.data = x` replaces the values. With the same length the index is
+kept. With a different length the index is resampled over the existing span
+(`linspace(first, last, len(x))`, the grid `interpto_samples` builds) — which
+needs a span, so growing a series of fewer than two samples raises
+`ValidationError` naming the remedy: build a new object with
+`baseTs(x, times=...)` or `baseTs(x, freq=...)` (#65). Shrinking to empty is
+allowed. To change both values and timestamps, assign `data` first and
+`times` second; the `times` setter alone rejects a length mismatch.
+
 #### `times`
 ```python
 @property  

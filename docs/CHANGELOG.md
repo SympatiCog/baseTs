@@ -54,6 +54,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — a length-changing `ts.data = x` needs a span to resample over (#65)
+
+### Fixed — a short series invented a time base when its data changed length
+
+When `ts.data = x` was assigned with a different length, `_update_series_data`
+rebuilt the index as `linspace(first, last, n)`. That is a coherent rule —
+the same series resampled over the same span, the grid `interpto_samples`
+builds — with one degenerate input it never checked: a series with fewer
+than two samples has no span. On a single sample `first == last`, so every
+replacement timestamp was identical and the object silently acquired a fully
+duplicated index and a `freq` derived from a zero-duration grid; on an empty
+series it minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for. Neither
+was announced.
+
+The rule is kept and its precondition is now stated: growing a series that
+has fewer than two samples raises `ValidationError` before anything is
+mutated, naming what was asked (`cannot place 3 samples on a series of 1`)
+and the two remedies that exist — `baseTs(new_data, times=...)` or
+`baseTs(new_data, freq=...)`. Both are exercised by the test that pins the
+message. Shrinking to empty places nothing and needs no span, so it is not
+refused.
+
+**Why refuse rather than build a grid from a declared rate.** A one-sample
+series constructed with `freq=100.0` could plausibly grow onto
+`first + arange(n) / 100`. It does not, and that is pinned: the rule is about
+the span, a rate is not a span, and a rule that read the declaration on one
+branch and the span on the other would be two rules. If a rate-driven grid is
+ever wanted it should be decided, not discovered. The other option the issue
+weighed — refusing every length change and requiring `times` alongside — is
+not available: the `times` setter alone rejects a length mismatch, so
+assigning `data` first is the only route a caller has, and every
+length-changing method in the package (`diff_ts`, `remove_outliers`,
+`interpto_samples`, `trimto_timepoints`, `interp_to_uniform_grid`, ...)
+takes it, overwriting the resampled grid with its own `times` a line later.
+The resampled index is therefore a transient for the package and a kept
+result only for a caller who changes the length and supplies no times.
+
+### Changed
+
+- `ts.data = x` with `len(x) > 0` and `len(x) != len(ts)` on a series of
+  zero or one samples raises `ValidationError` (a `ValueError`) and leaves
+  the object untouched. Before: a duplicated index (one sample) or an
+  invented unit-spaced one (empty), silently. `apply_function` on a
+  single-sample series with a length-changing function reaches the same
+  refusal, since it assigns `data` and never `times`.
+- `ts.data = np.array([])` on a one-sample series now keeps the index's
+  dtype (it slices the existing index to nothing rather than building an
+  empty float grid).
+- The `#35/#39` test `test_the_declaration_is_refused_before_anything_is_mutated`
+  and two neighbours reached the duplicate-label door through
+  `ts.data = [1., 2., 3.]` on a single sample. That route no longer derives
+  a duplicated index, so they now exercise `_adopt_data_inplace` directly
+  with a duplicated index, which is the door they were pinning.
+
+### Observed, not changed
+
+- `ts.data = x` on a two-sample series still rescales the spacing of every
+  new sample to fit the old span. That is the rule (resample over the span),
+  and it is what `interpto_samples` does; it is now stated in the setter's
+  docstring rather than left to be inferred from `linspace`.
+- A `DatetimeIndex` cannot be resampled this way (`np.linspace` on
+  `Timestamp` endpoints raises inside numpy). Pre-existing and unchanged.
+
 ## [Unreleased] — a helper that derives a baseTs carries its metadata (#64, #66)
 
 ### Fixed — `interpolate_missing(inplace=True)` raised on every call

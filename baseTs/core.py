@@ -24,7 +24,7 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq,
-                    validate_finite_data, validate_non_empty)
+                    validate_finite_data, validate_non_empty, ValidationError)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      _UNSET, _UnsetType,
@@ -422,17 +422,49 @@ class baseTs(TimeSeriesData):
         return self
 
     def _update_series_data(self, new_data: np.ndarray):
-        """Update Series data while preserving metadata and handling length changes."""
-        if len(new_data) == len(self.index):
-            # Same length, can preserve index
-            old_index = self.index
-        else:
-            # Different length, create new index with same time range
-            start_time = self.index[0] if len(self) > 0 else 0
-            end_time = self.index[-1] if len(self) > 0 else len(new_data)-1
-            old_index = np.linspace(start_time, end_time, len(new_data))
+        """Replace the values, keeping the index where the length allows.
 
-        self._adopt_data_inplace(new_data, old_index)
+        A same-length assignment keeps the index. A length-changing one
+        resamples over the existing span: the index becomes
+        `linspace(first, last, n)`, the grid `interpto_samples` builds. Every
+        length-changing method in the package assigns `data` first and
+        `times` second (the `times` setter alone rejects a length mismatch,
+        so that two-step is the only route), which makes this grid a
+        transient those methods overwrite; it is kept only by a caller who
+        changes the length and supplies no times.
+
+        Resampling needs a span, and a series with fewer than two samples
+        has none. It used to invent one (#65): on a single sample
+        `first == last`, so every replacement timestamp was identical and
+        the object silently acquired a fully duplicated index - reported as
+        a `freq` derived from a zero-duration grid; on an empty series it
+        minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for. Both refuse
+        now, before anything is mutated. Shrinking to empty places nothing
+        and needs no span, so it is not refused.
+
+        Raises:
+            ValidationError: if the length changes to a non-zero value on a
+                series with fewer than two samples.
+        """
+        n_new = len(new_data)
+        n_old = len(self.index)
+        if n_new == n_old:
+            new_index = self.index
+        elif n_new == 0:
+            new_index = self.index[:0]
+        elif n_old < 2:
+            raise ValidationError(
+                f"cannot place {n_new} samples on a series of {n_old}: a "
+                "length-changing `ts.data = ...` resamples the new values "
+                "over the existing time span, and a series with fewer than "
+                "two samples has no span to resample over. Build a new "
+                "object instead: `baseTs(new_data, times=...)` or "
+                "`baseTs(new_data, freq=...)`."
+            )
+        else:
+            new_index = np.linspace(self.index[0], self.index[-1], n_new)
+
+        self._adopt_data_inplace(new_data, new_index)
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
