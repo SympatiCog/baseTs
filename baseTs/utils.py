@@ -878,6 +878,10 @@ def falff(
     Returns:
         The fALFF value as a float, or a BandPowerResult if details=True
 
+    Raises:
+        ValueError: Everything relative_band_power raises, including an
+            empty series; this is a thin wrapper over it.
+
     Examples:
         # Classic fALFF on a detrended signal
         ts.detrend('linear').falff()

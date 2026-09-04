@@ -39,6 +39,12 @@ def _empty():
     return baseTs(np.array([]), np.array([]), freq=10.0)
 
 
+# The whole message, not its first clause. compute_fft_power's pre-#62 local
+# check said exactly "Time series data is empty", so a `match` on that prefix
+# was satisfied by the old copy and the new door alike.
+SHARED_MESSAGE = r"Time series data is empty: a spectrum needs at least one sample\."
+
+
 def _one_sample():
     return baseTs(np.array([1.0]), np.array([0.0]), freq=10.0)
 
@@ -67,10 +73,13 @@ ENTRY_POINTS = {
 def test_an_empty_series_is_a_valueerror_everywhere(name):
     """The whole family, not just the one sibling that already checked.
 
-    `match` pins the shared message, so a sixth local copy with its own
-    wording would fail here for that entry point.
+    `match` pins the shared message by the words the old local copy in
+    compute_fft_power never had. Its message, "Time series data is empty",
+    is a prefix of the shared one, so matching on that prefix could not tell
+    the door from the copy for the two compute_fft_power routes (review
+    round 1, agy). A sixth local copy with its own wording fails here too.
     """
-    with pytest.raises(ValueError, match="Time series data is empty"):
+    with pytest.raises(ValueError, match=SHARED_MESSAGE):
         ENTRY_POINTS[name](_empty())
 
 
@@ -86,7 +95,7 @@ def test_an_empty_series_raises_without_warning(name):
     """
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        with pytest.raises(ValueError, match="Time series data is empty"):
+        with pytest.raises(ValueError, match=SHARED_MESSAGE):
             ENTRY_POINTS[name](_empty())
 
 
@@ -94,7 +103,7 @@ def test_plot_fft_power_draws_nothing_for_an_empty_series():
     """The #34 draws-nothing guarantee holds for the rejection this adds."""
     empty = _empty()
     before = set(plt.get_fignums())
-    with pytest.raises(ValueError, match="Time series data is empty"):
+    with pytest.raises(ValueError, match=SHARED_MESSAGE):
         plot_fft_power(empty)
     assert set(plt.get_fignums()) == before
 
@@ -110,7 +119,7 @@ class TestTheSharedDoor:
         (),
     ], ids=["list", "float64", "int64", "2d-zero-rows", "tuple"])
     def test_rejects_anything_with_no_elements(self, data):
-        with pytest.raises(ValueError, match="Time series data is empty"):
+        with pytest.raises(ValueError, match=SHARED_MESSAGE):
             utils.validate_non_empty(data)
 
     @pytest.mark.parametrize("data", [

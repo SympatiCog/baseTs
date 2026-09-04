@@ -2100,6 +2100,12 @@ class baseTs(TimeSeriesData):
     def compute_fft_power(self, max_rate: float = np.nan, demean: bool = True, scale_power: bool = True) -> tuple:
         """
         Compute the FFT power of the timeseries.
+
+        Raises:
+            ValueError: If the series is empty or has fewer than two samples,
+                if the sampling frequency is not usable, if the data is
+                complex or contains NaN or Inf, or if `max_rate` is invalid.
+                See utils.compute_fft_power.
         """
         return compute_fft_power(self, max_rate=max_rate, demean=demean, scale_power=scale_power)
 
@@ -2205,6 +2211,12 @@ class baseTs(TimeSeriesData):
             Relative band power as a float, or a BandPowerResult if
             details=True
 
+        Raises:
+            ValueError: If the band is invalid, exceeds Nyquist or is narrower
+                than the frequency resolution, if the series is empty, if the
+                data is complex or contains NaN or Inf, or if the signal has
+                no spectral power outside DC. See utils.relative_band_power.
+
         Examples:
             # Fraction of variance in the default 0.01-0.1 Hz band
             ts.detrend('linear').relative_band_power()
@@ -2252,6 +2264,10 @@ class baseTs(TimeSeriesData):
 
         Returns:
             fALFF value as a float, or a BandPowerResult if details=True
+
+        Raises:
+            ValueError: Everything relative_band_power raises, including an
+                empty series; this is a thin wrapper over it.
 
         Examples:
             # Classic fALFF on a detrended signal
@@ -2398,7 +2414,9 @@ class baseTs(TimeSeriesData):
                 scalar (`max_rate` also takes NaN, its "use Nyquist" sentinel),
                 if [min_rate, max_rate] selects no frequency bins, or if
                 `highlight_band` is not a strictly increasing pair of real
-                finite frequencies. A rejected call draws nothing.
+                finite frequencies, or if the series is empty (#62; it was a
+                `ZeroDivisionError` from inside numpy before). A rejected
+                call draws nothing.
 
             Until issue #34 these were swallowed and drawn as text on the axes,
             so a failing call returned a normal Axes. Gappy data needs an

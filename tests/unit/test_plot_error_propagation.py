@@ -446,7 +446,7 @@ def test_an_empty_series_is_a_valueerror_like_everything_else():
     """
     empty = baseTs(np.array([]), np.array([]), freq=10.0)
     before = set(plt.get_fignums())
-    with pytest.raises(ValueError, match="Time series data is empty"):
+    with pytest.raises(ValueError, match="a spectrum needs at least one sample"):
         plot_fft_power(empty)
     assert set(plt.get_fignums()) == before
 
