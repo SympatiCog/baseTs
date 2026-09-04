@@ -395,7 +395,7 @@ def round_values(x: Any, decimals: int = 4) -> Any:
     return round(x, decimals) if isinstance(x, float) else x
 
 # The three helpers below derive their result from the source with
-# `_create_new_with_data`, the path every method on the class uses, rather
+# `_create_new_with_data`, the path the class's own methods use, rather
 # than the bare constructor. Built from two arrays, the result came back
 # with all thirteen `_metadata` fields at their defaults - a `ts_offset` the
 # returned timestamps still embodied but the object no longer reported, an
@@ -441,7 +441,10 @@ def diff(ts: Any, zeropad: bool = False) -> Any:
     return ts._create_new_with_data(d, t)
 
 def dediff(ts: Any) -> Any:
-    """Cumulative sum of a time series - the inverse of `diff(zeropad=True)`.
+    """Cumulative sum of a time series.
+
+    Undoes `diff(zeropad=True)` up to the level `diff` discarded: the
+    result is the source shifted by a constant, not the source.
 
     Returns:
         A new baseTs on the source's index, carrying its metadata.

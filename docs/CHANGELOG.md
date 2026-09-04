@@ -90,14 +90,23 @@ is exported, which is why this was low priority. `LowessOutlierFilter` is
 exported, so its `filter()` was reachable through the public API (found by
 the codex seat on PR #84).
 
-All four now derive through `_create_new_with_data`, the path every method
-on the class uses. Pinned as a rule rather than as the four sites: a
+All four now derive through `_create_new_with_data`, the path the class's
+own methods use. Pinned as a rule rather than as the four sites: a
 source-level test parses `utils.py`, `filters.py` and
 `LowessOutlierFilter.py` and fails on any direct call to the constructor —
 `baseTs(...)` or `<module>.baseTs(...)` — so a fifth helper written the old
 way fails before anyone calls it. An aliased import or a call through a
-variable is not seen, and cannot be in general; every helper module imports
-the class under its own name, and the pin is calibrated to that.
+variable is not seen, and cannot be in general; where a helper module
+imports the class it does so under its own name, and the pin is calibrated
+to that.
+
+Review round 2 (glm-5.3, prompted directly with the diff) raised three
+mechanism concerns that measured false — the `interpolate_missing()` copy
+path does not append to the source's history, a stamped `lowess_fit`
+reads `None` after the inplace fill, and no derivation shares the source's
+`attrs` dict — and three true claims that nothing pinned: the declared rate
+honoured where the index is kept, the positional slots following #40 on the
+`utils` helpers, and `outlier_filter` carried. All six are pinned now.
 
 Review round 1 (codex) found a regression in the first cut: on already-clean
 data `LowessOutlierFilter.filter` changes no value, so the #40 staleness
@@ -144,6 +153,12 @@ job, as before.
   `is_outlier_filtered` or append to its history; `filter_outliers()` does
   both on the object it builds. The helper returns arrays-in-a-baseTs and
   the wrapper records the step, as before.
+- `utils.diff(ts, zeropad=True)` on a series of fewer than two samples
+  raises `IndexError` from `d[0]` on an empty difference, as it did before;
+  `zeropad=False` returns an empty series. Pre-existing.
+- `interpolate_missing()` does not set `is_interpolated` on either branch;
+  it did not on the branch that worked before, and the inplace branch now
+  matches it. Whether it should is a separate question.
 - `docs/API.md` documents `diff()` and `dediff()` under "Utility Functions"
   as methods on `ts`; `ts.diff()` is pandas' own and `ts.dediff()` does not
   exist — the methods are `diff_ts()` and `dediff_ts()`. Pre-existing.

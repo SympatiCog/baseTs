@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from baseTs import baseTs
-from baseTs import LowessOutlierFilter as lowess_module
+import baseTs.LowessOutlierFilter as lowess_module
 from baseTs import filters as filters_module
 from baseTs import utils as utils_module
 from baseTs.LowessOutlierFilter import LowessOutlierFilter
@@ -31,6 +31,9 @@ from baseTs.utils import add_constant, dediff, diff
 
 N = 200
 RATE = 40.0
+#: Declared on the seed; the index derives 40.0, so a carried declaration
+#: and a re-derived rate cannot be confused.
+DECLARED_RATE = 999.0
 
 #: The `_metadata` fields a derivation copies verbatim. The positional slots
 #: (`_lowess_fit`, `_outlier_indices`) are excluded because they are
@@ -45,23 +48,30 @@ def seeded() -> baseTs:
     """A baseTs with every carried field away from its default.
 
     Every field has to differ from its default, or a "survived" assertion
-    is vacuous against an object that was reset. The name is assigned after
-    construction in mixed case so that a re-minted name (the constructor
-    upper-cases its argument, #56) is distinguishable from a carried one.
+    is vacuous against an object that was reset. Both labels are assigned
+    after construction in mixed case so that a re-minted one (the
+    constructor upper-cases `signal_name`, #56) is distinguishable from a
+    carried one. The outlier filter is an instance assigned here, compared
+    by identity, so a result that re-minted a default filter would differ.
+    The rate is declared at a value no derivation would re-derive.
     """
     times = np.arange(N) / RATE
     data = np.sin(2 * np.pi * 3.0 * times)
     ts = baseTs(data, times)
     ts.signal_name = 'Heart Rate'
+    ts.outlier_filter = LowessOutlierFilter()   # this instance, not any default
     ts.set_timestamp_offset(1.5)
     ts.is_filtered = True
     ts.is_interpolated = True
     ts.is_uniform_grid = True
     ts.is_outlier_filtered = True
     ts.last_process = '_seeded'
-    ts.name = 'NAMEVAL'
+    ts.name = 'NameVal'
     ts.attrs['unit'] = 'mV'
     ts.flags.allows_duplicate_labels = False
+    # Last: a declaration expires when the index changes (#38), and
+    # set_timestamp_offset above shifts it.
+    ts.freq = DECLARED_RATE
     return ts
 
 
@@ -69,6 +79,7 @@ def carried_of(ts):
     fields = {field: getattr(ts, field) for field in CARRIED}
     fields['name'] = ts.name
     fields['attrs'] = dict(ts.attrs)
+    fields['outlier_filter'] = ts.outlier_filter
     fields['allows_duplicate_labels'] = ts.flags.allows_duplicate_labels
     return fields
 
@@ -138,6 +149,45 @@ class TestHelperDerivationsCarryMetadata:
         add_constant(source, 1.0, inplace=True)
         np.testing.assert_array_equal(source.data, before + 1.0)
 
+    @pytest.mark.parametrize("derive", DERIVATIONS.values(),
+                             ids=list(DERIVATIONS))
+    def test_attrs_are_not_shared_with_the_source(self, derive):
+        """Round 2 (glm) asked; measured false, and pinned so it stays so."""
+        source = seeded()
+        result = derive(source)
+        result.attrs['unit'] = 'V'
+        assert source.attrs['unit'] == 'mV'
+
+    @pytest.mark.parametrize("derive", [DERIVATIONS[k] for k in
+                             ('add_constant', 'diff_zeropad', 'dediff',
+                              'LowessOutlierFilter.filter')],
+                             ids=['add_constant', 'diff_zeropad', 'dediff',
+                                  'LowessOutlierFilter.filter'])
+    def test_a_declared_rate_is_honoured_where_the_index_is_kept(self, derive):
+        """The CHANGELOG says so; round 2 (glm) noted nothing pinned it."""
+        assert derive(seeded()).freq == DECLARED_RATE
+
+    def test_a_declared_rate_expires_where_diff_changes_the_index(self):
+        assert diff(seeded()).freq == pytest.approx(RATE)
+
+    def test_a_helper_that_changes_no_value_keeps_the_positional_slots(self):
+        """The #40 rule, as for `ts + 0.0`: readable while index and values
+        are the ones they were stamped against."""
+        source = seeded()
+        source.lowess_fit = np.full(N, 9.0)
+        source.outlier_indices = [3]
+        result = add_constant(source, 0.0)
+        np.testing.assert_array_equal(result.lowess_fit, np.full(N, 9.0))
+        assert result.outlier_indices == [3]
+
+    def test_a_helper_that_changes_the_values_drops_the_positional_slots(self):
+        source = seeded()
+        source.lowess_fit = np.full(N, 9.0)
+        source.outlier_indices = [3]
+        for result in (add_constant(source, 1.0), diff(source), dediff(source)):
+            assert result.lowess_fit is None
+            assert result.outlier_indices is None
+
     def test_diff_shortens_and_keeps_the_offset_timestamps(self):
         """The returned timestamps embody the offset; the object reports it."""
         source = seeded()
@@ -175,7 +225,9 @@ class TestTheFilterResultDoesNotInheritPositionalSlots:
 
     def test_outlier_indices_are_not_inherited_when_nothing_changed(self):
         source = self._clean_source_with_stamped_slots()
-        assert lowess_filtered(source).outlier_indices is None
+        result = lowess_filtered(source)
+        np.testing.assert_array_equal(result.data, source.data)  # the trap
+        assert result.outlier_indices is None
 
     def test_the_source_keeps_its_own_slots(self):
         source = self._clean_source_with_stamped_slots()
@@ -187,10 +239,11 @@ def bare_constructor_calls(source: str):
     """Line numbers of every `baseTs(...)` / `<anything>.baseTs(...)` call.
 
     An aliased import (`from .core import baseTs as B`) or a call through a
-    variable is not seen, and cannot be in general; every helper module
-    imports the class under its own name, and the pin is calibrated to
-    that. The rule it states is "no direct constructor call", not "no way
-    to reach the constructor".
+    variable is not seen, and cannot be in general; where a helper module
+    imports the class it does so under its own name (`utils.py` no longer
+    imports it at all), and the pin is calibrated to that. The rule it
+    states is "no direct constructor call", not "no way to reach the
+    constructor".
     """
     calls = []
     for node in ast.walk(ast.parse(source)):
@@ -231,7 +284,7 @@ class TestNoHelperUsesTheBareConstructor:
         "res = baseTs.baseTs(data=x, times=t)",
         "def f(ts):\n    from .core import baseTs\n    return baseTs(ts.data, ts.times)",
     ], ids=['bare', 'module-qualified', 'package-qualified', 'local-import'])
-    def test_the_detector_sees_each_spelling_used_in_this_package(self, snippet):
+    def test_the_detector_sees_each_direct_spelling(self, snippet):
         """Round 1 (codex + agy): a `Name`-only match missed `core.baseTs(...)`."""
         assert bare_constructor_calls(snippet) == [snippet.count("\n") + 1]
 
@@ -290,6 +343,16 @@ class TestInterpolateMissingInplace:
         ts = gappy()
         ts.interpolate_missing()
         assert np.isnan(ts.data).sum() == 3
+
+    def test_leading_and_trailing_gaps_are_filled_from_the_nearest_sample(self):
+        """The docstring's claim; round 2 (glm) noted the tests were interior-only."""
+        ts = seeded()
+        data = ts.data.copy()
+        data[[0, 1, N - 1]] = np.nan
+        ts.data = data
+        ts.interpolate_missing(inplace=True)
+        assert ts.data[0] == ts.data[1] == ts.data[2]
+        assert ts.data[N - 1] == ts.data[N - 2]
 
     def test_inplace_carries_the_metadata(self):
         ts = gappy()
