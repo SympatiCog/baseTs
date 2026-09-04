@@ -24,7 +24,7 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq,
-                    validate_finite_data)
+                    validate_finite_data, validate_non_empty)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      normalise_label, _UNSET, _UnsetType,
@@ -2051,14 +2051,16 @@ class baseTs(TimeSeriesData):
             Tuple of (frequencies, power_spectrum)
 
         Raises:
-            ValueError: If the sampling frequency is not usable (NaN, zero, or
-                negative), if the data is complex or contains NaN or Inf, or
-                if the window function is unknown
+            ValueError: If the series is empty, if the sampling frequency is
+                not usable (NaN, zero, or negative), if the data is complex or
+                contains NaN or Inf, or if the window function is unknown
         """
         from scipy import signal
 
         # This method builds its own FFT rather than routing through
-        # compute_fft_power, so it needs both guards in its own right.
+        # compute_fft_power, so it needs all three guards in its own right.
+        # get_peak_freq, relative_band_power, falff and plot_fft_power all
+        # arrive here, so this is where the family agrees (#28, #62).
         #
         # Checked against self.values rather than the windowed copy below, so
         # the error describes what the caller passed in. That placement is a
@@ -2066,6 +2068,7 @@ class baseTs(TimeSeriesData):
         # through rather than removing it, so a check after windowing catches
         # the same inputs. Verified by mutation - moving it below does not
         # fail any test, and no test claims otherwise.
+        validate_non_empty(self.values)
         validate_sampling_freq(self.freq)
         validate_finite_data(self.values)
 
@@ -2097,6 +2100,12 @@ class baseTs(TimeSeriesData):
     def compute_fft_power(self, max_rate: float = np.nan, demean: bool = True, scale_power: bool = True) -> tuple:
         """
         Compute the FFT power of the timeseries.
+
+        Raises:
+            ValueError: If the series is empty or has fewer than two samples,
+                if the sampling frequency is not usable, if the data is
+                complex or contains NaN or Inf, or if `max_rate` is invalid.
+                See utils.compute_fft_power.
         """
         return compute_fft_power(self, max_rate=max_rate, demean=demean, scale_power=scale_power)
 
@@ -2131,10 +2140,11 @@ class baseTs(TimeSeriesData):
             Single peak frequency (if num_pks=1) or list of peak frequencies
 
         Raises:
-            ValueError: If the sampling frequency is not usable, if the data is
-                complex, or if it contains NaN or Inf. Fill gaps first, e.g. with
-                interpolate_gaps() - an FFT over data containing NaN returns an
-                all-NaN spectrum, from which any peak is meaningless.
+            ValueError: If the series is empty, if the sampling frequency is
+                not usable, if the data is complex, or if it contains NaN or
+                Inf. Fill gaps first, e.g. with interpolate_gaps() - an FFT
+                over data containing NaN returns an all-NaN spectrum, from
+                which any peak is meaningless.
 
         Examples:
             # Basic peak frequency
@@ -2201,6 +2211,12 @@ class baseTs(TimeSeriesData):
             Relative band power as a float, or a BandPowerResult if
             details=True
 
+        Raises:
+            ValueError: If the band is invalid, exceeds Nyquist or is narrower
+                than the frequency resolution, if the series is empty, if the
+                data is complex or contains NaN or Inf, or if the signal has
+                no spectral power outside DC. See utils.relative_band_power.
+
         Examples:
             # Fraction of variance in the default 0.01-0.1 Hz band
             ts.detrend('linear').relative_band_power()
@@ -2248,6 +2264,10 @@ class baseTs(TimeSeriesData):
 
         Returns:
             fALFF value as a float, or a BandPowerResult if details=True
+
+        Raises:
+            ValueError: Everything relative_band_power raises, including an
+                empty series; this is a thin wrapper over it.
 
         Examples:
             # Classic fALFF on a detrended signal
@@ -2394,7 +2414,9 @@ class baseTs(TimeSeriesData):
                 scalar (`max_rate` also takes NaN, its "use Nyquist" sentinel),
                 if [min_rate, max_rate] selects no frequency bins, or if
                 `highlight_band` is not a strictly increasing pair of real
-                finite frequencies. A rejected call draws nothing.
+                finite frequencies, or if the series is empty (#62; it was a
+                `ZeroDivisionError` from inside numpy before). A rejected
+                call draws nothing.
 
             Until issue #34 these were swallowed and drawn as text on the axes,
             so a failing call returned a normal Axes. Gappy data needs an

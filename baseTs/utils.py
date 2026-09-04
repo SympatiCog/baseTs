@@ -161,6 +161,38 @@ def _holds_complex_numbers(arr: Any) -> bool:
     )
 
 
+def validate_non_empty(data: Any) -> None:
+    """Reject a series with no samples before it reaches np.fft.fftfreq.
+
+    The third of the shared spectral guards, alongside validate_sampling_freq
+    (the time base) and validate_finite_data (the sample values). This one is
+    about the sample *count*: np.fft.fftfreq computes `1.0 / (n * d)`, so an
+    empty series raised a bare ZeroDivisionError from inside numpy, outside
+    the ValueError contract every spectral entry point documents (issue #62).
+    validate_sampling_freq and validate_finite_data both pass an empty series -
+    the rate is usable and there is no NaN in nothing - so neither could catch
+    it, and until now only compute_fft_power carried a check of its own.
+
+    Emptiness only. A single sample is accepted here: it is not a division by
+    zero, and a threshold above zero would not buy a meaningful spectrum either
+    (one sample and two samples both yield a DC-only spectrum). compute_fft_power
+    documents its own minimum of two, which is its contract and not this
+    guard's.
+
+    Args:
+        data: The sample values to check, as any array-like
+
+    Raises:
+        ValueError: If `data` contains no elements
+    """
+    # `.size`, not `len()`: a 0-d array holds one value and has no len(), and
+    # an (0, k) array has k columns and no samples.
+    if np.asarray(data).size == 0:
+        raise ValueError(
+            "Time series data is empty: a spectrum needs at least one sample."
+        )
+
+
 def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
@@ -479,12 +511,14 @@ def compute_fft_power(
         Tuple of (frequencies, power_spectrum)
 
     Raises:
-        ValueError: If the time series is empty, has an invalid frequency, is
-            complex, or contains NaN or Inf values
+        ValueError: If the time series is empty or has fewer than two samples
+            (an FFT over one sample is a single DC bin, not a spectrum), has
+            an invalid frequency, is complex, or contains NaN or Inf values
     """
-    # Input validation
-    if len(ts.data) == 0:
-        raise ValueError("Time series data is empty")
+    # Input validation. The empty check was a local copy until #62 replaced
+    # it with the shared door, so this function and get_frequency_content
+    # cannot drift apart on it the way they had on the NaN check (#28).
+    validate_non_empty(ts.data)
     validate_sampling_freq(ts.freq)
 
     data = ts.data.copy()
@@ -562,10 +596,10 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
         Single peak frequency (float) if num_pks=1, otherwise list of peak frequencies
 
     Raises:
-        ValueError: If the sampling frequency is not usable, if the data is
-            complex, or if it contains NaN or Inf. All are raised by
-            get_frequency_content below, so this function carries no guard
-            of its own.
+        ValueError: If the series is empty, if the sampling frequency is not
+            usable, if the data is complex, or if it contains NaN or Inf. All
+            are raised by get_frequency_content below, so this function
+            carries no guard of its own.
 
     Examples:
         # Basic peak frequency (returns float, excludes DC)
@@ -681,9 +715,9 @@ def relative_band_power(
 
     Raises:
         ValueError: If the band is invalid, exceeds Nyquist, is narrower than
-            the frequency resolution, if the data is complex or contains
-            NaN/Inf, or if the
-            signal has no spectral power outside DC
+            the frequency resolution, if the series is empty, if the data is
+            complex or contains NaN/Inf, or if the signal has no spectral
+            power outside DC
 
     Examples:
         # Fraction of variance in the default 0.01-0.1 Hz band
@@ -736,6 +770,11 @@ def relative_band_power(
     # helper is not the drifting local copy the comment above warns about:
     # there is one definition, so it cannot say something different.
     validate_finite_data(ts.values)
+    # And this one for the same reason, one line further on: np.std of an
+    # empty array warns "Degrees of freedom <= 0" before get_frequency_content
+    # would have raised, so the diagnosis arrived with a RuntimeWarning
+    # attached (issue #62).
+    validate_non_empty(ts.values)
     data = np.asarray(ts.values, dtype=float)
 
     # Effectively constant data has no oscillatory content, so any ratio would
@@ -839,6 +878,10 @@ def falff(
 
     Returns:
         The fALFF value as a float, or a BandPowerResult if details=True
+
+    Raises:
+        ValueError: Everything relative_band_power raises, including an
+            empty series; this is a thin wrapper over it.
 
     Examples:
         # Classic fALFF on a detrended signal

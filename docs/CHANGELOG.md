@@ -54,6 +54,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — an empty series is rejected by every spectral entry point (#62)
+
+### Fixed — five of six routes raised `ZeroDivisionError` from inside numpy
+
+`np.fft.fftfreq(n, d)` computes `1.0 / (n * d)`, so an empty series raised a
+bare `ZeroDivisionError: float division by zero` from `numpy/fft/_helper.py`
+out of `get_frequency_content`, `get_peak_freq`, `relative_band_power`,
+`falff` and `plot_fft_power`. Only `compute_fft_power` checked. The two
+existing shared guards could not catch it: `validate_sampling_freq` passes
+because the declared rate is usable, and `validate_finite_data` passes because
+an empty array contains no NaN. Since #32 the family's promise is that one
+`except ValueError` catches every rejected input; this was its one hole, and
+#34 had to document it in `plot_fft_power`'s docstring and pin it with a test
+rather than close it.
+
+Same shape as #28, same fix: a third shared guard, **`utils.validate_non_empty`**,
+alongside the two it joins, called where the family actually computes a
+spectrum — `get_frequency_content` (which `get_peak_freq`, `relative_band_power`,
+`falff` and `plot_fft_power` all reach) and `compute_fft_power`, whose local
+copy is deleted in its favour. `relative_band_power` calls it too, before its
+own `np.std`: numpy warns `Degrees of freedom <= 0` on an empty array, so
+without that the diagnosis arrived with a `RuntimeWarning` attached. Pinned
+for all ten public routes — five methods, four `utils` free functions and the
+plotting function — as eleven cases (`get_frequency_content` once more with a
+window, which pins the door above the windowing step), each under
+`warnings.simplefilter("error")`.
+
+**Precedence, decided and pinned:** the door sits *above* `validate_sampling_freq`
+at both computation sites. `compute_fft_power` always checked emptiness first;
+`get_frequency_content` had no empty check, so a series that was empty *and*
+had no usable rate reported the rate. It now reports the emptiness from every
+route, which is what makes the family agree, and is the better diagnosis —
+an empty series has no rate to derive from, so the rate error is a
+consequence, not a second problem.
+
+### Changed
+
+- An empty series now raises `ValueError("Time series data is empty: a
+  spectrum needs at least one sample.")` from every spectral entry point.
+  Before, `compute_fft_power` raised `ValueError("Time series data is empty")`
+  and the other five raised `ZeroDivisionError`. Code catching `ValueError`
+  already caught the one; it now catches all six. Code matching the old
+  message as a prefix still matches.
+- `relative_band_power` and `falff` on an empty series no longer emit a
+  `RuntimeWarning` before failing.
+- `plot_fft_power`'s docstring lists the empty series under `ValueError`
+  where it previously carried a `ZeroDivisionError` entry explaining the gap.
+
+### Decided — one sample is not rejected
+
+The issue asked whether a 1-sample series should be refused as well. It is
+not. Measured on `main` and unchanged here: `get_frequency_content` returns a
+single DC bin, `get_peak_freq` returns `0.0`, `relative_band_power` and `falff`
+raise on their own ground ("no spectral power outside the DC component"),
+`plot_fft_power` draws one point, and `compute_fft_power` raises its own
+"minimum 2 points". The door rejects the empty series because that is the
+division by zero; a threshold above zero would not buy a meaningful spectrum
+(two samples also yield only the DC bin, since the Nyquist bin is negative in
+`fftfreq`'s ordering and the positive-frequency mask drops it) and would turn
+three succeeding routes into failures for no gain in the answer. All six
+behaviours in the table above are pinned in `TestTheOneSampleDecision`, so
+that changing any of them is an edit to a stated rule. `compute_fft_power`'s
+minimum of two stays local to it and is now named in its `Raises` list, which
+had listed the empty case but not the minimum it enforces one line later.
+
+**Observed, not changed:** `get_peak_freq` on a series with no non-DC bin
+(one or two samples) returns `0.0` — the DC bin is the only candidate, so the
+default "exclude DC" floor falls back to including it. That is a confident
+number for a spectrum with no peak in it, the shape #28 was about, and it is
+a `get_peak_freq` decision rather than an emptiness one.
+
 ## [Unreleased] — the signal name keeps its case across a derivation (#56)
 
 ### Fixed — `zscale()` and `iloc[:5]` disagreed about the name of one series
