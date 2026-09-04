@@ -483,6 +483,14 @@ def validate_notch_params(data: ArrayLike,
 
         Parameters before the O(n) data scan, as in validate_band_params: a
         mistyped notch on gappy data names the notch, not the gaps.
+
+        Precedence among the parameters is the siblings': the cutoff range
+        is judged before the order, as `_validate_filter_args` judges it.
+        A cutoff in the newly refused margin combined with a bad order
+        therefore reports the cutoff where `main` reported the order - a
+        consequence of the tighter range, not of a reordering. Only the
+        data-container check moves behind the range check, and it is
+        unreachable from notch_filter, which `asarray`s first.
     """
     # The rate first, and through the shared door, so it is a normalised
     # float before it is divided.
@@ -492,6 +500,15 @@ def validate_notch_params(data: ArrayLike,
         raise InvalidParameterError(str(exc)) from exc
 
     nyquist = sampling_freq / 2.0
+
+    # The shared rate check admits any positive finite float, and halving the
+    # smallest of them (5e-324) underflows to exactly 0.0. The siblings only
+    # compare against it; this validator divides by it, so the division
+    # needs its own guard or a bare ZeroDivisionError escapes the contract.
+    if not (nyquist > 0):
+        raise InvalidParameterError(
+            f"Sampling frequency {sampling_freq!r} Hz is too small: its "
+            f"Nyquist frequency underflows to 0 Hz")
 
     # Coerced before it is divided, so the edges below and the ones butter
     # receives are computed from the same float.
@@ -513,8 +530,9 @@ def validate_notch_params(data: ArrayLike,
             f"Notch frequency must be more than {half_width_hz} Hz "
             f"({NOTCH_HALF_WIDTH:.0%} of Nyquist) from both 0 Hz and the "
             f"Nyquist frequency ({nyquist} Hz), because the stopped band is "
-            f"the notch frequency +/- {half_width_hz} Hz; got "
-            f"cutoff_hz={cutoff_hz!r}")
+            f"the notch frequency +/- {half_width_hz} Hz: "
+            f"{half_width_hz} < cutoff_hz < {nyquist - half_width_hz} Hz; "
+            f"got cutoff_hz={cutoff_hz!r}")
 
     # The data type, the order, and the rate again through the same door.
     # Its cutoff range check cannot fire: the notch check above is strictly

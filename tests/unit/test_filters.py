@@ -1053,6 +1053,32 @@ class TestTheNotchBandIsValidated:
             with pytest.raises(InvalidParameterError, match="Notch frequency"):
                 call()
 
+    def test_the_message_quotes_the_accepted_range(self):
+        """The limits a retry has to meet, in Hz, both of them. Review found
+        the first cut named the half-width and Nyquist and left the caller to
+        subtract; the docs claimed otherwise."""
+        with pytest.raises(InvalidParameterError, match=r"0\.05 < cutoff_hz < 4\.95"):
+            notch_filter(self._data(), 4.99, self.FS)
+
+    def test_the_cutoff_is_judged_before_the_order_as_on_main(self):
+        """Precedence is the siblings': the cutoff range before the order. A
+        cutoff in the newly refused margin combined with a bad order therefore
+        reports the cutoff, where `main` reported the order - not because the
+        order moved, but because `main` accepted 4.99. Pinned on a cutoff both
+        refuse, where `main` reports its cutoff message too."""
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), 5.0, self.FS, order=True)
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), 4.99, self.FS, order=True)
+
+    def test_a_rate_whose_nyquist_underflows_is_refused_by_name(self):
+        """5e-324 is the smallest positive float; it passes the shared rate
+        check (positive, finite) and its Nyquist is exactly 0.0. The first cut
+        divided by it and raised a bare ZeroDivisionError - a regression
+        against `main`, which only compared (review round 1)."""
+        with pytest.raises(InvalidParameterError, match="Nyquist frequency underflows"):
+            notch_filter(self._data(), 1.0, 5e-324)
+
     def test_the_order_and_the_data_type_are_still_checked(self):
         """The notch check sits in front of the delegated single-cutoff check,
         which is what still validates the order and the data type. A mutant

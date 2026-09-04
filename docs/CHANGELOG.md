@@ -92,6 +92,16 @@ every accepted call returns the same array, ten rejections change, all to
 the new message. Parameters are checked before the O(n) data scan, so a
 bad notch on gappy data names the notch, not the gaps (#48 ordering).
 
+Precedence among the parameters is unchanged: the cutoff range is judged
+before the order, as it is for the siblings. One visible consequence,
+raised by review: `notch_filter(d, 4.99, 10.0, order=True)` reports the
+notch on this branch and reported the order on `main` — because `main`
+accepted 4.99, not because the order moved; `(5.0, order=True)` reports
+the cutoff on both. Review also caught a regression in the first cut: the
+shared rate check admits any positive finite float, and halving 5e-324
+underflows to exactly 0.0, which the new division turned into a bare
+`ZeroDivisionError` where `main` only compared. Refused by name now.
+
 ### Changed
 
 - `notch_filter(data, cutoff_hz, fs_hz)`, `ts.notch_at(cutoff_hz)` and
@@ -104,7 +114,12 @@ bad notch on gappy data names the notch, not the gaps (#48 ordering).
 - A notch cutoff of zero, negative, NaN, Inf, or at or above Nyquist now
   raises the notch message rather than the generic `Cutoff frequency must
   be positive and less than Nyquist frequency ...`. Same exception type;
-  the wording a caller matched on has changed.
+  the wording a caller matched on has changed. The message names the
+  half-width, Nyquist and the accepted range, all in Hz.
+- `notch_filter` with a sampling rate of `5e-324` Hz, the smallest positive
+  float and the only one whose Nyquist underflows to zero, raises `InvalidParameterError(... Nyquist frequency
+  underflows to 0 Hz)`; on `main` the same call raised the generic cutoff
+  message. No realistic rate reaches this.
 - New `filters.validate_notch_params(data, sampling_freq, cutoff_hz,
   order)` returning `(sampling_freq, low, high, order)` with the edges in
   normalised units, and `filters.NOTCH_HALF_WIDTH = 0.01`.
