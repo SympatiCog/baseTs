@@ -1431,20 +1431,27 @@ class baseTs(TimeSeriesData):
     def interpolate_missing(self, inplace: bool = False) -> "baseTs":
         """
         Interpolate missing values in the data.
+
+        Linear interpolation across every NaN, with any leading or trailing
+        gap filled from the nearest valid sample. The index is unchanged.
+
+        Args:
+            inplace: If True, modifies existing object. Otherwise returns a new object.
+
+        Returns:
+            Processed baseTs object
         """
-        def interp_func(data):
-            return interpolate_missing_values(self, inplace=inplace)
-            
-        def process_result(result):
-            if inplace:
-                self.data = result.data
-                self.times = result.times
-                return self
-            else:
-                return result
-                
-        result = interp_func(self.data)
-        processed = process_result(result)
+        # `interpolate_missing_values(inplace=True)` mutates its argument and
+        # returns None, the pandas convention. This method used to forward
+        # `inplace` and then read `.data` off the return value, so the
+        # inplace branch raised on every call from the day it was written
+        # (#64). The helper's contract is kept; the branch that knows the
+        # answer is None does not ask for it.
+        if inplace:
+            interpolate_missing_values(self, inplace=True)
+            processed = self
+        else:
+            processed = interpolate_missing_values(self, inplace=False)
         processed._update_history_and_process(
             hist_msg="Interpolated missing values in timeseries",
             last_process="_interp"
