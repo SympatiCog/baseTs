@@ -101,9 +101,9 @@ survived that case — so the explicit normaliser is there for
 ### Changed
 
 - A mixed-case or lower-case `signal_name` assigned after construction now
-  survives `zscale()`, `detrend()`, `rolling_mean()` and every other
-  `_create_new_with_data` caller, arithmetic (`ts + 1`, `1 + ts`, `ts * ts`),
-  and `to_basetseries()`. Before, each returned it upper-cased. A name that
+  survives `zscale()`, `detrend()`, `rolling_mean()` and every other method
+  that routes through `_create_new_with_data`, arithmetic (`ts + 1`,
+  `1 + ts`, `ts * ts`), and `to_basetseries()`. Before, each returned it upper-cased. A name that
   was already upper-case — which is every name that came from the constructor
   and was never reassigned — is unaffected on every path.
 
@@ -111,19 +111,28 @@ survived that case — so the explicit normaliser is there for
 
 - `baseTs(..., signal_name='Heart Rate')` still stores `'HEART RATE'`, as does
   `from_df`, which defaults the name to the column name through the same
-  door. Pinned.
+  door. Pinned — the constructor here, `from_df`'s column-name default in
+  `tests/unit/test_core.py` since before this change.
 - A `signal_name=` passed explicitly to `_create_new_with_data(**kwargs)` or
   to a conversion (`baseTs(ts, signal_name='Other')`) is a constructor
   argument, not an inheritance, and is upper-cased. Pinned.
-- The attribute setter is not a normalising door and is not made one:
-  `ts.signal_name = None` stores `None`, and it is the next derivation that
-  turns it into `""`.
+- The attribute setter is a plain attribute and is not made a normalising
+  door here: `ts.signal_name = None` stores `None`, and it is the next
+  derivation that turns it into `""` — now pinned on every derivation path,
+  not only the one whose normaliser this change moved.
 
 ### Observed, not changed
 
 - `plotting.lag_plot` calls `.upper()` on the name itself when it builds a
   title, so a lag plot is upper-cased where every other plot is not. That is
   in #61's neighbourhood and is left for it.
+- The free functions `utils.add_constant`, `utils.diff` and `utils.dediff`,
+  and `LowessOutlierFilter.filter` called directly, build their result from
+  bare arrays and return it with an empty name — not re-cased, dropped.
+  Review round 2 (codex) reproduced it on this branch; it is pre-existing
+  and is #66's, where the `LowessOutlierFilter.filter` site is now noted.
+  The public methods `dediff_ts()` and `filter_outliers()` start from a copy
+  and only borrow the arrays, so the loss does not reach them.
 
 ## [Unreleased] — the lag that is applied is the lag that is reported (#51, #52, #53, #54)
 

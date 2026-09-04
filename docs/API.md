@@ -141,12 +141,13 @@ def signal_name(self) -> Optional[str]:
     """Signal name identifier."""
 ```
 
-The constructor upper-cases the name it is given, so
+The constructor upper-cases the `signal_name` keyword it is given, so
 `baseTs(..., signal_name="Heart Rate").signal_name` is `"HEART RATE"`. A name
 assigned afterwards is stored as written, and every object derived from the
 series — a slice, a copy, a processing method, an arithmetic result, a
-conversion — carries the parent's name unchanged. The two rules never meet:
-the constructor normalises its own argument; a derivation copies.
+conversion such as `baseTs(ts)` — carries the source's name as it was, with
+one coercion: a `None` name arrives as `""`, as it does on every copying
+path. The keyword is normalised; an inherited name is copied.
 
 #### `freq`
 ```python
