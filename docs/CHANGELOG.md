@@ -130,7 +130,7 @@ The alternative the issue offered - treating Inf as a gap inside
 `validate_finite_data` sorted an object array by whether
 `np.asarray(arr, dtype=float)` succeeded: a parser-leniency probe, #43's
 lesson previously applied to the complex branch only. It is now element
-inspection. Every element a `numbers.Real` (bool included) or a pandas
+inspection. Every element a `numbers.Real` (bool and `np.bool_` included) or a pandas
 missing marker (`None`, `pd.NA`, read as NaN) gives float64;
 `numbers.Complex` with at least one non-real gives complex128, or the
 complex message unless `allow_complex`; anything else - text, `Decimal`

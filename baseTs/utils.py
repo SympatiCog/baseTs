@@ -167,11 +167,14 @@ def _object_target_dtype(arr: Any) -> Optional[type]:
     element a numbers.Real or a missing marker gives float; numbers.Complex
     with at least one non-real gives complex; anything else - text, Decimal
     (a Number but deliberately not a Real), dicts - is not numeric, and
-    None says so.
+    None says so. np.bool_ is named alongside numbers.Real because numpy
+    registers it under no numbers ABC at all, while a Python bool is a
+    Real through int and a bool-dtype *array* is accepted outright: same
+    value class, same answer (review).
     """
     complex_seen = False
     for x in arr.flat:
-        if _is_missing(x) or isinstance(x, numbers.Real):
+        if _is_missing(x) or isinstance(x, (numbers.Real, np.bool_)):
             continue
         if isinstance(x, numbers.Complex):
             complex_seen = True

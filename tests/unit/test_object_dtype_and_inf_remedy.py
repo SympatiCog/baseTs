@@ -68,6 +68,19 @@ class TestCoerceNumericData:
         assert out.dtype == np.float64
         np.testing.assert_array_equal(out, [1.0, 2.0, 3.5, 1.0])
 
+    def test_numpy_bools_count_as_reals_like_python_bools(self):
+        """A bool-dtype array is accepted outright, and a Python bool is a
+        numbers.Real through int; np.bool_ is registered under no numbers
+        ABC at all, so the element rule alone called an object array of
+        them "not numeric" (review, second harness). Same value class,
+        same answer."""
+        from baseTs.utils import coerce_numeric_data
+
+        out = coerce_numeric_data(_as_object([np.bool_(True), np.bool_(False), 2.5]))
+
+        assert out.dtype == np.float64
+        np.testing.assert_array_equal(out, [1.0, 0.0, 2.5])
+
     def test_pandas_missing_markers_count_as_gaps(self):
         """`None` and `pd.NA` are how pandas spells a hole in an object
         column, so they become NaN rather than making the column "not
