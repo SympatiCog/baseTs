@@ -447,6 +447,15 @@ class TestAnUnknownUnitIsRefused:
         with pytest.raises(ValidationError, match="'second'"):
             get_lags(5, "second", 100.0)
 
+    def test_an_array_unit_is_refused_not_compared_elementwise(self):
+        """The str check before the membership test is load-bearing:
+        `array(['seconds', 'index']) in ('seconds', 'index')` compares
+        elementwise and then asks `bool()` of a two-element array, which is
+        a bare ValueError about ambiguous truth - naming numpy, not the
+        unit. The check is what turns that into a diagnosis."""
+        with pytest.raises(ValidationError, match="'seconds' or 'index'"):
+            get_lags(5, np.array(["seconds", "index"]), 100.0)
+
     def test_the_two_documented_units_still_work(self):
         assert get_lags(5, "seconds", 100.0) == (5.0, 500)
         assert get_lags(5, "index", 100.0) == (pytest.approx(0.05), 5)
