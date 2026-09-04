@@ -214,19 +214,37 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
 
 ## Signal Processing
 
+**Preconditions shared by the Butterworth filters** (`lowpass_filter`, `highpass_filter`,
+`bandpass_filter`, `notch_filter` and their `_at` forms):
+
+- **The data must be gap-free.** These run `scipy.signal.filtfilt`, whose bidirectional pass
+  propagates a single NaN across the *entire* output, so four bad samples used to come back as an
+  all-NaN series with no warning. Since #48 they raise `InvalidParameterError` instead. Fill gaps
+  first with `interpolate_gaps()`. Note that `filter_outliers()` deliberately leaves pre-existing
+  gaps as NaN, so a `filter_outliers()` → `lowpass_filter()` chain needs an `interpolate_gaps()`
+  between them. Complex data is accepted: the real and imaginary parts are filtered independently.
+- `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
+  they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
+  deliberate and pinned by a test.
+- Cutoffs must be positive and below Nyquist. For the three single-cutoff filters, `order` must be
+  a positive integer (`True`, `4.0` and `'4'` are rejected); `bandpass_filter`'s `order` argument is
+  accepted and unused, as its own entry says. Parameter and data rejections raise
+  `InvalidParameterError`, which is also a `ValueError`.
+
 ### `lowpass_filter(cutoff, order=4)`
 
-Apply low-pass Butterworth filter.
+Apply low-pass Butterworth filter. Alias for `lowpass_at()`.
 
 **Parameters:**
-- `cutoff` (float): Normalized cutoff frequency (0 < cutoff < 1)
+- `cutoff` (float): Cutoff frequency in Hz (0 < cutoff < Nyquist)
 - `order` (int, optional): Filter order. Default: 4
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
 
 **Raises:**
-- `ValueError`: If cutoff is not between 0 and 1
+- `InvalidParameterError`: If the cutoff is not between 0 and Nyquist, the order is not a positive
+  integer, or the data contains NaN or Inf
 
 **Example:**
 ```python

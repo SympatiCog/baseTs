@@ -54,6 +54,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the Butterworth filters reject non-finite data (#48)
+
+### Fixed — four NaN samples in, six hundred NaN out, silently
+
+`bandpass_filter`, `lowpass_filter`, `highpass_filter` and `notch_filter` all
+run `scipy.signal.filtfilt`, whose bidirectional pass propagates any NaN
+across the entire output. A 4-sample dropout in a 600-sample series came back
+as 600 NaNs, with no exception and no `RuntimeWarning`.
+
+#28 fixed exactly this failure for the spectral family by placing
+`utils.validate_finite_data` at the production site. The filter family never
+got it, so since #36 — which made `filter_outliers` leave acquisition gaps as
+NaN — one ordinary pipeline got two opposite answers for the same series:
+
+```python
+cleaned = baseTs(data, t).filter_outliers()   # 4 NaN preserved, by design (#36)
+cleaned.get_peak_freq()                        # ValueError, guarded by #28
+cleaned.bandpass_at(hp_hz=0.1, lp_hz=5.0)      # returned all-NaN, silently
+```
+
+`validate_filter_params` — which all four already delegate to, `bandpass_filter`
+through `validate_band_params` — now calls the same shared guard, after the
+parameter checks and translated to `InvalidParameterError` the way the rate
+check is. One guard rather than four local copies, because local copies are
+what let the spectral checks drift apart before #28. The data is checked
+last so a mistyped cutoff is reported before the O(n) scan, and the
+translation site is pinned against double-wrapping like the existing one.
+Review caught that rule inverted for `bandpass_filter`: `validate_band_params`
+checks its lower edge and the ordering *after* delegating, so with the scan
+inside the delegated call a mistyped `hp_hz` on gappy data reported the gaps.
+The single-cutoff validator is now split into a parameter half and the data
+guard, and the band validator composes them with its own checks in between.
+A test per combination pins it.
+
+**Complex data is still accepted.** Reusing the guard verbatim would have
+rejected complex input with #43's message about one-sided spectra, which is
+wrong for a filter: `filtfilt` filters the real and imaginary parts
+independently and correctly. `validate_finite_data` gained an
+`allow_complex` keyword, default `False`, so the spectral family's #43
+behaviour is untouched and the filters get only the NaN rule they share. A
+complex value with a NaN in either part is still rejected. Review caught the
+first cut consulting the keyword at the dtype check only, so complex numbers
+hiding in an object array were still told to discard their imaginary part;
+the object branch now casts to complex when allowed — with the cast
+guarded, since `numbers.Complex` is a registrable ABC and a registered
+impostor with no working `__complex__` escaped the first cut as a bare
+`TypeError` from every filter. (Object-dtype arrays
+still cannot be *filtered*, because `scipy.signal.filtfilt` refuses them
+with a bare `NotImplementedError` — identical on `main`, and filed
+separately.)
+
+**`sg_filter` and `gauss_filter` are deliberately left alone.** Both are
+windowed convolutions, not bidirectional IIR passes: a 4-sample gap comes out
+as 14 and 20 NaN respectively, local to where it was. That is degraded output
+rather than a confident wrong answer, and it matches how `filter_outliers`
+treats gaps it did not create. The asymmetry is documented in `API.md` and
+pinned by a test, so it stays a decision rather than an accident of which
+functions route through the validator.
+
+**Breaking, in the same way #28 was.** Any pipeline feeding gappy data into
+one of the four filters used to get NaN out and now gets
+`InvalidParameterError` naming `interpolate_gaps()`. The remedy is tested end
+to end — `filter_outliers() → interpolate_gaps() → lowpass_at()` returns 600
+finite samples — following #28's precedent, whose own first attempt
+recommended a remedy that reproduced the bug it reported. All nine `baseTs`
+entry points (the four `_at` methods, their four aliases, and `butterpass_at`)
+are asserted to agree. No shipped doc pipeline was affected: the one that
+feeds `filter_outliers` into a filter already interpolated first for #28's
+sake, and the README pipeline has spikes but no gaps.
+
+## [Unreleased] — the single-cutoff filters compute with the value they validated (#49)
+
+### Fixed — `lowpass_filter`, `highpass_filter` and `notch_filter` divided the caller's original cutoff
+
+`validate_filter_params` range-checked `cutoff_freq` and threw the checked
+object away, returning only the normalised rate. Each of the three filters
+then divided its own argument:
+
+```python
+fs = validate_filter_params(data, fs, cutoff, order)
+normal_cutoff = cutoff / nyq          # the caller's object, not the checked value
+```
+
+So the value that passed validation was not necessarily the value that got
+filtered. `Decimal('0.5')` — a type `validate_sampling_freq` deliberately
+accepts as a *rate* — raised a bare `TypeError` as a *cutoff*, outside the
+`InvalidParameterError` each docstring promises. The sharper case is any
+`numbers.Real` virtual subclass whose `__truediv__` disagrees with its
+`__float__`: it passed every range check and then built a filter for a band
+nobody asked for. This is the hole #30 closed for `bandpass_filter`, in the
+three siblings #30 left untouched and named.
+
+`validate_filter_params` now coerces the cutoff through the same
+`_as_real_float` door the band edges use, range-checks the float, and returns
+`(sampling_freq, cutoff_freq, order)`. All three filters compute with what
+comes back; `validate_band_params` consumes the coerced upper edge the same
+way. The tests reuse #30's adversarial Reals — one with no `__truediv__`, one
+whose division lies — and assert the lying one filters bit-identically to an
+honest `1.0`.
+
+### Fixed — `order` was checked with `order <= 0` and nothing else
+
+`order=True` passed and silently built an order-1 filter. `order='4'` died in
+the comparison with a bare `TypeError`. `order=3.5` passed and was left to
+scipy. `order` is now required to be a non-bool `numbers.Integral` of at least
+1, coerced to `int`, and reported as `InvalidParameterError` otherwise. numpy
+integers are accepted. An integral-valued float such as `4.0` is rejected
+rather than truncated: an order is a count of poles, and admitting `4.0` would
+mean a second rule for `4.5`.
+
+**Breaking, in three places.** `validate_filter_params` is a public function and
+its return changed from a float to a 3-tuple; any direct caller must unpack.
+The four `order` inputs above that used to pass now raise. And a 0-d numpy
+array cutoff (`np.array(0.5)`), which used to filter, is now rejected as not
+a real number — the same rule the band edges have followed since #30, whose
+`_require_real` docstring explains why arrays are refused rather than probed
+with `float()`. The *rate* still accepts a 0-d array through
+`validate_sampling_freq`; the two doors disagree on that one type, and this
+entry records it rather than hides it. A `float` cutoff and an `int` order —
+what every caller in the package, the tests and the docs pass — are
+unaffected: `float(x)` and `int(x)` are the identity there, and the whole
+existing suite ran unchanged.
+
 ## [Unreleased] — `relative_band_power` defaults to the fALFF band (#46)
 
 ### Added — `low_freq=0.01, high_freq=0.1` on `relative_band_power`

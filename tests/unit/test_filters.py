@@ -12,7 +12,11 @@ from baseTs import baseTs
 from baseTs.filters import (
     InvalidParameterError,
     bandpass_filter,
+    highpass_filter,
+    lowpass_filter,
+    notch_filter,
     validate_band_params,
+    validate_filter_params,
 )
 
 
@@ -652,3 +656,212 @@ class TestEveryBandpassEntryPointRejectsABadLowerEdge:
         """Reachable at all only since #27, which was dead before it."""
         with pytest.raises(InvalidParameterError, match="Band edge hp_hz"):
             self._ts().butterpass_at(-1.0, 0.4)
+
+
+class TestTheSingleCutoffFiltersUseTheValidatedValue:
+    """#30 closed the validate-one-compute-with-another hole for bandpass_filter
+    alone. lowpass_filter, highpass_filter and notch_filter kept dividing the
+    caller's original cutoff object after validate_filter_params had
+    range-checked it and thrown the checked value away (#49).
+
+    The helpers are the ones #30's tests built: a Real with no __truediv__,
+    and one whose __truediv__ disagrees with its __float__.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    FILTERS = [
+        ("lowpass_filter", lambda d, c, fs: lowpass_filter(d, c, fs)),
+        ("highpass_filter", lambda d, c, fs: highpass_filter(d, c, fs)),
+        ("notch_filter", lambda d, c, fs: notch_filter(d, c, fs)),
+    ]
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_a_cutoff_with_no_truediv_is_still_filtered(self, name, run):
+        out = run(self._data(), _DeclaresOneHz(), self.FS)
+
+        assert np.all(np.isfinite(out))
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_a_lying_truediv_cannot_change_the_cutoff(self, name, run):
+        lying = run(self._data(), _LiesAboutDivision(), self.FS)
+        honest = run(self._data(), 1.0, self.FS)
+
+        np.testing.assert_array_equal(lying, honest)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_an_exact_type_filters_as_its_float(self, name, run):
+        from decimal import Decimal
+
+        expected = run(self._data(), 0.5, self.FS)
+
+        for cutoff in (Fraction(1, 2), Decimal("0.5")):
+            np.testing.assert_array_equal(run(self._data(), cutoff, self.FS), expected)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_an_unconvertible_cutoff_is_an_invalid_parameter(self, name, run):
+        with pytest.raises(InvalidParameterError, match="Cutoff frequency"):
+            run(self._data(), _UnconvertibleReal(), self.FS)
+
+    def test_the_validator_returns_what_it_checked(self):
+        """Callers can only compute with the checked values if they get them."""
+        from decimal import Decimal
+
+        fs, cutoff, order = validate_filter_params(
+            self._data(), Decimal("10"), Decimal("0.5"), np.int64(4))
+
+        assert (fs, cutoff, order) == (10.0, 0.5, 4)
+        assert type(fs) is float and type(cutoff) is float and type(order) is int
+
+
+class TestFilterOrderIsValidated:
+    """`order <= 0` was the whole check. `True` passed it and built an order-1
+    filter; `'4'` died in the comparison with a bare TypeError; `3.5` passed
+    and was left to scipy (#49). bandpass_filter is immune only because it
+    hardcodes 3.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @pytest.mark.parametrize("bad", [True, "4", 3.5, 0, -1, np.nan, 4.0],
+                             ids=["bool", "str", "fractional", "zero", "negative",
+                                  "nan", "integral float"])
+    def test_a_non_positive_integer_order_is_rejected(self, bad):
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            lowpass_filter(self._data(), 0.5, self.FS, order=bad)
+
+    def test_a_numpy_integer_order_is_accepted(self):
+        out = lowpass_filter(self._data(), 0.5, self.FS, order=np.int64(4))
+
+        np.testing.assert_array_equal(
+            out, lowpass_filter(self._data(), 0.5, self.FS, order=4))
+
+    def test_the_band_validator_rejects_a_bad_order_too(self):
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            validate_band_params(self._data(), self.FS, 0.1, 0.4, order=True)
+
+
+class TestFiltfiltFiltersRejectNonFiniteData:
+    """Four NaN samples in, six hundred NaN out, silently (#48).
+
+    filtfilt's bidirectional pass propagates any NaN across the whole output.
+    #28 put `utils.validate_finite_data` at the spectral family's production
+    site for exactly this failure; the filter family never got it, so
+    `filter_outliers() -> get_peak_freq()` raised while
+    `filter_outliers() -> bandpass_at()` returned 600 NaNs and said nothing.
+    """
+
+    FS = 30.0
+
+    @classmethod
+    def _gappy(cls):
+        d = np.sin(2 * np.pi * 0.5 * np.arange(600) / cls.FS)
+        d[300:304] = np.nan
+        return d
+
+    FILTERS = [
+        ("bandpass_filter", lambda d, fs: bandpass_filter(d, hp_hz=0.1, lp_hz=5.0, sample_Hz=fs)),
+        ("lowpass_filter", lambda d, fs: lowpass_filter(d, 5.0, fs)),
+        ("highpass_filter", lambda d, fs: highpass_filter(d, 0.1, fs)),
+        ("notch_filter", lambda d, fs: notch_filter(d, 5.0, fs)),
+    ]
+    IDS = [f[0] for f in FILTERS]
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)
+    def test_a_single_interior_nan_is_rejected_with_the_remedy(self, name, run):
+        with pytest.raises(InvalidParameterError, match="interpolate_gaps"):
+            run(self._gappy(), self.FS)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)
+    def test_an_inf_is_rejected_the_same_way(self, name, run):
+        d = self._gappy()
+        d[300:304] = np.inf
+        with pytest.raises(InvalidParameterError, match="NaN or Inf"):
+            run(d, self.FS)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)
+    def test_complex_data_still_filters(self, name, run):
+        """filtfilt handles complex input correctly - it filters the real and
+        imaginary parts independently - so the #43 complex rejection, which is
+        about one-sided spectra, does not apply here."""
+        d = np.exp(2j * np.pi * 0.5 * np.arange(600) / self.FS)
+
+        out = run(d, self.FS)
+
+        assert out.dtype.kind == "c"
+        assert np.all(np.isfinite(out))
+
+    def test_a_bad_parameter_is_reported_before_the_data_is_scanned(self):
+        """A bad call is a bug in the call; bad data is a property of the
+        input. The cheap check comes first, so the caller fixes the call
+        before being told about the gaps."""
+        with pytest.raises(InvalidParameterError, match="Cutoff frequency"):
+            lowpass_filter(self._gappy(), 20.0, self.FS)
+
+    @pytest.mark.parametrize("band, message", [
+        (dict(hp_hz=-1.0, lp_hz=5.0), "Band edge hp_hz"),
+        (dict(hp_hz=5.0, lp_hz=1.0), "out of order"),
+        (dict(hp_hz=0.1, lp_hz=20.0), "Cutoff frequency"),
+    ], ids=["bad hp_hz", "out of order", "bad lp_hz"])
+    def test_the_band_validator_also_reports_parameters_before_data(self, band, message):
+        """validate_band_params checks hp_hz and the ordering *after* the
+        delegated single-cutoff call, which in the first cut ended with the
+        O(n) data scan - so a mistyped lower edge on gappy data reported the
+        gaps, inverting the rule the line above states (review)."""
+        with pytest.raises(InvalidParameterError, match=message):
+            bandpass_filter(self._gappy(), sample_Hz=self.FS, **band)
+
+    def test_the_remedy_works_end_to_end(self):
+        """Executed, not just named: #28's first attempt recommended a remedy
+        that reproduced the bug it reported."""
+        t = np.arange(600) / self.FS
+        ts = baseTs(self._gappy(), t)
+        cleaned = ts.filter_outliers()               # keeps the 4 NaN (#36)
+
+        with pytest.raises(InvalidParameterError, match="interpolate_gaps"):
+            cleaned.lowpass_at(5.0)
+
+        out = cleaned.interpolate_gaps().lowpass_at(5.0)
+
+        assert np.all(np.isfinite(out.values))
+        assert len(out) == 600
+
+    @pytest.mark.parametrize("call", [
+        lambda ts: ts.lowpass_at(5.0),
+        lambda ts: ts.lowpass_filter(5.0),
+        lambda ts: ts.highpass_at(0.1),
+        lambda ts: ts.highpass_filter(0.1),
+        lambda ts: ts.notch_at(5.0),
+        lambda ts: ts.notch_filter(5.0),
+        lambda ts: ts.bandpass_at(0.1, 5.0),
+        lambda ts: ts.bandpass_filter(0.1, 5.0),
+        lambda ts: ts.butterpass_at(0.1, 5.0),
+    ], ids=["lowpass_at", "lowpass_filter", "highpass_at", "highpass_filter",
+            "notch_at", "notch_filter", "bandpass_at", "bandpass_filter",
+            "butterpass_at"])
+    def test_every_baseTs_entry_point_agrees(self, call):
+        ts = baseTs(self._gappy(), np.arange(600) / self.FS)
+        with pytest.raises(InvalidParameterError, match="interpolate_gaps"):
+            call(ts)
+
+    def test_the_windowed_filters_keep_their_local_damage(self):
+        """sg_filter and gauss_filter are convolutions, not bidirectional IIR
+        passes: a gap stays a gap, only wider. That is degraded output rather
+        than a confident wrong answer, and it matches how filter_outliers
+        treats gaps it did not create (#36), so they are left alone - a
+        decision, recorded here, rather than an accident of which functions
+        route through validate_filter_params."""
+        ts = baseTs(self._gappy(), np.arange(600) / self.FS)
+
+        for out in (ts.sg_filter().values, ts.gauss_filter(sigma=2).values):
+            bad = np.isnan(out)
+            assert 4 <= bad.sum() < 60           # wider than the gap, not the series
+            assert not bad[:250].any() and not bad[350:].any()

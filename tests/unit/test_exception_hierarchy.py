@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from baseTs import baseTs
-from baseTs.filters import FilterError, InvalidParameterError, bandpass_filter
+from baseTs.filters import FilterError, InvalidParameterError, bandpass_filter, lowpass_filter
 from baseTs.utils import (TimeSeriesError, ValidationError, shift_timeseries,
                           time_to_idx)
 
@@ -102,7 +102,34 @@ class TestNoFallbackPathStartsSwallowingADomainError:
                             hp_hz=0.1, lp_hz=0.4, sample_Hz=np.nan)
 
         assert "Invalid sampling frequency" in str(excinfo.value)
-        assert str(excinfo.value).count("Invalid sampling frequency") == 1
+        # The message count alone cannot see a double wrap: re-wrapping an
+        # InvalidParameterError in InvalidParameterError(str(exc)) leaves the
+        # text identical. The cause chain can - one bare ValueError, then
+        # nothing.
+        assert type(excinfo.value.__cause__) is ValueError
+        assert excinfo.value.__cause__.__cause__ is None
+
+    def test_the_single_cutoff_rate_translation_does_not_double_wrap(self):
+        """The same site inside validate_filter_params, reached by the three
+        single-cutoff filters rather than through validate_band_params."""
+        with pytest.raises(InvalidParameterError) as excinfo:
+            lowpass_filter(np.sin(np.arange(500) / 10.0), 0.5, np.nan)
+
+        assert "Invalid sampling frequency" in str(excinfo.value)
+        assert type(excinfo.value.__cause__) is ValueError
+        assert excinfo.value.__cause__.__cause__ is None
+
+    def test_the_filter_data_translation_does_not_double_wrap(self):
+        """#48 added a translation site of the same shape, around
+        validate_finite_data. Same tightness, same pin."""
+        data = np.sin(np.arange(500) / 10.0)
+        data[100] = np.nan
+        with pytest.raises(InvalidParameterError) as excinfo:
+            bandpass_filter(data, hp_hz=0.1, lp_hz=0.4, sample_Hz=10.0)
+
+        assert "NaN or Inf" in str(excinfo.value)
+        assert type(excinfo.value.__cause__) is ValueError
+        assert excinfo.value.__cause__.__cause__ is None
 
     def test_a_degenerate_index_still_derives_rather_than_raising(self):
         """`_calculate_effective_frequency` catches (TypeError, ValueError) to

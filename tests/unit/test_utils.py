@@ -539,6 +539,57 @@ def test_validate_finite_data_rejects_complex_by_dtype(value):
     assert ".real" in str(info.value)
 
 
+def test_validate_finite_data_can_be_told_complex_is_fine():
+    """The filter family needs the NaN rule without the spectral complex rule
+    (#48): filtfilt handles complex input correctly, so the one-sided-spectrum
+    reasoning behind #43 does not apply there. One guard, one keyword, and
+    the default is unchanged so the spectral family keeps #43 untouched."""
+    from baseTs.utils import validate_finite_data
+
+    validate_finite_data(np.array([1 + 2j, 3 + 4j]), allow_complex=True)
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(np.nan, 0)]), allow_complex=True)
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(0, np.inf)]), allow_complex=True)
+    with pytest.raises(ValueError, match="complex"):
+        validate_finite_data(np.array([1 + 2j, 3 + 4j]))
+
+
+def test_allow_complex_reaches_complex_hiding_in_object_arrays():
+    """The first cut consulted allow_complex at the dtype check only, so an
+    object array of complex numbers fell through to the float cast and came
+    back with the #43 message telling a filter caller to discard their
+    imaginary part - the opposite of what the keyword promises (review)."""
+    from baseTs.utils import validate_finite_data
+
+    validate_finite_data(np.array([1 + 2j, 3 + 4j], dtype=object), allow_complex=True)
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(np.nan, 0)], dtype=object),
+                             allow_complex=True)
+    # Not a blanket relaxation: text that merely looks complex is still not numeric.
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array(["1+2j", "3+4j"], dtype=object), allow_complex=True)
+
+
+def test_allow_complex_cast_failure_is_still_a_valueerror():
+    """numbers.Complex is a registrable ABC, so membership - which is all
+    _holds_complex_numbers checks - does not imply a working __complex__. The
+    first cut ran the complex cast bare, so a registered impostor escaped as a
+    TypeError from every filter, outside the contract (review round 2)."""
+    import numbers
+    from baseTs.utils import validate_finite_data
+
+    @numbers.Complex.register
+    class _RegisteredButUnconvertible:
+        pass
+
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array([_RegisteredButUnconvertible()] * 3, dtype=object),
+                             allow_complex=True)
+
+
 @pytest.mark.parametrize("text", [
     np.array(["1+2j", "3+4j"]),                 # fixed-width str, dtype <U4
     np.array(["1+2j", "3+4j"], dtype=object),   # the same, as object

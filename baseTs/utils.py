@@ -161,7 +161,7 @@ def _holds_complex_numbers(arr: Any) -> bool:
     )
 
 
-def validate_finite_data(data: Any) -> None:
+def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
     The companion to validate_sampling_freq: that one rejects a bad time base,
@@ -183,10 +183,17 @@ def validate_finite_data(data: Any) -> None:
 
     Args:
         data: The sample values to check, as any array-like
+        allow_complex: Accept complex dtypes, applying only the finiteness
+            rule to them. The default rejects complex, which is right for
+            every spectral consumer (#43). The filter family passes True
+            (#48): filtfilt handles complex input correctly, filtering the
+            real and imaginary parts independently, so the one-sided-spectrum
+            reasoning does not apply there and the NaN rule is the one it
+            shares.
 
     Raises:
-        ValueError: If the data contains NaN or Inf, is complex, or is not
-            numeric
+        ValueError: If the data contains NaN or Inf, is complex (unless
+            `allow_complex`), or is not numeric
     """
     arr = np.asarray(data)
 
@@ -248,13 +255,14 @@ def validate_finite_data(data: Any) -> None:
     # complex data to np.fft.fft and threw away the negative half - which,
     # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
     # for a 0.05 Hz probe with no warning at all.
-    if arr.dtype.kind == "c":
+    if arr.dtype.kind == "c" and not allow_complex:
         raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
 
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
-    # arrays.
-    if arr.dtype.kind != "f":
+    # arrays. A complex array only reaches here when allowed, and np.isfinite
+    # handles it directly: a value is finite when both parts are.
+    if arr.dtype.kind not in "fc":
         try:
             arr = np.asarray(arr, dtype=float)
         except (TypeError, ValueError) as exc:
@@ -267,12 +275,34 @@ def validate_finite_data(data: Any) -> None:
             # and deserves the complex message rather than "not numeric": the
             # caller has complex data, and the remedy is the one above.
             if _holds_complex_numbers(arr):
-                raise ValueError(_complex_data_message(
-                    f"dtype '{arr.dtype}' holding complex values")) from exc
-            raise ValueError(
-                f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
-                f"be interpreted as real numbers."
-            ) from exc
+                # The keyword has to reach this branch too. The first cut
+                # consulted it at the dtype check only, so complex hiding in
+                # an object array was told to discard its imaginary part -
+                # the opposite of what allow_complex promises.
+                #
+                # The helper has established every element is a number
+                # *object* - but numbers.Complex is a registrable ABC, so
+                # membership does not imply a working __complex__ any more
+                # than numbers.Real implied a working __float__ in filters.
+                # The cast is guarded like the float cast above for that
+                # reason; a registered impostor is "not numeric", not a crash.
+                if allow_complex:
+                    try:
+                        arr = np.asarray(arr, dtype=complex)
+                    except (TypeError, ValueError) as cast_exc:
+                        raise ValueError(
+                            f"Time series data is not numeric: dtype "
+                            f"'{arr.dtype}' cannot be interpreted as complex "
+                            f"numbers."
+                        ) from cast_exc
+                else:
+                    raise ValueError(_complex_data_message(
+                        f"dtype '{arr.dtype}' holding complex values")) from exc
+            else:
+                raise ValueError(
+                    f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
+                    f"be interpreted as real numbers."
+                ) from exc
 
     if not np.all(np.isfinite(arr)):
         raise ValueError(
