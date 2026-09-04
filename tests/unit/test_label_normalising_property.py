@@ -20,6 +20,7 @@ positional slots that would be laundering (#20); for a label it is exactly
 the normalisation wanted, and it is what lets a legacy pickle carrying `None`
 restore as `""`.
 """
+import copy
 import pickle
 
 import matplotlib
@@ -82,6 +83,17 @@ class TestAssignmentNormalisesInPlace:
         ts.last_process = None
         ts.plot()
 
+    @pytest.mark.parametrize("label", LABELS)
+    def test_del_returns_the_label_to_empty(self, label):
+        """One more door. A plain attribute could be deleted, after which
+        the next read raised; the property's deleter resets to ""."""
+        ts = _ts()
+        setattr(ts, label, "Heart Rate")
+        delattr(ts, label)
+        assert getattr(ts, label) == ""
+        delattr(ts, label)   # idempotent: nothing to remove is not an error
+        assert getattr(ts, label) == ""
+
     def test_the_attribute_setter_does_not_re_case(self):
         """#56's rule is untouched: the constructor upper-cases its own
         argument, and nothing else rewrites a name someone chose."""
@@ -127,6 +139,8 @@ class TestTheRegistryAndPropagation:
         pytest.param(lambda ts: ts + 1, id="arithmetic"),
         pytest.param(lambda ts: ts.zscale(), id="create_new_with_data"),
         pytest.param(lambda ts: ts.head(3), id="head"),
+        pytest.param(lambda ts: ts.dropna(), id="dropna"),
+        pytest.param(lambda ts: copy.deepcopy(ts), id="deepcopy"),
     ])
     def test_a_name_survives_derivation_through_the_property(self, derive):
         ts = _ts()

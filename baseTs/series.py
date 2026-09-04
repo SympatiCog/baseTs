@@ -138,13 +138,18 @@ def _label_property(public: str, private: str, what: str) -> property:
     normalisation wanted, and it is what turns a legacy pickle carrying
     `None` under the public name into `""` on restore.
 
-    The getter defaults to `""` rather than raising: pandas can build a
-    subclass instance without running `__init__` and finalize it later, and
-    `copy()` reads every `_metadata` name through `hasattr` first. It reads
-    `__dict__` directly rather than `getattr`, because a miss in `getattr`
-    falls through to NDFrame.__getattr__, which consults the block manager -
-    and on an instance that has none yet (a `__new__` without `__init__`)
-    that recursed instead of raising.
+    The getter defaults to `""` rather than raising, because pandas can
+    build a subclass instance without running `__init__` and finalize it
+    later; and this class's own `copy()` loop reads each `_metadata` name
+    through `hasattr` first, so a raising getter would silently skip the
+    label there. It reads `__dict__` directly rather than `getattr`, because
+    a miss in `getattr` falls through to NDFrame.__getattr__, which consults
+    the block manager - and on an instance that has none yet (a `__new__`
+    without `__init__`) that recursed instead of raising.
+
+    `del ts.signal_name` returns the label to `""` rather than removing it:
+    a plain attribute could be deleted and then raise on the next read,
+    which is one more way for the label to stop being a string.
     """
     def getter(self):
         return self.__dict__.get(private, "")
@@ -152,7 +157,11 @@ def _label_property(public: str, private: str, what: str) -> property:
     def setter(self, value):
         object.__setattr__(self, private, normalise_label(value))
 
-    return property(getter, setter, doc=f"{what} Always a string; see normalise_label.")
+    def deleter(self):
+        self.__dict__.pop(private, None)
+
+    return property(getter, setter, deleter,
+                    doc=f"{what} Always a string; see normalise_label.")
 
 
 def _positional_property(public: str, private: str, what: str) -> property:

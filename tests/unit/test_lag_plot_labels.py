@@ -88,7 +88,15 @@ def test_lag_plot_has_no_try_and_no_print():
     import textwrap
     from baseTs import plotting
     tree = ast.parse(textwrap.dedent(inspect.getsource(plotting.lag_plot)))
-    assert not [n for n in ast.walk(tree) if isinstance(n, ast.Try)]
-    calls = [n.func.id for n in ast.walk(tree)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
-    assert "print" not in calls
+    # ast.TryStar (`except*`) exists from Python 3.11 and is not an ast.Try.
+    try_nodes = (ast.Try, getattr(ast, "TryStar", ast.Try))
+    assert not [n for n in ast.walk(tree) if isinstance(n, try_nodes)]
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            assert func.id != "print"
+        elif isinstance(func, ast.Attribute):
+            # sys.stdout.write(...), builtins.print(...)
+            assert func.attr not in ("print", "write")

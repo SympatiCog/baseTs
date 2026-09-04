@@ -96,8 +96,8 @@ which consults the block manager and recursed on an instance built by
 
 Verified on a `pd.Series` subclass prototype before touching the class: the
 property survives `iloc`, `copy` (both depths), arithmetic, `head`, `dropna`,
-`deepcopy` and a pickle round trip on pandas 3.0.1; the branch suite covers
-the same on the real class.
+`deepcopy` and a pickle round trip on pandas 3.0.1; the branch suite pins
+each of those on the real class, plus `zscale()` for the hand-copy path.
 
 ### Changed
 
@@ -114,6 +114,11 @@ the same on the real class.
 - `lag_plot` no longer writes to stdout and never labels a plot `Signal`; an
   empty name yields an empty prefix (` Lag Plot at ...`), the same as every
   other plot.
+- `del ts.signal_name` / `del ts.last_process` return the label to `""`.
+  Before, they deleted a plain attribute and the next read raised
+  `AttributeError` out of pandas. A property with no deleter would have made
+  `del` itself raise, which is a wart rather than a rule; the deleter is the
+  "always a string" rule applied to one more door.
 
 ### Removed — three normalisers the setter made redundant
 
