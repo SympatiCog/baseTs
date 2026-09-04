@@ -1051,10 +1051,10 @@ def test_the_edge_hint_keys_on_nan_not_on_inf():
 
 
 def test_a_zero_dimensional_nan_still_raises_the_documented_valueerror():
-    """The hint inspects the first sample. `arr[0]` - the natural way to
-    write that - raises IndexError on a 0-d input; `arr.ravel()[0]` does not.
-    Pinned so the inspection cannot turn the documented ValueError into an
-    IndexError (a 0-d NaN is also all-NaN, so it gets that message)."""
+    """The hint inspects `arr[0]`, which raises IndexError on a 0-d input.
+    It never gets there: a 0-d NaN is all-NaN, and that branch raises first.
+    Pinned so reordering the branches cannot turn the documented ValueError
+    into an IndexError."""
     from baseTs.utils import validate_finite_data
 
     with pytest.raises(ValueError, match="NaN or Inf"):
@@ -1106,6 +1106,7 @@ def test_the_hint_names_the_methods_it_does_not_hold_for():
 
     with pytest.raises(ValueError) as exc:
         validate_finite_data(np.array([np.nan, 1.0, 2.0, 3.0]))
+    assert "with the default method" in str(exc.value)
     assert "'polynomial' never fills an edge" in str(exc.value)
     assert "'spline' extrapolates" in str(exc.value)
 

@@ -326,14 +326,15 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
         # Keyed on NaN, not on non-finite: interpolate_gaps() does not fill
         # Inf in any direction, so a limit_direction hint would be a second
         # remedy that does not run for an Inf caller. And only for 1-D input:
-        # "starts with" is a claim about a series, and ravel()[0] of a 2-D
-        # array is one corner of it. The hint's remedy is scoped to the
+        # "starts with" is a claim about a series, and [0] of a 2-D array is
+        # a row, not a sample (a 0-d NaN is all-NaN and never gets here, so
+        # arr[0] cannot raise). The hint's remedy is scoped to the
         # default method because it is false for the others - measured on
         # pandas 2.2 and 3.0, 'polynomial' fills no edge in any direction and
         # 'spline' extrapolates its fit over one - and a `limit` caps the
         # edge fill like any other (docstring, not message: it is the
         # caller's own constraint).
-        if arr.ndim <= 1 and np.isnan(arr.ravel()[0]):
+        if arr.ndim == 1 and np.isnan(arr[0]):
             message += (
                 " The series starts with a gap, which interpolate_gaps() "
                 "leaves in place by default (it fills forward from the first "
