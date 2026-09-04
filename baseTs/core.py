@@ -24,7 +24,7 @@ from dataclasses import replace
 from .utils import (find_closest_time, compute_fft_power, find_closest, get_peak_freq,
                     get_peaks, ClosestMatch, diff, dediff, relative_band_power, falff,
                     BandPowerResult, validate_sampling_freq,
-                    validate_finite_data, validate_non_empty)
+                    validate_finite_data, validate_non_empty, ValidationError)
 from .series import (TimeSeriesData, _detach_shared_metadata,
                      deepcopy_metadata_value, normalise_history,
                      _UNSET, _UnsetType,
@@ -422,17 +422,85 @@ class baseTs(TimeSeriesData):
         return self
 
     def _update_series_data(self, new_data: np.ndarray):
-        """Update Series data while preserving metadata and handling length changes."""
-        if len(new_data) == len(self.index):
-            # Same length, can preserve index
-            old_index = self.index
-        else:
-            # Different length, create new index with same time range
-            start_time = self.index[0] if len(self) > 0 else 0
-            end_time = self.index[-1] if len(self) > 0 else len(new_data)-1
-            old_index = np.linspace(start_time, end_time, len(new_data))
+        """Replace the values, keeping the index where the length allows.
 
-        self._adopt_data_inplace(new_data, old_index)
+        A same-length assignment keeps the index. A length-changing one
+        resamples over the existing span: the index becomes
+        `linspace(first, last, n)`, the grid `interpto_samples` builds. Every
+        length-changing method in the package assigns `data` first and
+        `times` second (the `times` setter alone rejects a length mismatch,
+        so that two-step is the only route), which makes this grid a
+        transient those methods overwrite; it is kept only by a caller who
+        changes the length and supplies no times.
+
+        Resampling needs a measurable span, and an index has none when it
+        is empty, holds one sample, has coinciding first and last
+        timestamps, or has a NaN at either end. Such an index cannot
+        *grow*: it used to (#65), and every added sample landed on a label
+        the index could not separate - on a single sample `first == last`,
+        so the object silently acquired a fully duplicated index and a
+        `freq` derived from a zero-duration grid; on an empty series it
+        minted `0, 1, ..., n-1`, a 1 Hz grid nobody asked for; with a NaN
+        endpoint, `linspace` invented NaN labels. Growth refuses now, before
+        anything is mutated. A no-span index can still *shrink*, keeping
+        the first n of the labels it already has - they are all the same
+        label, or the same NaN - so `diff_ts` on two samples at one
+        timestamp behaves as it always did. Shrinking to empty places
+        nothing and needs no span either.
+
+        The first cut of this fix keyed on sample count, and review found
+        in turn a two-sample index at one timestamp growing into the same
+        duplicated grid, a NaN endpoint passing an equality test, and a
+        shrink refused that `main` had handled. The rule is the span; the
+        count was its proxy.
+
+        A package method that *grows* the length takes the two-step route
+        (`data` then `times`) and must check the span itself first, in its
+        own words: this refusal describes an assignment and offers remedies
+        for one, which is wrong advice for a caller of `interpto_samples`.
+        That method checks; a new one has to. Methods that only shrink
+        (`diff_ts`, `remove_outliers`, `trimto_timepoints`, ...) never
+        reach the refusal.
+
+        Raises:
+            ValidationError: if the length grows on a series whose index
+                has no measurable span.
+        """
+        n_new = len(new_data)
+        n_old = len(self.index)
+        if n_old == 0:
+            no_span, why = True, "an empty series has no span to resample over"
+        elif pd.isna(self.index[0]) or pd.isna(self.index[-1]):
+            no_span, why = True, ("an endpoint of its index is not a number "
+                                  "(it holds a NaN), so its span is unmeasurable")
+        elif n_old == 1:
+            no_span, why = True, "a single sample has no span to resample over"
+        elif self.index[0] == self.index[-1]:
+            no_span, why = True, (f"its first and last timestamps coincide at "
+                                  f"{self.index[0]!r}, so it has no span to "
+                                  "resample over")
+        else:
+            no_span, why = False, ""
+
+        if n_new == n_old:
+            new_index = self.index
+        elif no_span and n_new > n_old:
+            raise ValidationError(
+                f"cannot place {n_new} samples on a series of {n_old}: a "
+                "length-changing `ts.data = ...` resamples the new values "
+                f"over the existing time span, and {why}. Build a new "
+                "object instead: `baseTs(new_data, times=...)` or "
+                "`baseTs(new_data, freq=...)`."
+            )
+        elif no_span or n_new == 0:
+            # A shrink of a no-span index keeps labels it already has; an
+            # empty result places nothing. Sliced rather than rebuilt so the
+            # index keeps its dtype (a DatetimeIndex used to fail in numpy).
+            new_index = self.index[:n_new]
+        else:
+            new_index = np.linspace(self.index[0], self.index[-1], n_new)
+
+        self._adopt_data_inplace(new_data, new_index)
 
     # _update_history_and_process is inherited from TimeSeriesData. The
     # override that used to sit here was byte-for-byte identical to it once
@@ -729,22 +797,11 @@ class baseTs(TimeSeriesData):
         """
         new_freq = validate_sampling_freq(new_freq)
 
-        # duration() is float(index[-1] - index[0]), which raises TypeError on
-        # a non-numeric index (a DatetimeIndex yields a Timedelta). Caught so
-        # this method keeps the ValueError contract its docstring promises
-        # rather than leaking a conversion error from two frames down.
-        try:
-            duration = self.duration()
-        except (TypeError, ValueError):
-            duration = np.nan
-        if not np.isfinite(duration) or duration <= 0:
-            raise ValueError(
-                f"Cannot interpolate to {new_freq} Hz: the source time base is "
-                f"degenerate (duration {duration}). A zero, negative or "
-                f"unmeasurable span has no rate to resample from, and stamping "
-                f"the requested rate on the empty result would report a healthy "
-                f"number for a series that has none."
-            )
+        duration = self._resampling_duration(
+            f"Cannot interpolate to {new_freq} Hz",
+            "has no rate to resample from, and stamping the requested rate "
+            "on the empty result would report a healthy number for a series "
+            "that has none.")
 
         # Rounded before flooring. The product lands just below the integer
         # for an exact-rate source - (np.arange(1000)/30.0) spans
@@ -796,6 +853,38 @@ class baseTs(TimeSeriesData):
         )
         return target
 
+    def _resampling_duration(self, what: str, consequence: str) -> float:
+        """The source span the two resamplers spread their grid across.
+
+        Shared by `interpto_hz` and `interpto_samples`, which both build
+        `linspace(first, last, n)` and both have nothing to build it over
+        when the span is zero, negative or unmeasurable. `interpto_hz` has
+        checked since #38; `interpto_samples` did not, and on a one-sample
+        source returned n copies of one value at n copies of one timestamp
+        - then, once the `data` setter refused a length change on such a
+        source (#65), failed there instead, with a message about an
+        assignment the caller never wrote (review round 1). One check, two
+        wordings: `what` names the request, `consequence` says why the
+        degenerate span defeats it.
+
+        `duration()` is `float(index[-1] - index[0])`, which raises
+        TypeError on a non-numeric index (a DatetimeIndex yields a
+        Timedelta). Caught so both methods keep the ValueError contract
+        their docstrings promise rather than leaking a conversion error
+        from two frames down.
+        """
+        try:
+            duration = self.duration()
+        except (TypeError, ValueError):
+            duration = np.nan
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError(
+                f"{what}: the source time base is degenerate (duration "
+                f"{duration}). A zero, negative or unmeasurable span "
+                f"{consequence}"
+            )
+        return duration
+
     def interpto_samples(self, new_len: int, kind: str = 'linear', inplace: bool = False) -> "baseTs":
         """
         Interpolate the times to a new length.
@@ -807,7 +896,17 @@ class baseTs(TimeSeriesData):
 
         Returns:
             baseTs: Interpolated data
+
+        Raises:
+            ValueError: if the source spans no positive, finite duration
+                (empty, a single sample, first and last timestamps
+                coinciding, reversed, or a non-numeric index) - there is
+                nothing to spread the new grid across, whatever `new_len`.
         """
+        self._resampling_duration(
+            f"Cannot interpolate to {new_len} samples",
+            "has nothing to spread the new grid across.")
+
         def interp_func(data):
             new_ts = np.linspace(self.times[0], self.times[-1], new_len)
             f1 = interpolate.interp1d(self.times, data, kind=kind)
