@@ -81,6 +81,12 @@ check is. One guard rather than four local copies, because local copies are
 what let the spectral checks drift apart before #28. The data is checked
 last so a mistyped cutoff is reported before the O(n) scan, and the
 translation site is pinned against double-wrapping like the existing one.
+Review caught that rule inverted for `bandpass_filter`: `validate_band_params`
+checks its lower edge and the ordering *after* delegating, so with the scan
+inside the delegated call a mistyped `hp_hz` on gappy data reported the gaps.
+The single-cutoff validator is now split into a parameter half and the data
+guard, and the band validator composes them with its own checks in between.
+A test per combination pins it.
 
 **Complex data is still accepted.** Reusing the guard verbatim would have
 rejected complex input with #43's message about one-sided spectra, which is
@@ -88,7 +94,13 @@ wrong for a filter: `filtfilt` filters the real and imaginary parts
 independently and correctly. `validate_finite_data` gained an
 `allow_complex` keyword, default `False`, so the spectral family's #43
 behaviour is untouched and the filters get only the NaN rule they share. A
-complex value with a NaN in either part is still rejected.
+complex value with a NaN in either part is still rejected. Review caught the
+first cut consulting the keyword at the dtype check only, so complex numbers
+hiding in an object array were still told to discard their imaginary part;
+the object branch now casts to complex when allowed. (Object-dtype arrays
+still cannot be *filtered*, because `scipy.signal.filtfilt` refuses them
+with a bare `NotImplementedError` — identical on `main`, and filed
+separately.)
 
 **`sg_filter` and `gauss_filter` are deliberately left alone.** Both are
 windowed convolutions, not bidirectional IIR passes: a 4-sample gap comes out

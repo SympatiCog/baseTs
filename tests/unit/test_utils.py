@@ -556,6 +556,23 @@ def test_validate_finite_data_can_be_told_complex_is_fine():
         validate_finite_data(np.array([1 + 2j, 3 + 4j]))
 
 
+def test_allow_complex_reaches_complex_hiding_in_object_arrays():
+    """The first cut consulted allow_complex at the dtype check only, so an
+    object array of complex numbers fell through to the float cast and came
+    back with the #43 message telling a filter caller to discard their
+    imaginary part - the opposite of what the keyword promises (review)."""
+    from baseTs.utils import validate_finite_data
+
+    validate_finite_data(np.array([1 + 2j, 3 + 4j], dtype=object), allow_complex=True)
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(np.nan, 0)], dtype=object),
+                             allow_complex=True)
+    # Not a blanket relaxation: text that merely looks complex is still not numeric.
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array(["1+2j", "3+4j"], dtype=object), allow_complex=True)
+
+
 @pytest.mark.parametrize("text", [
     np.array(["1+2j", "3+4j"]),                 # fixed-width str, dtype <U4
     np.array(["1+2j", "3+4j"], dtype=object),   # the same, as object

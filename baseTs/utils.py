@@ -275,12 +275,22 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
             # and deserves the complex message rather than "not numeric": the
             # caller has complex data, and the remedy is the one above.
             if _holds_complex_numbers(arr):
-                raise ValueError(_complex_data_message(
-                    f"dtype '{arr.dtype}' holding complex values")) from exc
-            raise ValueError(
-                f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
-                f"be interpreted as real numbers."
-            ) from exc
+                # The keyword has to reach this branch too. The first cut
+                # consulted it at the dtype check only, so complex hiding in
+                # an object array was told to discard its imaginary part -
+                # the opposite of what allow_complex promises. The helper
+                # has established every element is a genuine number object,
+                # so this cast cannot fail on text the way a probe would.
+                if allow_complex:
+                    arr = np.asarray(arr, dtype=complex)
+                else:
+                    raise ValueError(_complex_data_message(
+                        f"dtype '{arr.dtype}' holding complex values")) from exc
+            else:
+                    raise ValueError(
+                    f"Time series data is not numeric: dtype '{arr.dtype}' cannot "
+                    f"be interpreted as real numbers."
+                ) from exc
 
     if not np.all(np.isfinite(arr)):
         raise ValueError(

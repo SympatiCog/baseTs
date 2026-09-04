@@ -163,12 +163,39 @@ def _require_order(order) -> int:
     return order
 
 
+def _require_finite_data(data: ArrayLike) -> None:
+    """The filter family's data guard, translated into this module's type.
+
+    filtfilt's bidirectional pass propagates a single NaN across the whole
+    output, so four bad samples came back as six hundred with no exception
+    and no warning (#48). #28 placed the shared guard at the spectral
+    family's production site; this is the filter family's. Complex is
+    allowed - filtfilt filters the two parts independently, and the
+    one-sided-spectrum reasoning behind the guard's default does not apply.
+
+    A helper rather than an inline call because it must run *last*, after
+    every parameter check, and two validators need to say so: a bad call is
+    a bug in the call, bad data is a property of the input, and the O(n)
+    scan should not be what tells the caller about a cutoff they mistyped.
+    The try block holds this one call only, for the reason
+    InvalidParameterError gives, and is pinned against double-wrapping.
+    """
+    try:
+        validate_finite_data(data, allow_complex=True)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+
 def validate_filter_params(data: ArrayLike,
                            sampling_freq: float,
                            cutoff_freq: float,
                            order: int) -> tuple:
     """
-    Validate the parameters of a single-cutoff filter.
+    Validate the parameters and data of a single-cutoff filter.
+
+    The parameter checks, then the data scan, in that order. The band
+    validator composes the two halves itself so that its own edge checks
+    can sit between them: see _validate_filter_args.
 
     Args:
         data: Input data array
@@ -188,7 +215,25 @@ def validate_filter_params(data: ArrayLike,
         bandpass_filter, in the three siblings it left untouched).
 
     Raises:
-        InvalidParameterError: If parameters are invalid
+        InvalidParameterError: If parameters or data are invalid
+    """
+    checked = _validate_filter_args(data, sampling_freq, cutoff_freq, order)
+    _require_finite_data(data)
+    return checked
+
+
+def _validate_filter_args(data: ArrayLike,
+                          sampling_freq: float,
+                          cutoff_freq: float,
+                          order: int) -> tuple:
+    """The parameter half of validate_filter_params: everything but the data
+    scan. Returns the same `(sampling_freq, cutoff_freq, order)` triple.
+
+    Split out so validate_band_params can check its lower edge and the
+    ordering *before* the O(n) data scan. With the scan inside the delegated
+    call, a mistyped hp_hz on gappy data reported the gaps - the parameter
+    rule inverted for exactly the entry point that has the most parameters
+    (review of #48).
     """
     if not isinstance(data, (np.ndarray, list)):
         raise InvalidParameterError("Data must be a numpy array or list")
@@ -221,23 +266,6 @@ def validate_filter_params(data: ArrayLike,
             f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
 
     order = _require_order(order)
-
-    # The data last, after every parameter: a bad call is a bug in the call,
-    # bad data is a property of the input, and the O(n) scan should not be
-    # what tells the caller about a cutoff they mistyped.
-    #
-    # filtfilt's bidirectional pass propagates a single NaN across the whole
-    # output, so four bad samples came back as six hundred with no exception
-    # and no warning (#48). #28 placed this same guard at the spectral
-    # family's production site; this is the filter family's. Complex is
-    # allowed - filtfilt filters the two parts independently, and the
-    # one-sided-spectrum reasoning behind the guard's default does not apply.
-    # Translated for the same reason as the rate check above, and pinned
-    # against double-wrapping the same way.
-    try:
-        validate_finite_data(data, allow_complex=True)
-    except ValueError as exc:
-        raise InvalidParameterError(str(exc)) from exc
 
     return sampling_freq, cutoff_freq, order
 
@@ -347,7 +375,9 @@ def validate_band_params(data: ArrayLike,
 
     # The coerced upper edge comes back and is what gets returned below. The
     # order is validated but not returned: bandpass_filter passes a literal.
-    effective_freq, lp_hz, _ = validate_filter_params(
+    # The parameter half only: the data scan runs last, below, after the
+    # lower edge and the ordering have had their say.
+    effective_freq, lp_hz, _ = _validate_filter_args(
         data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
 
@@ -363,6 +393,8 @@ def validate_band_params(data: ArrayLike,
         raise InvalidParameterError(
             f"Band edges out of order: hp_hz={hp_hz!r} must be less than "
             f"lp_hz={lp_hz!r}")
+
+    _require_finite_data(data)
 
     return effective_freq, hp_hz, lp_hz
 

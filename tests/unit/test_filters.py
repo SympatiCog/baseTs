@@ -806,6 +806,19 @@ class TestFiltfiltFiltersRejectNonFiniteData:
         with pytest.raises(InvalidParameterError, match="Cutoff frequency"):
             lowpass_filter(self._gappy(), 20.0, self.FS)
 
+    @pytest.mark.parametrize("band, message", [
+        (dict(hp_hz=-1.0, lp_hz=5.0), "Band edge hp_hz"),
+        (dict(hp_hz=5.0, lp_hz=1.0), "out of order"),
+        (dict(hp_hz=0.1, lp_hz=20.0), "Cutoff frequency"),
+    ], ids=["bad hp_hz", "out of order", "bad lp_hz"])
+    def test_the_band_validator_also_reports_parameters_before_data(self, band, message):
+        """validate_band_params checks hp_hz and the ordering *after* the
+        delegated single-cutoff call, which in the first cut ended with the
+        O(n) data scan - so a mistyped lower edge on gappy data reported the
+        gaps, inverting the rule the line above states (review)."""
+        with pytest.raises(InvalidParameterError, match=message):
+            bandpass_filter(self._gappy(), sample_Hz=self.FS, **band)
+
     def test_the_remedy_works_end_to_end(self):
         """Executed, not just named: #28's first attempt recommended a remedy
         that reproduced the bug it reported."""
