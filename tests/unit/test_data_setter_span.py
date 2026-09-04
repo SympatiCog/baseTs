@@ -111,6 +111,15 @@ class TestWhatIsStillAllowed:
         assert ts.data.tolist() == [5.0]
         assert ts.times.tolist() == [2.0]
 
+    def test_same_length_keeps_a_non_uniform_index_verbatim(self):
+        """Pinned because a mutant that resampled the same-length path too
+        survived every uniform-grid test: on a uniform index `linspace`
+        reproduces the timestamps, so only an irregular one can tell."""
+        irregular = np.array([0.0, 0.1, 0.35, 0.4, 1.0])
+        ts = baseTs(np.arange(5.0), times=irregular)
+        ts.data = np.arange(5.0) * 2
+        np.testing.assert_array_equal(ts.times, irregular)
+
     def test_shrinking_a_one_sample_series_to_empty(self):
         ts = one_sample()
         ts.data = np.array([])
