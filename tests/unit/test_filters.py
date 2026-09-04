@@ -1052,3 +1052,16 @@ class TestTheNotchBandIsValidated:
         for call in (lambda: ts.notch_at(4.99), lambda: ts.notch_filter(4.99)):
             with pytest.raises(InvalidParameterError, match="Notch frequency"):
                 call()
+
+    def test_the_order_and_the_data_type_are_still_checked(self):
+        """The notch check sits in front of the delegated single-cutoff check,
+        which is what still validates the order and the data type. A mutant
+        that dropped the delegated call survived the tests above; this pins
+        that the notch validator is a superset of the sibling one, not a
+        replacement."""
+        from baseTs.filters import validate_notch_params
+
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            notch_filter(self._data(), 1.0, self.FS, order=True)
+        with pytest.raises(InvalidParameterError, match="numpy array or list"):
+            validate_notch_params((1.0, 2.0, 3.0), self.FS, 1.0, 5)
