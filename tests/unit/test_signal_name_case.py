@@ -69,8 +69,18 @@ class TestDerivedObjectsKeepTheParentsCase:
     def test_a_none_name_still_becomes_empty_on_the_copying_path(self):
         """Copying the name verbatim must not reopen what #33 closed: the
         constructor used to normalise a None on this path, and now the copy
-        has to."""
+        has to. With metadata preserved, _detach_shared_metadata normalises
+        the labels anyway, so this case alone cannot tell whether the copy
+        does; the one below can."""
         assert _named(None).zscale().signal_name == ""
+
+    def test_a_none_name_becomes_empty_even_without_preserved_metadata(self):
+        """preserve_metadata=False skips _detach_shared_metadata, so the copy
+        is the only normaliser on the path. A mutant that copied the raw
+        value survived the case above and is killed by this one."""
+        ts = _named(None)
+        derived = ts._create_new_with_data(ts.values, preserve_metadata=False)
+        assert derived.signal_name == ""
 
 
 class TestTheConstructorStillNormalisesItsOwnArgument:

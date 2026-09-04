@@ -92,7 +92,11 @@ the one assignment, not the second of two.
 
 The copy goes through `normalise_label`, the same coercion the other copying
 doors use, so a `None` name still reaches a derived object as `""` (#33's
-guarantee, which the constructor used to provide on this path).
+guarantee, which the constructor used to provide on this path). With
+`preserve_metadata=True` the `_detach_shared_metadata` call at the end of the
+method normalises the labels anyway — mutation testing showed a raw copy
+survived that case — so the explicit normaliser is there for
+`preserve_metadata=False`, where nothing else runs, and is pinned there.
 
 ### Changed
 
