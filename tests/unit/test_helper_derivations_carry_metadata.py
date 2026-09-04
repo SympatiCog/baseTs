@@ -146,6 +146,64 @@ class TestHelperDerivationsCarryMetadata:
         assert result.ts_offset == 1.5
 
 
+class TestTheFilterResultDoesNotInheritPositionalSlots:
+    """`lowess_fit` / `outlier_indices` describe the source's samples, not the result's.
+
+    Review round 1 (codex) found the regression: on already-clean data the
+    filter changes no value, so the #40 staleness check - which drops a
+    positional slot only when the index or the values differ - let the
+    source's own fit and outlier list through unchanged. A caller reading
+    them off the returned object would take a fit from some earlier run for
+    this one. On `main` the bare constructor left both `None`; the wrapper
+    `filter_outliers()` stamps its own on the object it builds, and that
+    stays the wrapper's job.
+    """
+
+    @staticmethod
+    def _clean_source_with_stamped_slots():
+        source = seeded()
+        source.lowess_fit = np.full(N, 999.0)
+        source.outlier_indices = [5, 6, 7]
+        assert source.lowess_fit is not None       # the stamp is live
+        return source
+
+    def test_lowess_fit_is_not_inherited_when_nothing_changed(self):
+        source = self._clean_source_with_stamped_slots()
+        result = lowess_filtered(source)
+        np.testing.assert_array_equal(result.data, source.data)  # the trap
+        assert result.lowess_fit is None
+
+    def test_outlier_indices_are_not_inherited_when_nothing_changed(self):
+        source = self._clean_source_with_stamped_slots()
+        assert lowess_filtered(source).outlier_indices is None
+
+    def test_the_source_keeps_its_own_slots(self):
+        source = self._clean_source_with_stamped_slots()
+        lowess_filtered(source)
+        assert source.outlier_indices == [5, 6, 7]
+
+
+def bare_constructor_calls(source: str):
+    """Line numbers of every `baseTs(...)` / `<anything>.baseTs(...)` call.
+
+    An aliased import (`from .core import baseTs as B`) or a call through a
+    variable is not seen, and cannot be in general; every helper module
+    imports the class under its own name, and the pin is calibrated to
+    that. The rule it states is "no direct constructor call", not "no way
+    to reach the constructor".
+    """
+    calls = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == 'baseTs':
+            calls.append(node.lineno)
+        elif isinstance(func, ast.Attribute) and func.attr == 'baseTs':
+            calls.append(node.lineno)
+    return calls
+
+
 class TestNoHelperUsesTheBareConstructor:
     """A helper module derives through `_create_new_with_data`, never `baseTs(...)`.
 
@@ -160,17 +218,30 @@ class TestNoHelperUsesTheBareConstructor:
                              ids=['utils', 'filters', 'LowessOutlierFilter'])
     def test_no_direct_constructor_call(self, module):
         source = pathlib.Path(inspect.getsourcefile(module)).read_text()
-        calls = [
-            node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == 'baseTs'
-        ]
+        calls = bare_constructor_calls(source)
         assert not calls, (
             f"{module.__name__} builds a baseTs with the bare constructor at "
-            f"lines {[c.lineno for c in calls]}; derive from the source with "
+            f"lines {calls}; derive from the source with "
             "_create_new_with_data so its metadata is carried"
         )
+
+    @pytest.mark.parametrize("snippet", [
+        "res = baseTs(x, t)",
+        "res = core.baseTs(x, t)",
+        "res = baseTs.baseTs(data=x, times=t)",
+        "def f(ts):\n    from .core import baseTs\n    return baseTs(ts.data, ts.times)",
+    ], ids=['bare', 'module-qualified', 'package-qualified', 'local-import'])
+    def test_the_detector_sees_each_spelling_used_in_this_package(self, snippet):
+        """Round 1 (codex + agy): a `Name`-only match missed `core.baseTs(...)`."""
+        assert bare_constructor_calls(snippet) == [snippet.count("\n") + 1]
+
+    @pytest.mark.parametrize("snippet", [
+        "res = ts._create_new_with_data(x, t)",
+        "res = isinstance(data, baseTs)",
+        "res = ts.copy()",
+    ], ids=['derivation', 'isinstance', 'copy'])
+    def test_the_detector_ignores_what_is_not_a_constructor_call(self, snippet):
+        assert bare_constructor_calls(snippet) == []
 
 
 # --------------------------------------------------------------------------

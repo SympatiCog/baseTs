@@ -252,6 +252,15 @@ class LowessOutlierFilter:
         # borrows only the arrays, so it never saw the loss.
         if isinstance(data, baseTs):
             cleaned_data = data._create_new_with_data(cleaned_data, time_index)
+            # The positional slots describe the *source's* samples, and the
+            # derivation carries them only while the values are unchanged
+            # (#40) - which on already-clean data they are, so a caller
+            # reading the result would take the source's earlier fit and
+            # outlier list for this run's (review round 1). This method
+            # returns its own findings in the tuple; stamping them on the
+            # object is `filter_outliers()`'s job, as before.
+            cleaned_data.lowess_fit = None
+            cleaned_data.outlier_indices = None
 
         outlier_indices = sorted(set(outlier_indices))
 

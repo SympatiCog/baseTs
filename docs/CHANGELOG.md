@@ -93,8 +93,21 @@ the codex seat on PR #84).
 All four now derive through `_create_new_with_data`, the path every method
 on the class uses. Pinned as a rule rather than as the four sites: a
 source-level test parses `utils.py`, `filters.py` and
-`LowessOutlierFilter.py` and fails on any call to the bare constructor, so
-a fifth helper written the old way fails before anyone calls it.
+`LowessOutlierFilter.py` and fails on any direct call to the constructor —
+`baseTs(...)` or `<module>.baseTs(...)` — so a fifth helper written the old
+way fails before anyone calls it. An aliased import or a call through a
+variable is not seen, and cannot be in general; every helper module imports
+the class under its own name, and the pin is calibrated to that.
+
+Review round 1 (codex) found a regression in the first cut: on already-clean
+data `LowessOutlierFilter.filter` changes no value, so the #40 staleness
+check — which drops a positional slot only when the index or the values
+differ — let the source's own `lowess_fit` and `outlier_indices` through
+unchanged, and a caller reading them off the result would have taken a fit
+from some earlier run for this one. On `main` the bare constructor left
+both `None`. The filter now clears both on the object it returns; its own
+findings travel in the tuple, and stamping them is `filter_outliers()`'s
+job, as before.
 
 ### Changed
 
@@ -114,11 +127,14 @@ a fifth helper written the old way fails before anyone calls it.
   `diff(zeropad=True)`, `filter`), a declared rate is carried and honoured;
   before it was re-derived. `diff(zeropad=False)` changes the index, so the
   declaration expires there as it does everywhere (#38).
-- The positional slots `lowess_fit` and `outlier_indices` are carried into
-  the result and, because the values differ from the ones they were fitted
-  to, read back as `None` there — the #40 rule, now applied to these four
-  as to every other derivation. Before, they were absent for a different
-  reason (never copied).
+- For `add_constant`, `diff` and `dediff` the positional slots `lowess_fit`
+  and `outlier_indices` follow the #40 rule as on every other derivation:
+  carried, and readable only while the result's index and values are the
+  ones they were stamped against — so `add_constant(ts, 0.0)` keeps them,
+  exactly as `ts + 0.0` does, and `diff(ts)` reads `None`. Before, all
+  three always read `None`, for a different reason (never copied).
+  `LowessOutlierFilter.filter` is the exception, and clears both on its
+  result (see above).
 - `utils.add_constant(ts, c, inplace=True)` no longer reassigns `ts.times`
   to a copy of itself on the way past.
 
