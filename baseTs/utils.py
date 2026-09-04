@@ -305,6 +305,15 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 ) from exc
 
     if not np.all(np.isfinite(arr)):
+        # No finite sample at all: the remedy below presupposes a valid sample
+        # to interpolate from, and the leading-gap hint presupposes a first
+        # valid value to extend. Neither exists, so naming either would be a
+        # remedy that does not run (review of #77).
+        if not np.any(np.isfinite(arr)):
+            raise ValueError(
+                "Time series data contains NaN or Inf values and no finite "
+                "ones: there is nothing to interpolate from."
+            )
         message = ("Time series data contains NaN or Inf values. Fill gaps "
                    "first, e.g. with interpolate_gaps().")
         # A gap at the *start* is the one case the remedy above does not
@@ -316,14 +325,23 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
         # value over it, so the plain remedy works there and gets no hint.
         # Keyed on NaN, not on non-finite: interpolate_gaps() does not fill
         # Inf in any direction, so a limit_direction hint would be a second
-        # remedy that does not run for an Inf caller.
-        if np.isnan(arr.ravel()[0]):
+        # remedy that does not run for an Inf caller. And only for 1-D input:
+        # "starts with" is a claim about a series, and ravel()[0] of a 2-D
+        # array is one corner of it. The hint's remedy is scoped to the
+        # default method because it is false for the others - measured on
+        # pandas 2.2 and 3.0, 'polynomial' fills no edge in any direction and
+        # 'spline' extrapolates its fit over one - and a `limit` caps the
+        # edge fill like any other (docstring, not message: it is the
+        # caller's own constraint).
+        if arr.ndim <= 1 and np.isnan(arr.ravel()[0]):
             message += (
                 " The series starts with a gap, which interpolate_gaps() "
                 "leaves in place by default (it fills forward from the first "
-                "valid sample): pass limit_direction='both' to extend the "
-                "first valid value back over the edge - a constant fill, not "
-                "an interpolation - or drop the leading samples."
+                "valid sample): pass limit_direction='both', which with the "
+                "default method extends the first valid value back over the "
+                "edge - a constant fill, not an interpolation; 'polynomial' "
+                "never fills an edge and 'spline' extrapolates its fit - or "
+                "drop the leading samples."
             )
         raise ValueError(message)
 

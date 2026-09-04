@@ -90,6 +90,22 @@ does not fill Inf in any direction and pointing an Inf caller at
 share the helper, so `get_peak_freq` and the other spectral entry points say
 the same thing.
 
+Review (both panelists) caught the first cut of the hint making that promise
+for every `method`: measured on pandas 2.2 and 3.0, `'polynomial'` fills no
+edge in any direction and `'spline'` fills one by extrapolating its fit, not
+by a constant — so a caller on either method who followed the hint verbatim
+landed on the message again, the very pattern being fixed one level deeper.
+The hint now says it holds for the default method and names the two that
+differ. It also presupposed a first valid value to extend; a series with no
+finite sample at all now gets its own message — there is nothing to
+interpolate from — instead of either remedy, since neither runs. And it is
+appended only for 1-D input: "starts with" is a claim about a series, and
+`ravel()[0]` of a 2-D array is one corner of it, so 2-D input (reachable only
+by importing the helper directly) keeps exactly the message it had. A
+`limit` caps the edge fill like any other; that is the caller's own
+constraint, so it is documented in the docstring rather than the message,
+and pinned by a test.
+
 **The default is unchanged.** Making `'both'` the default would have
 `interpolate_gaps()` invent edge values by constant extension without being
 asked, which is what #36 stopped `filter_outliers` from doing; the caller

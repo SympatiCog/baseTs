@@ -1784,7 +1784,10 @@ class baseTs(TimeSeriesData):
             `filter_outliers` doing so. A *trailing* gap is already extended
             by the default. Both statements hold for 'linear' and 'time';
             'polynomial' never fills an edge in any direction, and 'spline'
-            extrapolates its fit over it.
+            extrapolates its fit over it. A `limit` caps the edge fill like
+            any other: limit=2 clears two samples of a four-sample leading
+            gap and leaves the rest. A series with no valid sample at all
+            cannot be filled by any of these.
 
         Returns:
             Interpolated baseTs object

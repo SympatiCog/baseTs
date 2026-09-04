@@ -943,3 +943,15 @@ class TestTheNaNRemedyClearsAnEdgeGap:
     def test_the_hint_survives_the_InvalidParameterError_wrap_at_every_entry_point(self, call):
         with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
             call(self._with_gap(slice(0, 4)))
+
+    def test_a_limit_caps_the_edge_fill_too(self):
+        """`limit` is the caller's own constraint and it applies to the edge
+        fill like any other: with limit=2 the hint's remedy clears two of a
+        four-sample leading gap and the guard fires again. Documented in the
+        docstring rather than the message (review, round 1)."""
+        partly = self._with_gap(slice(0, 4)).interpolate_gaps(limit=2, limit_direction='both')
+
+        assert np.isnan(partly.values[:2]).all()
+        assert np.all(np.isfinite(partly.values[2:]))
+        with pytest.raises(InvalidParameterError, match=r"limit_direction='both'"):
+            partly.lowpass_at(5.0)

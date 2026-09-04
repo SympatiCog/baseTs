@@ -1051,9 +1051,10 @@ def test_the_edge_hint_keys_on_nan_not_on_inf():
 
 
 def test_a_zero_dimensional_nan_still_raises_the_documented_valueerror():
-    """The hint inspects the first sample; a 0-d input has no axis to index.
+    """The hint inspects the first sample. `arr[0]` - the natural way to
+    write that - raises IndexError on a 0-d input; `arr.ravel()[0]` does not.
     Pinned so the inspection cannot turn the documented ValueError into an
-    IndexError."""
+    IndexError (a 0-d NaN is also all-NaN, so it gets that message)."""
     from baseTs.utils import validate_finite_data
 
     with pytest.raises(ValueError, match="NaN or Inf"):
@@ -1075,3 +1076,58 @@ def test_the_edge_remedy_recovers_the_true_peak():
     """Executed, not just named: 0.16 Hz is the peak of the gap-free series."""
     recovered = _leading_gap_ts().interpolate_gaps(limit_direction='both').get_peak_freq()
     assert np.isclose(recovered, 0.16), recovered
+
+
+# --- #77 review round 1: the hint must hold for every input that receives it ---
+
+def test_an_all_nan_series_is_told_there_is_nothing_to_interpolate_from():
+    """"Extend the first valid value back over the edge" presupposes a first
+    valid value. An all-NaN series has none, so the leading-gap hint would be
+    a remedy that does not run - the exact pattern #77 exists to stop. The
+    plain message's own remedy is equally dead here, so the whole message
+    changes rather than gaining a hint (review, round 1)."""
+    from baseTs.utils import validate_finite_data
+
+    for all_nan in (np.array([np.nan] * 5), np.array([np.nan]), np.float64(np.nan)):
+        with pytest.raises(ValueError, match="NaN or Inf") as exc:
+            validate_finite_data(all_nan)
+        assert "nothing to interpolate from" in str(exc.value)
+        assert "limit_direction" not in str(exc.value)
+        assert "interpolate_gaps()" not in str(exc.value)
+
+
+def test_the_hint_names_the_methods_it_does_not_hold_for():
+    """The hint's remedy is a claim about the *default* method. Measured:
+    'polynomial' never fills an edge in any direction, and 'spline' fills it
+    by extrapolating its fit rather than by a constant - so a caller on either
+    method who follows the hint verbatim lands on the message again (review,
+    round 1, both panelists)."""
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError) as exc:
+        validate_finite_data(np.array([np.nan, 1.0, 2.0, 3.0]))
+    assert "'polynomial' never fills an edge" in str(exc.value)
+    assert "'spline' extrapolates" in str(exc.value)
+
+    d = np.sin(np.arange(500) / 10.0)
+    d[:4] = np.nan
+    t = np.arange(500) / 10.0
+    poly = baseTs(d, t).interpolate_gaps(method='polynomial', order=2, limit_direction='both')
+    assert np.isnan(poly.values[:4]).all()
+    spline = baseTs(d, t).interpolate_gaps(method='spline', order=3, limit_direction='both')
+    assert np.all(np.isfinite(spline.values[:4]))
+    assert not np.all(spline.values[:4] == spline.values[4])    # a fit, not a constant
+
+
+def test_a_two_dimensional_input_gets_the_plain_message_only():
+    """"The series starts with a gap" is a claim about a 1-D series. Nothing
+    in baseTs passes 2-D data here, but the helper is importable, and for a
+    2-D array `ravel()[0]` is one corner, not "the start" - so the hint would
+    be silently wrong in both directions (review, round 1, single-source).
+    2-D input keeps exactly what it got on main."""
+    from baseTs.utils import validate_finite_data
+
+    for two_d in (np.array([[1.0, np.nan], [2.0, 3.0]]), np.array([[np.nan, 1.0], [2.0, 3.0]])):
+        with pytest.raises(ValueError, match="interpolate_gaps") as exc:
+            validate_finite_data(two_d)
+        assert "starts with" not in str(exc.value)
