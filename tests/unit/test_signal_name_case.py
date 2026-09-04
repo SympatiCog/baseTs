@@ -1,4 +1,4 @@
-"""The signal name's case follows one rule everywhere (issue #56).
+"""The signal name's case follows one rule on every derivation (issue #56).
 
 The constructor has always upper-cased the name it is handed, and nothing
 else ever did. That left a split: a derivation that copied the parent's name
@@ -10,6 +10,11 @@ The rule now: the constructor normalises its *own argument*; a derived object
 carries the parent's name unchanged, whichever path built it. A mixed-case
 name can only arrive by assignment after construction, which is what every
 case below does.
+
+Out of scope, and not pinned either way: `plotting.lag_plot` upper-cases the
+name when it builds its *title*, which is #61's neighbourhood; and the free
+functions in utils.py and `LowessOutlierFilter.filter` drop the name outright,
+which is #66's.
 """
 import numpy as np
 import pytest
@@ -66,13 +71,15 @@ class TestDerivedObjectsKeepTheParentsCase:
         derived = ts._create_new_with_data(ts.values * 2, preserve_metadata=False)
         assert derived.signal_name == MIXED
 
-    def test_a_none_name_still_becomes_empty_on_the_copying_path(self):
+    @pytest.mark.parametrize("derive", DERIVATIONS)
+    def test_a_none_name_still_becomes_empty_on_every_path(self, derive):
         """Copying the name verbatim must not reopen what #33 closed: the
-        constructor used to normalise a None on this path, and now the copy
-        has to. With metadata preserved, _detach_shared_metadata normalises
-        the labels anyway, so this case alone cannot tell whether the copy
-        does; the one below can."""
-        assert _named(None).zscale().signal_name == ""
+        constructor used to normalise a None on the re-minting paths, and
+        now each of them has to reach _detach_shared_metadata or normalise
+        by hand. Parametrised over every derivation, not only the ones this
+        fix touched: review round 3 (glm-5.3) pointed out that the case pins
+        covered thirteen paths and the None pin covered one."""
+        assert derive(_named(None)).signal_name == ""
 
     def test_a_none_name_becomes_empty_even_without_preserved_metadata(self):
         """preserve_metadata=False skips _detach_shared_metadata, so the copy
