@@ -1226,18 +1226,21 @@ class TimeSeriesData(pd.Series):
         """
         from .core import baseTs
 
-        # Create baseTs object with numpy arrays
+        # Create baseTs object with numpy arrays. The name is not passed
+        # here: it is copied below with the rest of _metadata. Re-minting it
+        # through the constructor upper-cased it, so a conversion renamed the
+        # series it was converting (#56).
         base_ts = baseTs(
             data=self.values,
             times=self.index.values,
-            signal_name=self.signal_name
         )
 
         # Copy metadata. freq is no longer special-cased out: the rate is not
         # in _metadata any more, _freq_declaration is, and the constructed
-        # object derives from an index identical to this one.
+        # object derives from an index identical to this one. Nor is
+        # signal_name: _detach_shared_metadata below normalises the labels.
         for attr in self._metadata:
-            if hasattr(self, attr) and attr != 'signal_name':
+            if hasattr(self, attr):
                 setattr(base_ts, attr, getattr(self, attr))
 
         # A conversion is a copy, so it keeps the source's identity. The loop
@@ -1408,11 +1411,13 @@ class TimeSeriesData(pd.Series):
             return result
         
         # No freq= kwarg here - it is carried below instead, as
-        # _freq_declaration, along with the rest of _metadata.
+        # _freq_declaration, along with the rest of _metadata. No
+        # signal_name= either, for the same reason and one more: through the
+        # constructor the operand's name came back upper-cased, so
+        # `ts + 1` was titled differently from `ts` (#56).
         new_basets = baseTs(
             data=result.values,
             times=result.index.values,
-            signal_name=self.signal_name
         )
 
         # Copy relevant metadata. _freq_declaration rides along like any other
@@ -1426,7 +1431,7 @@ class TimeSeriesData(pd.Series):
         # an exclusion would be dead code that reads like a safeguard.
         # Deleting one confirmed it - no test could tell the two apart.
         for attr in self._metadata:
-            if hasattr(self, attr) and attr != 'signal_name':
+            if hasattr(self, attr):
                 setattr(new_basets, attr, getattr(self, attr))
 
         # From `result`, not `self`: name, attrs and flags on the operation's

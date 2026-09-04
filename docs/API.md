@@ -141,6 +141,13 @@ def signal_name(self) -> Optional[str]:
     """Signal name identifier."""
 ```
 
+The constructor upper-cases the name it is given, so
+`baseTs(..., signal_name="Heart Rate").signal_name` is `"HEART RATE"`. A name
+assigned afterwards is stored as written, and every object derived from the
+series — a slice, a copy, a processing method, an arithmetic result, a
+conversion — carries the parent's name unchanged. The two rules never meet:
+the constructor normalises its own argument; a derivation copies.
+
 #### `freq`
 ```python
 @property

@@ -146,8 +146,9 @@ class TestLabelMetadataSurvivesDerivation:
 
     # zscale() records itself in last_process, as every processing method does,
     # so it can say nothing about what the parent's value would have become.
-    # It stays in the signal_name cases, where it is the only path that routes
-    # the name back through the constructor.
+    # It stays in the signal_name cases: until #56 it was the one path that
+    # routed the name back through the constructor, and it is still the one
+    # that copies it by hand rather than through a _metadata loop.
     LAST_PROCESS_DERIVATIONS = DERIVATIONS[:-1]
 
     @pytest.mark.parametrize("derive", DERIVATIONS)
@@ -179,11 +180,11 @@ class TestLabelMetadataSurvivesDerivation:
     def test_a_real_signal_name_reaches_the_derived_object_unchanged(self, derive):
         """Restoring a default must not rewrite a name someone chose.
 
-        Deliberately already upper-case: _create_new_with_data passes the name
-        back through the constructor, which upper-cases it, so a mixed-case
-        name is changed on that path alone. That is pre-existing and separate
-        from this fix - asserting it here would only hide which of the two
-        rewrote the name.
+        Deliberately already upper-case. When this was written,
+        _create_new_with_data passed the name back through the constructor,
+        which upper-cased it, so a mixed-case name would have conflated that
+        rewrite with the one this test is about. #56 closed the split and
+        test_signal_name_case.py pins the mixed-case rule on every path.
         """
         assert derive(self._labelled("HEART RATE", "")).signal_name == "HEART RATE"
 

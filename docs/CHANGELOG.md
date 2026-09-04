@@ -54,6 +54,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the signal name keeps its case across a derivation (#56)
+
+### Fixed — `zscale()` and `iloc[:5]` disagreed about the name of one series
+
+The constructor has always upper-cased the `signal_name` it is handed, and
+nothing else ever did. Every derivation copies the parent's name — except the
+ones that handed it back to the constructor as a keyword, which upper-cased it
+a second time. So a name assigned after construction, `ts.signal_name =
+'Heart Rate'`, survived `iloc`, `head`, `copy` and `TimeSeriesData(ts)` and
+came out of `zscale()`, `detrend()`, `rolling_mean()`, `ts + 1` and
+`to_basetseries()` as `'HEART RATE'`. Every plot title, axis label and legend
+entry is built from the name, so which case a plot showed depended on which
+method produced the series.
+
+**The decision the issue asked for.** Two readings were defensible: the
+upper-casing is a library-wide normalisation, and `iloc`, `copy` and the
+attribute setter are the ones that were wrong; or it is the constructor's
+courtesy to its own argument, and the re-minting paths were wrong. The second
+is taken. It is the reading the rest of this arc has been establishing — a
+derived object carries its parent's metadata unchanged (#33, #35, #57) — it
+is what the API docs describe (`signal_name`: "name for the signal", with no
+mention of case), and the alternative would have extended an undocumented
+rewrite to the attribute setter, where a mixed-case name is currently the
+user's to set. The rule, stated once and pinned: **the constructor normalises
+its own argument; a derivation copies the parent's name, whichever path built
+it.**
+
+Three sites re-minted the name and are changed to copy it:
+`baseTs._create_new_with_data`, which every non-inplace processing method
+routes through; `TimeSeriesData._wrap_result_as_basets`, the arithmetic
+wrapper; and `TimeSeriesData.to_basetseries`. Two more passed the name to the
+constructor redundantly — `copy(deep=True)` and the shallow-copy rebuild — and
+preserved case only because the `_metadata` loop overwrote what the
+constructor had just upper-cased. The keyword is dropped there so the copy is
+the one assignment, not the second of two.
+
+The copy goes through `normalise_label`, the same coercion the other copying
+doors use, so a `None` name still reaches a derived object as `""` (#33's
+guarantee, which the constructor used to provide on this path).
+
+### Changed
+
+- A mixed-case or lower-case `signal_name` assigned after construction now
+  survives `zscale()`, `detrend()`, `rolling_mean()` and every other
+  `_create_new_with_data` caller, arithmetic (`ts + 1`, `1 + ts`, `ts * ts`),
+  and `to_basetseries()`. Before, each returned it upper-cased. A name that
+  was already upper-case — which is every name that came from the constructor
+  and was never reassigned — is unaffected on every path.
+
+### Unchanged
+
+- `baseTs(..., signal_name='Heart Rate')` still stores `'HEART RATE'`, as does
+  `from_df`, which defaults the name to the column name through the same
+  door. Pinned.
+- A `signal_name=` passed explicitly to `_create_new_with_data(**kwargs)` or
+  to a conversion (`baseTs(ts, signal_name='Other')`) is a constructor
+  argument, not an inheritance, and is upper-cased. Pinned.
+- The attribute setter is not a normalising door and is not made one:
+  `ts.signal_name = None` stores `None`, and it is the next derivation that
+  turns it into `""`.
+
+### Observed, not changed
+
+- `plotting.lag_plot` calls `.upper()` on the name itself when it builds a
+  title, so a lag plot is upper-cased where every other plot is not. That is
+  in #61's neighbourhood and is left for it.
+
 ## [Unreleased] — the lag that is applied is the lag that is reported (#51, #52, #53, #54)
 
 ### Fixed — four ways the shift result described a shift it had not performed
