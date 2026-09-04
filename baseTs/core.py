@@ -1172,10 +1172,29 @@ class baseTs(TimeSeriesData):
             inplace: If True, modifies existing object. Otherwise returns new object.
             
         Returns:
-            Gaussian filtered baseTs object
+            Gaussian filtered baseTs object. An object-dtype series of reals
+            comes back as float64 and one holding complex as complex128; a
+            numeric series is passed to scipy as it is and keeps its dtype
+            (integers in, integers out).
+
+        Raises:
+            ValueError: If the data is not numeric (text, `Decimal`, ...) or
+                holds datetimes or durations - the shared data guard's
+                messages. NaN is not an error here: a windowed convolution
+                widens a gap rather than poisoning the output (see the
+                sg_filter/gauss_filter note in API.md).
+            RuntimeError: scipy's own, for a numeric dtype ndimage does not
+                take - float16 is the one in practice. Cast to float32 or
+                float64 first.
         """
         def gauss_func(data):
-            return gaussian_filter(data, sigma)
+            # The dtype half of the shared guard only (#93): gaussian_filter
+            # refuses an object array with a bare RuntimeError, and this
+            # method never called the guard because the guard's finiteness
+            # rule is deliberately not this method's. Complex is allowed -
+            # gaussian_filter handles it part by part, as filtfilt does for
+            # the Butterworth family (#75).
+            return gaussian_filter(coerce_numeric_data(data, allow_complex=True), sigma)
             
         return self._enhanced_process_with_flags(
             func=gauss_func,
@@ -2227,9 +2246,14 @@ class baseTs(TimeSeriesData):
         # fail any test, and no test claims otherwise.
         validate_non_empty(self.values)
         validate_sampling_freq(self.freq)
-        validate_finite_data(self.values)
-
-        data = self.values.copy()
+        # The guard returns the array it checked, coerced where it had to
+        # be (#75). Until #93 the result was discarded and the FFT ran on
+        # self.values itself, so an object array of ordinary floats passed
+        # the guard and died in np.fft with a bare TypeError. Nothing below
+        # writes into `data` - a window multiplies into a new array - so the
+        # numeric case, where the guard hands back self.values as is, needs
+        # no copy.
+        data = validate_finite_data(self.values)
 
         # Apply window function if specified
         if window:

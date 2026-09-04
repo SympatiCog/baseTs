@@ -263,7 +263,10 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   passed validation and died in scipy with a bare `NotImplementedError`.
 - `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
   they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
-  deliberate and pinned by a test.
+  deliberate and pinned by a test. `gauss_filter()` settles object dtype the same way the
+  Butterworth filters do (float64 or complex128; non-numeric data raises `ValueError` with the
+  "not numeric" message) and, since it does not apply the finiteness rule, a NaN in an object
+  series is still a gap and not an error. Until #93 it died in scipy with a bare `RuntimeError`.
 - Cutoffs must be positive and below Nyquist; `notch_filter` additionally needs its notch more than
   1% of Nyquist from either end, since that is the half-width of the band it stops (see its entry).
 - **Integer parameters follow one rule** (#78). A parameter that counts something - a filter
@@ -856,6 +859,14 @@ Get frequency domain representation using enhanced FFT with optional windowing.
   Inf is not a gap: `interpolate_gaps()` leaves it in place, so an Inf needs
   `ts.replace([np.inf, -np.inf], np.nan)` first, and the error says so when that is what it found
   (#81).
+- **Object dtype is settled to numbers first**, here and in every method that reaches this one
+  (`get_peak_freq()`, `relative_band_power()`, `falff()`, `plot_fft_power()`) as well as
+  `compute_fft_power()`. An object series of reals gives the float64 series' spectrum exactly
+  (`None`/`pd.NA` are read as NaN, so they hit the NaN rule above and raise); one holding a
+  complex value is refused as complex data is; text, `Decimal` or anything else in it is rejected
+  as "not numeric".
+  Until #93 an object array of ordinary floats passed the guard and died in numpy's FFT with a
+  bare `TypeError`.
 
 **Example:**
 ```python
