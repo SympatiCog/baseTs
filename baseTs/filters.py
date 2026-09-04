@@ -59,63 +59,6 @@ class InvalidParameterError(FilterError, ValueError):
     """
     pass
 
-def validate_filter_params(data: ArrayLike, 
-                          sampling_freq: float,
-                          cutoff_freq: float,
-                          order: int) -> float:
-    """
-    Validate filter parameters.
-    
-    Args:
-        data: Input data array
-        sampling_freq: Sampling frequency in Hz
-        cutoff_freq: Cutoff frequency in Hz
-        order: Filter order
-
-    Returns:
-        The sampling frequency normalised to a float. Callers must use this
-        return value rather than their own argument - validate_sampling_freq
-        accepts exact Reals such as Decimal, which pass validation and then
-        die on `0.5 * fs` with a raw TypeError outside this function's
-        try/except, defeating the InvalidParameterError contract.
-
-    Raises:
-        InvalidParameterError: If parameters are invalid
-    """
-    if not isinstance(data, (np.ndarray, list)):
-        raise InvalidParameterError("Data must be a numpy array or list")
-
-    # `sampling_freq <= 0` is False for NaN, so a degenerate time base used to
-    # reach butter()/filtfilt() and come back as an all-NaN array with nothing
-    # but a RuntimeWarning. Delegated so there is one definition of a usable
-    # rate, but re-raised as InvalidParameterError to keep this module's
-    # exception type for callers that catch it.
-    try:
-        # The normalised float is returned to the caller, not discarded:
-        # validate_sampling_freq deliberately accepts Decimal and other exact
-        # Reals, which then die downstream on `0.5 * fs` with a raw TypeError
-        # - outside this try, so not an InvalidParameterError.
-        sampling_freq = validate_sampling_freq(sampling_freq)
-    except ValueError as exc:
-        raise InvalidParameterError(str(exc)) from exc
-
-    # Also NaN-blind on its own; ordered after the rate check so a NaN rate
-    # reports the degenerate time base rather than a confusing cutoff error.
-    # The limit is named, not just the rule. A message stating no number sends
-    # the caller round the loop a second time on a value that was never going
-    # to work, which is the #28 lesson - a message that implies a remedy has to
-    # carry enough for the remedy to be right.
-    if not (cutoff_freq > 0) or cutoff_freq >= sampling_freq/2:
-        raise InvalidParameterError(
-            f"Cutoff frequency must be positive and less than Nyquist frequency "
-            f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
-
-    if order <= 0:
-        raise InvalidParameterError("Filter order must be positive")
-
-    return sampling_freq
-
-
 def _require_real(label: str, value) -> None:
     """
     Reject a parameter that is not a real scalar.
@@ -193,6 +136,92 @@ def _require_finite_real(label: str, value) -> float:
         raise InvalidParameterError(
             f"{label} must be a real number and finite, got {value!r}")
     return number
+
+
+def _require_order(order) -> int:
+    """Type-check a filter order and coerce it to a plain int.
+
+    `order <= 0` was the whole check (#49). `True` is an int in Python, so it
+    passed and built an order-1 filter; `'4'` died in the comparison with a
+    bare TypeError; `3.5` passed and was left to whatever the installed scipy
+    does with a float order. numbers.Integral rather than int so numpy
+    integers are admitted, and int() so the value handed to scipy is the one
+    checked here - the same rule as _as_real_float, one type down.
+
+    An integral-valued float such as 4.0 is rejected too. Admitting it would
+    mean choosing between `int(4.0)` and rejecting 4.5 by a second rule, and
+    an order is a count of poles, not a measurement.
+    """
+    if isinstance(order, bool) or not isinstance(order, numbers.Integral):
+        raise InvalidParameterError(
+            f"Filter order must be a positive integer, got {order!r}")
+    order = int(order)
+    if order <= 0:
+        raise InvalidParameterError(
+            f"Filter order must be a positive integer, got {order!r}")
+    return order
+
+
+def validate_filter_params(data: ArrayLike,
+                           sampling_freq: float,
+                           cutoff_freq: float,
+                           order: int) -> tuple:
+    """
+    Validate the parameters of a single-cutoff filter.
+
+    Args:
+        data: Input data array
+        sampling_freq: Sampling frequency in Hz
+        cutoff_freq: Cutoff frequency in Hz
+        order: Filter order
+
+    Returns:
+        `(sampling_freq, cutoff_freq, order)`: the rate and cutoff as plain
+        floats, the order as a plain int. Callers must compute with all three
+        rather than with their own arguments. validate_sampling_freq accepts
+        exact Reals such as Decimal, which pass validation and then die on
+        `0.5 * fs` with a raw TypeError outside this function's try/except;
+        and a cutoff that is validated here and then divided by the caller
+        is only validated if the two objects agree, which a numbers.Real
+        virtual subclass need not (#49 - the hole #30 closed for
+        bandpass_filter, in the three siblings it left untouched).
+
+    Raises:
+        InvalidParameterError: If parameters are invalid
+    """
+    if not isinstance(data, (np.ndarray, list)):
+        raise InvalidParameterError("Data must be a numpy array or list")
+
+    # `sampling_freq <= 0` is False for NaN, so a degenerate time base used to
+    # reach butter()/filtfilt() and come back as an all-NaN array with nothing
+    # but a RuntimeWarning. Delegated so there is one definition of a usable
+    # rate, but re-raised as InvalidParameterError to keep this module's
+    # exception type for callers that catch it. The try block holds this one
+    # call only: see InvalidParameterError on why that tightness matters.
+    try:
+        sampling_freq = validate_sampling_freq(sampling_freq)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
+
+    # Coerced before it is compared, so the range check below and the
+    # division in the caller see the same float. Ordered after the rate check
+    # so a NaN rate reports the degenerate time base rather than a confusing
+    # cutoff error.
+    cutoff_freq = _as_real_float("Cutoff frequency", cutoff_freq)
+
+    # Also NaN-blind on its own. The limit is named, not just the rule. A
+    # message stating no number sends the caller round the loop a second time
+    # on a value that was never going to work, which is the #28 lesson - a
+    # message that implies a remedy has to carry enough for the remedy to be
+    # right.
+    if not (cutoff_freq > 0) or cutoff_freq >= sampling_freq/2:
+        raise InvalidParameterError(
+            f"Cutoff frequency must be positive and less than Nyquist frequency "
+            f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
+
+    order = _require_order(order)
+
+    return sampling_freq, cutoff_freq, order
 
 
 def validate_band_params(data: ArrayLike,
@@ -298,7 +327,10 @@ def validate_band_params(data: ArrayLike,
     hp_hz = _as_real_float("Band edge hp_hz", hp_hz)
     lp_hz = _as_real_float("Band edge lp_hz", lp_hz)
 
-    effective_freq = validate_filter_params(data, effective_freq, lp_hz, order)
+    # The coerced upper edge comes back and is what gets returned below. The
+    # order is validated but not returned: bandpass_filter passes a literal.
+    effective_freq, lp_hz, _ = validate_filter_params(
+        data, effective_freq, lp_hz, order)
     nyquist = effective_freq / 2
 
     # `not (hp_hz > 0)` rather than `hp_hz <= 0`, which is False for NaN.
@@ -366,8 +398,8 @@ def notch_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    fs_hz = validate_filter_params(data, fs_hz, cutoff_hz, order)
-    
+    fs_hz, cutoff_hz, order = validate_filter_params(data, fs_hz, cutoff_hz, order)
+
     nyquist_rate = fs_hz / 2.0
     notch = cutoff_hz / nyquist_rate
     b, a = butter(order, [notch - 0.01, notch + 0.01], btype='bandstop')
@@ -393,8 +425,9 @@ def highpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    sampling_freq = validate_filter_params(data, sampling_freq, highpass_freq, order)
-    
+    sampling_freq, highpass_freq, order = validate_filter_params(
+        data, sampling_freq, highpass_freq, order)
+
     nyquist_rate = sampling_freq / 2.0
     high = highpass_freq / nyquist_rate
     b, a = butter(order, high, btype='high')
@@ -420,8 +453,8 @@ def lowpass_filter(data: ArrayLike,
         InvalidParameterError: If parameters are invalid
     """
     data = np.asarray(data)
-    fs = validate_filter_params(data, fs, cutoff, order)
-    
+    fs, cutoff, order = validate_filter_params(data, fs, cutoff, order)
+
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
     b, a = butter(order, normal_cutoff, btype='low', analog=False)

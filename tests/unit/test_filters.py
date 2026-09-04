@@ -12,7 +12,11 @@ from baseTs import baseTs
 from baseTs.filters import (
     InvalidParameterError,
     bandpass_filter,
+    highpass_filter,
+    lowpass_filter,
+    notch_filter,
     validate_band_params,
+    validate_filter_params,
 )
 
 
@@ -652,3 +656,94 @@ class TestEveryBandpassEntryPointRejectsABadLowerEdge:
         """Reachable at all only since #27, which was dead before it."""
         with pytest.raises(InvalidParameterError, match="Band edge hp_hz"):
             self._ts().butterpass_at(-1.0, 0.4)
+
+
+class TestTheSingleCutoffFiltersUseTheValidatedValue:
+    """#30 closed the validate-one-compute-with-another hole for bandpass_filter
+    alone. lowpass_filter, highpass_filter and notch_filter kept dividing the
+    caller's original cutoff object after validate_filter_params had
+    range-checked it and thrown the checked value away (#49).
+
+    The helpers are the ones #30's tests built: a Real with no __truediv__,
+    and one whose __truediv__ disagrees with its __float__.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    FILTERS = [
+        ("lowpass_filter", lambda d, c, fs: lowpass_filter(d, c, fs)),
+        ("highpass_filter", lambda d, c, fs: highpass_filter(d, c, fs)),
+        ("notch_filter", lambda d, c, fs: notch_filter(d, c, fs)),
+    ]
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_a_cutoff_with_no_truediv_is_still_filtered(self, name, run):
+        out = run(self._data(), _DeclaresOneHz(), self.FS)
+
+        assert np.all(np.isfinite(out))
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_a_lying_truediv_cannot_change_the_cutoff(self, name, run):
+        lying = run(self._data(), _LiesAboutDivision(), self.FS)
+        honest = run(self._data(), 1.0, self.FS)
+
+        np.testing.assert_array_equal(lying, honest)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_an_exact_type_filters_as_its_float(self, name, run):
+        from decimal import Decimal
+
+        expected = run(self._data(), 0.5, self.FS)
+
+        for cutoff in (Fraction(1, 2), Decimal("0.5")):
+            np.testing.assert_array_equal(run(self._data(), cutoff, self.FS), expected)
+
+    @pytest.mark.parametrize("name, run", FILTERS, ids=[f[0] for f in FILTERS])
+    def test_an_unconvertible_cutoff_is_an_invalid_parameter(self, name, run):
+        with pytest.raises(InvalidParameterError, match="Cutoff frequency"):
+            run(self._data(), _UnconvertibleReal(), self.FS)
+
+    def test_the_validator_returns_what_it_checked(self):
+        """Callers can only compute with the checked values if they get them."""
+        from decimal import Decimal
+
+        fs, cutoff, order = validate_filter_params(
+            self._data(), Decimal("10"), Decimal("0.5"), np.int64(4))
+
+        assert (fs, cutoff, order) == (10.0, 0.5, 4)
+        assert type(fs) is float and type(cutoff) is float and type(order) is int
+
+
+class TestFilterOrderIsValidated:
+    """`order <= 0` was the whole check. `True` passed it and built an order-1
+    filter; `'4'` died in the comparison with a bare TypeError; `3.5` passed
+    and was left to scipy (#49). bandpass_filter is immune only because it
+    hardcodes 3.
+    """
+
+    FS = 10.0
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @pytest.mark.parametrize("bad", [True, "4", 3.5, 0, -1, np.nan, 4.0],
+                             ids=["bool", "str", "fractional", "zero", "negative",
+                                  "nan", "integral float"])
+    def test_a_non_positive_integer_order_is_rejected(self, bad):
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            lowpass_filter(self._data(), 0.5, self.FS, order=bad)
+
+    def test_a_numpy_integer_order_is_accepted(self):
+        out = lowpass_filter(self._data(), 0.5, self.FS, order=np.int64(4))
+
+        np.testing.assert_array_equal(
+            out, lowpass_filter(self._data(), 0.5, self.FS, order=4))
+
+    def test_the_band_validator_rejects_a_bad_order_too(self):
+        with pytest.raises(InvalidParameterError, match="Filter order"):
+            validate_band_params(self._data(), self.FS, 0.1, 0.4, order=True)

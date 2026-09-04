@@ -54,6 +54,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the single-cutoff filters compute with the value they validated (#49)
+
+### Fixed — `lowpass_filter`, `highpass_filter` and `notch_filter` divided the caller's original cutoff
+
+`validate_filter_params` range-checked `cutoff_freq` and threw the checked
+object away, returning only the normalised rate. Each of the three filters
+then divided its own argument:
+
+```python
+fs = validate_filter_params(data, fs, cutoff, order)
+normal_cutoff = cutoff / nyq          # the caller's object, not the checked value
+```
+
+So the value that passed validation was not necessarily the value that got
+filtered. `Decimal('0.5')` — a type `validate_sampling_freq` deliberately
+accepts as a *rate* — raised a bare `TypeError` as a *cutoff*, outside the
+`InvalidParameterError` each docstring promises. The sharper case is any
+`numbers.Real` virtual subclass whose `__truediv__` disagrees with its
+`__float__`: it passed every range check and then built a filter for a band
+nobody asked for. This is the hole #30 closed for `bandpass_filter`, in the
+three siblings #30 left untouched and named.
+
+`validate_filter_params` now coerces the cutoff through the same
+`_as_real_float` door the band edges use, range-checks the float, and returns
+`(sampling_freq, cutoff_freq, order)`. All three filters compute with what
+comes back; `validate_band_params` consumes the coerced upper edge the same
+way. The tests reuse #30's adversarial Reals — one with no `__truediv__`, one
+whose division lies — and assert the lying one filters bit-identically to an
+honest `1.0`.
+
+### Fixed — `order` was checked with `order <= 0` and nothing else
+
+`order=True` passed and silently built an order-1 filter. `order='4'` died in
+the comparison with a bare `TypeError`. `order=3.5` passed and was left to
+scipy. `order` is now required to be a non-bool `numbers.Integral` of at least
+1, coerced to `int`, and reported as `InvalidParameterError` otherwise. numpy
+integers are accepted. An integral-valued float such as `4.0` is rejected
+rather than truncated: an order is a count of poles, and admitting `4.0` would
+mean a second rule for `4.5`.
+
+**Breaking, in two places.** `validate_filter_params` is a public function and
+its return changed from a float to a 3-tuple; any direct caller must unpack.
+And the four `order` inputs above that used to pass now raise. A `float`
+cutoff and an `int` order — what every caller in the package, the tests and
+the docs pass — are unaffected: `float(x)` and `int(x)` are the identity
+there, and the whole existing suite ran unchanged.
+
 ## [Unreleased] — `relative_band_power` defaults to the fALFF band (#46)
 
 ### Added — `low_freq=0.01, high_freq=0.1` on `relative_band_power`
