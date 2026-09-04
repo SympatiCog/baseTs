@@ -357,8 +357,11 @@ class TestTheOutcomeCensusIsComplete:
     # None means the call succeeds.
     CENSUS = {
         ("seconds", "uniform"): {
-            "seconds_float": None, "whole_number": None, "array_0d": None,
+            "seconds_float": None, "array_0d": None,
             "decimal": None, "bool": None,
+            # 50 s on a 3 s series. Returned an empty array labelled 50.0 s
+            # until #53 bounded the lag by the length.
+            "whole_number": ValidationError,
             "nan": ValidationError, "inf": ValidationError,
             "negative_inf": ValidationError, "str": ValidationError,
             "bytes": ValidationError, "none": ValidationError,
@@ -430,9 +433,9 @@ class TestTheOutcomeCensusIsComplete:
 class TestTheGuardsAreInertOnValidInput:
     """Pinned so a future guard cannot quietly change what a good call returns.
 
-    The numbers come from a declared 100 Hz rate: a derived one is
-    99.99999999999999, and `int()` truncates that 0.5 s lag to 49 rather than
-    50 - a reminder that these two modes are not exact inverses.
+    The numbers come from a declared 100 Hz rate. A derived one is
+    99.99999999999999, which `int()` used to truncate to 49 samples for a
+    0.5 s lag; since #51 the conversion rounds, so both rates give 50.
     """
 
     def test_seconds_mode_converts_as_before(self):
@@ -453,12 +456,17 @@ class TestTheGuardsAreInertOnValidInput:
         assert time_to_idx(0.5, 100.0) == 50
         assert idx_to_time(50, 100.0) == pytest.approx(0.5)
 
-    def test_a_derived_rate_still_truncates_rather_than_rounds(self):
-        """99.99999999999999 Hz gives 49, not 50. Guarding the rate must not
-        be mistaken for normalising it."""
+    def test_a_derived_rate_is_not_normalised_it_is_rounded_through(self):
+        """Guarding the rate must not be mistaken for normalising it: the
+        rate stays 99.99999999999999 Hz. The conversion rounds (#51), so the
+        lag lands on the 50 samples the caller meant anyway, and the reported
+        seconds are those of the shift performed at the true rate."""
         derived = baseTs(_signal(), np.arange(300) / 100.0)
+        res = shift_timeseries(derived, 0.5, "seconds")
 
-        assert shift_timeseries(derived, 0.5, "seconds")["lag_idx"] == 49
+        assert derived.freq == 99.99999999999999
+        assert res["lag_idx"] == 50
+        assert res["lag_secs"] == 50 / 99.99999999999999
 
     def test_an_exact_non_float_rate_is_still_accepted(self):
         """`validate_sampling_freq` takes Decimal and Fraction deliberately;
@@ -480,21 +488,23 @@ class TestTheGuardsAreInertOnValidInput:
 
         assert time_to_idx(Decimal("0.5"), 100.0) == 50
 
-    def test_an_exact_lag_converts_through_its_float_not_exactly(self):
+    def test_an_exact_lag_converts_through_its_float(self):
         """Documented, not overlooked: coercion happens before the multiply.
 
-        Exact arithmetic on this Decimal gives 49.99...9, which floors to 49.
-        `float()` rounds it to 0.5 first, so the answer is 50. Accepting exact
-        types means accepting their nearest double - the same trade
-        `validate_sampling_freq` already makes for an exact *rate*. It only
-        shows within one ULP of an integer boundary, and the nearest float lag
-        below the boundary still gives 49.
+        Accepting exact types means accepting their nearest double - the
+        same trade `validate_sampling_freq` already makes for an exact
+        *rate*. Under truncation this showed within one ULP of a sample
+        boundary: exact arithmetic on this Decimal gave 49.99...9, floored to
+        49, while its float is 0.5 and gave 50. Rounding (#51) absorbs the
+        ULP, so both the Decimal and the nearest float below the boundary
+        land on the sample the caller meant; the coercion itself is pinned
+        by the two tests below.
         """
         boundary = Decimal("0.499999999999999999999999999999")
 
         assert float(boundary) == 0.5
         assert time_to_idx(boundary, 100.0) == 50
-        assert time_to_idx(0.4999999999999999, 100.0) == 49
+        assert time_to_idx(0.4999999999999999, 100.0) == 50
 
     def test_a_lag_whose_multiplication_lies_cannot_change_the_index(self):
         """float() declared 0.5 s, so 0.5 s is what must be converted."""

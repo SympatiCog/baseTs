@@ -54,6 +54,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the lag that is applied is the lag that is reported (#51, #52, #53, #54)
+
+### Fixed — four ways the shift result described a shift it had not performed
+
+All four live in the one chain `get_lags` → `validate_lag` →
+`shift_timeseries` → `plotting.lag_plot` (hence `baseTs.lag_plot`), and all
+four were filed from #32's review rounds rather than folded in. Each let the
+returned dict, and so the plot title, say something the function had not
+done.
+
+**#51 — a derived rate shifted one sample short and reported the lag it did
+not apply.** `time_to_idx` truncated with `int()`. A derived rate is rarely
+exact — a nominal 100 Hz series derives to 99.99999999999999 — so
+`int(0.5 * rate)` was 49 for a caller who asked for half a second, in 7% of
+a sweep over every length from 100 to 2000 samples. `get_lags` then echoed
+the caller's 0.5 back as `lag_secs`, so the result read `{'lag_secs': 0.5,
+'lag_idx': 49}` and the plot `Lag Plot at 0.5 seconds (49items)`. The
+conversion now rounds to the nearest sample (Python's `round`, so an exact
+half goes to the even neighbour — either neighbour is as honest as the other
+when there is no nearest one, and the rule is pinned so it is not mistaken
+for drift). Separately, and for every seconds-mode call, `lag_secs` is now
+derived *from* `lag_idx` — `idx_to_time(lag_idx, freq)` — rather than echoed:
+the two halves of the result agree by construction whatever the rounding
+did. Rounding alone would not have got there: 0.3 s at 7 Hz is 2.1 samples,
+2 are applied, and 2/7 s is what the result now says, where it used to say
+0.3. The issue's sweep is a test, and it comes up short in 0 of 5703 cases.
+
+**#52 — an integer series raised the very message #32 is named for.** The
+wrapped head was blanked with `lagged[:lag_idx] = np.nan`, which an int64
+array cannot hold: `ValueError: cannot convert float NaN to integer`, from a
+different line and a different cause than #32 — the rate was fine, the
+container could not take the sentinel. A `datetime64` index (reachable with a
+declared rate) died on `Could not convert object to NumPy datetime` the same
+way. `lag_plot` calls with `drop_nan=False` and so took that path
+unconditionally, so no integer series could be lag-plotted. Two changes.
+With `drop_nan=True` the blanked samples are sliced off anyway, so no
+sentinel is written and the series' own dtype survives — an int64 series
+returns int64, a timestamp index returns timestamps. With `drop_nan=False`
+the head is blanked with the dtype's own missing value where it has one (NaN
+for float, complex and object; NaT for datetime and timedelta), and a dtype
+with none (integer, unsigned, bool) is widened to float64 first, which is
+what `pd.Series([1, 2, 3]).shift(1)` does. `astype(float)` is deliberately
+not the route for the datetime kinds: it reinterprets the int64 storage and
+turns NaT into -9.2e18, the trap #28 documented. A float series returns
+exactly the arrays it did before, pinned against the old code inlined in the
+test; the result is still a fresh array, not a view of the series.
+
+**#53 — a lag longer than the series returned an empty result, confidently
+labelled.** `np.roll` wraps modulo the length and the blanking then covered
+the whole array, so `shift_timeseries(five_samples, 100, 'index')` returned
+an empty array with `lag_secs=100.0` on a 4-second series, and `lag_plot`
+drew an empty scatter titled `100.0 seconds (100items)`. `validate_lag`
+takes a new keyword, `n_samples`, and refuses `lag_idx >= n_samples` with a
+message naming the lag, the samples it converts to, the rate that connects
+them in seconds mode, and the series length. The bound is applied to the
+*rounded* index — the one that will be used — so 4.6 s at 1 Hz on a
+five-sample series is refused as 5 samples. `lag_idx == n - 1` is accepted:
+it leaves one sample, which is degenerate but honest, and the caller can see
+its length. Without the keyword the validator is unchanged, so an existing
+direct caller keeps its behaviour.
+
+**#54 — any unit but the literal `'seconds'` was silently index mode.**
+`get_lags` dispatched on `lag_unit == 'seconds'` with no other check, so
+`'second'`, `'Seconds'` and `'sec'` all meant samples — a factor of the
+sampling rate in what the lag means, with the plot then correctly labelled
+for the wrong reading. `validate_lag`'s else-branch carried the same
+assumption. One shared check now refuses anything but exactly `'seconds'` or
+`'index'`, naming both and what was passed. Case is not folded: rejecting is
+safer than guessing when the two readings differ by 100x. The unit is judged
+before the rate or the lag — without it there is no way to know which
+conversion the lag was meant for.
+
+### Changed — behaviour, all of it the rule doing what it says
+
+- `time_to_idx` rounds where it truncated. A seconds lag within half a
+  sample of a boundary can now convert to one more sample than before; the
+  reported `lag_secs` says which.
+- `lag_secs` in seconds mode is a `float` derived from the applied index. A
+  `Decimal` or `bool` lag used to be echoed back as itself; an exact declared
+  rate still reports exactly what was asked (50 / 100.0 is 0.5).
+- `shift_timeseries(..., drop_nan=True)` returns the series' own dtype
+  instead of float64 — only visible for non-float series, which raised
+  before.
+- `shift_timeseries(..., drop_nan=False)` on an integer or bool series
+  returns float64 with NaN, on a timestamp index returns NaT, where both
+  raised before.
+- A lag of the series length or more raises `ValidationError` where it
+  returned an empty (or all-NaN) result. #32's outcome census had one row
+  affected — a 50 s lag on a 3 s series — and it is updated.
+- An unknown `lag_unit` raises `ValidationError` where it was index mode.
+
+### Testing
+
+`tests/unit/test_lag_shift_bounds.py`: the issue reproductions for all
+four; the 5703-case rounding sweep; the tie rule; the two halves agreeing by
+construction across lags at the derived rate; the blanking rule across
+int64, uint8, bool, object, complex, datetime64 and timedelta64; the
+`drop_nan=False` float path pinned against the old code; the boundary at
+`len - 1` / `len`; the seconds-mode bound on the rounded index; the unit
+refused through `get_lags`, `validate_lag`, `shift_timeseries` and
+`lag_plot`, and judged before the rate. Three pins in
+`test_lag_conversion_guards.py` that described truncation are restated for
+rounding.
+
 ## [Unreleased] — the NaN message says what a leading gap needs (#77)
 
 ### Fixed — a remedy that reproduced the bug it reported, one level up

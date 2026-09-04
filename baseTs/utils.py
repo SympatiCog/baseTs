@@ -938,7 +938,41 @@ def find_closest_time(
         abs_err=abs_err
     )
 
-def validate_lag(lag: Union[int, float], lag_idx: int, lag_unit: str, freq: float) -> None:
+LAG_UNITS = ("seconds", "index")
+
+
+def _validate_lag_unit(lag_unit: Any) -> None:
+    """Refuse any lag unit but the two documented ones (issue #54).
+
+    `get_lags` used to dispatch on `lag_unit == 'seconds'` with no other
+    check, so `'second'`, `'Seconds'` and `'sec'` all fell through to index
+    mode - a factor-of-the-sampling-rate change in what the lag means, with
+    the plot then correctly labelled for the wrong reading. `validate_lag`
+    had the same assumption in its else-branch. One rule, shared, so the two
+    cannot disagree.
+
+    Case is not folded: rejecting is safer than guessing when the two
+    readings differ by 100x, and the accepted set is two words long.
+
+    Args:
+        lag_unit: The unit as the caller passed it
+
+    Raises:
+        ValidationError: If it is not exactly 'seconds' or 'index'
+    """
+    if not isinstance(lag_unit, str) or lag_unit not in LAG_UNITS:
+        raise ValidationError(
+            f"lag_unit must be 'seconds' or 'index', not {_describe(lag_unit)}."
+        )
+
+
+def validate_lag(
+    lag: Union[int, float],
+    lag_idx: int,
+    lag_unit: str,
+    freq: float,
+    n_samples: Optional[int] = None,
+) -> None:
     """
     Validate lag parameters.
 
@@ -947,10 +981,18 @@ def validate_lag(lag: Union[int, float], lag_idx: int, lag_unit: str, freq: floa
         lag_idx: Lag index
         lag_unit: Unit of lag ('seconds' or 'index')
         freq: Sampling frequency
+        n_samples: Length of the series the lag will be applied to. When
+            given, a lag of that many samples or more is refused (issue #53):
+            `np.roll` wraps modulo the length, so such a lag blanked every
+            sample and returned an empty result labelled with a lag longer
+            than the whole series. Omitted, the bound is not applied, which
+            is what every caller before #53 got.
 
     Raises:
-        ValidationError: If lag parameters are invalid
+        ValidationError: If the unit is not 'seconds' or 'index', if the
+            index is not a positive integer, or if it does not fit the series
     """
+    _validate_lag_unit(lag_unit)
     if not isinstance(lag_idx, int) or lag_idx <= 0:
         if lag_unit == "seconds":
             raise ValidationError(
@@ -964,6 +1006,21 @@ def validate_lag(lag: Union[int, float], lag_idx: int, lag_unit: str, freq: floa
                 f"lag must be a positive nonzero integer. "
                 f"In index mode, got lag={lag}. {floatmsg}"
             )
+    if n_samples is not None and lag_idx >= n_samples:
+        # Strictly less: lag_idx == n_samples blanks every sample, and
+        # n_samples - 1 leaves one. A one-sample result is degenerate but
+        # honest - it is the shift that was asked for, and its length is
+        # visible - so the line is drawn at "nothing survives".
+        if lag_unit == "seconds":
+            raise ValidationError(
+                f"lag must be shorter than the series. In seconds mode, got "
+                f"lag={lag}s at freq={freq} Hz, which is lag_idx={lag_idx} "
+                f"samples, but the series has only {n_samples} samples."
+            )
+        raise ValidationError(
+            f"lag must be shorter than the series. In index mode, got "
+            f"lag={lag} samples, but the series has only {n_samples} samples."
+        )
 
 def _describe(value: Any) -> str:
     """Render a rejected value for an error message, without pasting it whole.
@@ -1090,20 +1147,30 @@ def idx_to_time(lag_idx: int, freq: float) -> float:
 
 def time_to_idx(lag_secs: float, freq: float) -> int:
     """
-    Convert a time value to an index.
+    Convert a time value to the nearest whole number of samples.
 
     Args:
         lag_secs: Time in seconds
         freq: Sampling frequency
 
     Returns:
-        Index value
+        Index value: `lag_secs * freq` rounded to the nearest integer, with
+        an exact half going to the even neighbour (Python's `round`)
 
     Raises:
         ValueError: If the sampling frequency is not a usable rate (issue #32)
         ValidationError: If the lag is not a real scalar, or is NaN or infinite
 
     Note:
+        Rounded rather than truncated (issue #51). A derived rate is rarely
+        exact - a nominal 100 Hz series derives to 99.99999999999999 - so
+        `int(0.5 * rate)` was 49 for a caller who asked for half a second,
+        in 7% of a 5601-case sweep. The residue is ~1e-14 relative, far
+        inside half a sample, so rounding lands on the sample meant every
+        time. A lag that falls exactly between two samples has no nearest
+        one; either neighbour is as honest as the other, and `get_lags`
+        reports whichever was taken.
+
         Both values are coerced by their validators and the *coerced* values
         are what get multiplied. Validating one object and computing with
         another is how a value validated as 1.0 got filtered as something else
@@ -1139,7 +1206,7 @@ def time_to_idx(lag_secs: float, freq: float) -> int:
             f"lag={lag_secs} at {freq} Hz has no finite index: the conversion "
             f"overflows."
         )
-    return int(samples)
+    return round(samples)
 
 def get_lags(
     lag: Union[int, float],
@@ -1155,11 +1222,70 @@ def get_lags(
         freq: Sampling frequency
 
     Returns:
-        Tuple of (lag_seconds, lag_index)
+        Tuple of (lag_seconds, lag_index). In seconds mode the seconds are
+        those of the *index that will be applied* - `lag_index / freq` - not
+        the caller's argument echoed back (issue #51). A 0.3 s lag at 7 Hz is
+        2.1 samples: 2 are applied, and 2/7 s is what this reports, so the
+        two halves agree by construction whatever the rounding rule did.
+
+    Raises:
+        ValidationError: If the unit is not 'seconds' or 'index' (issue #54),
+            or the lag cannot be converted
+        ValueError: If the sampling frequency is not a usable rate
     """
+    # The unit is judged first: without it there is no way to know which
+    # conversion the lag was meant for, so nothing about the lag or the rate
+    # can be diagnosed in the caller's terms yet.
+    _validate_lag_unit(lag_unit)
     if lag_unit == 'seconds':
-        return lag, time_to_idx(lag, freq)
+        lag_idx = time_to_idx(lag, freq)
+        return idx_to_time(lag_idx, freq), lag_idx
     return idx_to_time(lag, freq), lag
+
+def _blank_head(arr: NDArray[Any], k: int) -> NDArray[Any]:
+    """Return a copy of `arr` whose first `k` entries are the dtype's missing value.
+
+    `lagged[:k] = np.nan` was the whole of this before #52, and it raised
+    `ValueError: cannot convert float NaN to integer` on an int64 series -
+    the identical message #32 is named for, from a different cause: the rate
+    was fine, the container could not hold the sentinel. A datetime64 index
+    died on `Could not convert object to NumPy datetime` the same way.
+
+    The rule: a dtype with a missing value of its own gets it - NaN for float
+    and complex, NaT for datetime and timedelta, NaN into an object slot -
+    and a dtype with none (integer, unsigned, bool) is widened to float64
+    first, which is what `pd.Series([1, 2, 3]).shift(1)` does. `astype(float)`
+    is deliberately not applied to the datetime kinds: it reinterprets the
+    int64 storage and turns NaT into -9.2e18.
+
+    Args:
+        arr: The array to blank, not modified
+        k: How many leading entries to blank
+
+    Returns:
+        A new array of the same length
+
+    Raises:
+        ValidationError: If the dtype has no missing value and does not
+            convert to float either (a string array, say)
+    """
+    kind = arr.dtype.kind
+    if kind in "mM":
+        out = arr.copy()
+        out[:k] = np.array("NaT", dtype=arr.dtype)
+        return out
+    if kind in "fcO":
+        out = arr.copy()
+    else:
+        try:
+            out = arr.astype(float)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"cannot blank the shifted-out samples of a {arr.dtype} array: "
+                f"the dtype has no missing value and does not convert to float."
+            ) from exc
+    out[:k] = np.nan
+    return out
 
 def shift_timeseries(
     ts: Any,
@@ -1174,26 +1300,42 @@ def shift_timeseries(
         ts: Time series object with data and times attributes
         lag: Lag value
         lag_unit: Unit of lag ('seconds' or 'index')
-        drop_nan: Whether to drop NaN values from the result
+        drop_nan: Whether to drop the samples the shift moves out of range.
+            True returns the `len - lag_idx` samples that survive, in the
+            series' own dtype. False returns the full length with the first
+            `lag_idx` entries blanked - NaN, or NaT for a timestamp index -
+            which widens an integer or bool array to float64, as pandas'
+            `shift` does (issue #52).
 
     Returns:
-        Dictionary containing lagged data, times, and lag information
+        Dictionary containing lagged data, times, and lag information.
+        `lag_secs` is the duration of `lag_idx` samples at the series' rate,
+        so it describes the shift performed (issue #51).
+
+    Raises:
+        ValidationError: If the unit is unknown (#54), the lag is not a
+            positive whole number of samples, or the lag is not shorter than
+            the series (#53) - a longer one wrapped around and blanked every
+            sample, returning an empty result labelled with a lag longer
+            than the whole series
+        ValueError: If the sampling frequency is not a usable rate (#32)
     """
     data = ts.data
+    times = ts.times
     freq = ts.freq
-    
-    lag_secs, lag_idx = get_lags(lag, lag_unit, freq)
-    validate_lag(lag, lag_idx, lag_unit, freq)
 
-    lagged_data = np.roll(data, lag_idx)
-    lagged_times = np.roll(ts.times, lag_idx)
-    
-    lagged_data[:lag_idx] = np.nan
-    lagged_times[:lag_idx] = np.nan
-    
+    lag_secs, lag_idx = get_lags(lag, lag_unit, freq)
+    validate_lag(lag, lag_idx, lag_unit, freq, n_samples=len(data))
+
     if drop_nan:
-        lagged_data = lagged_data[lag_idx:]
-        lagged_times = lagged_times[lag_idx:]
+        # The blanked head is sliced off anyway, so no sentinel is needed and
+        # the dtype survives. Copied: np.roll always returned a fresh array,
+        # and a view would let a caller edit the series through the result.
+        lagged_data = data[:len(data) - lag_idx].copy()
+        lagged_times = times[:len(times) - lag_idx].copy()
+    else:
+        lagged_data = _blank_head(np.roll(data, lag_idx), lag_idx)
+        lagged_times = _blank_head(np.roll(times, lag_idx), lag_idx)
 
     return {
         'lagged_data': lagged_data,
