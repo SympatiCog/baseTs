@@ -573,6 +573,23 @@ def test_allow_complex_reaches_complex_hiding_in_object_arrays():
         validate_finite_data(np.array(["1+2j", "3+4j"], dtype=object), allow_complex=True)
 
 
+def test_allow_complex_cast_failure_is_still_a_valueerror():
+    """numbers.Complex is a registrable ABC, so membership - which is all
+    _holds_complex_numbers checks - does not imply a working __complex__. The
+    first cut ran the complex cast bare, so a registered impostor escaped as a
+    TypeError from every filter, outside the contract (review round 2)."""
+    import numbers
+    from baseTs.utils import validate_finite_data
+
+    @numbers.Complex.register
+    class _RegisteredButUnconvertible:
+        pass
+
+    with pytest.raises(ValueError, match="not numeric"):
+        validate_finite_data(np.array([_RegisteredButUnconvertible()] * 3, dtype=object),
+                             allow_complex=True)
+
+
 @pytest.mark.parametrize("text", [
     np.array(["1+2j", "3+4j"]),                 # fixed-width str, dtype <U4
     np.array(["1+2j", "3+4j"], dtype=object),   # the same, as object

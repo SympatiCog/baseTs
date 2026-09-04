@@ -278,11 +278,23 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 # The keyword has to reach this branch too. The first cut
                 # consulted it at the dtype check only, so complex hiding in
                 # an object array was told to discard its imaginary part -
-                # the opposite of what allow_complex promises. The helper
-                # has established every element is a genuine number object,
-                # so this cast cannot fail on text the way a probe would.
+                # the opposite of what allow_complex promises.
+                #
+                # The helper has established every element is a number
+                # *object* - but numbers.Complex is a registrable ABC, so
+                # membership does not imply a working __complex__ any more
+                # than numbers.Real implied a working __float__ in filters.
+                # The cast is guarded like the float cast above for that
+                # reason; a registered impostor is "not numeric", not a crash.
                 if allow_complex:
-                    arr = np.asarray(arr, dtype=complex)
+                    try:
+                        arr = np.asarray(arr, dtype=complex)
+                    except (TypeError, ValueError) as cast_exc:
+                        raise ValueError(
+                            f"Time series data is not numeric: dtype "
+                            f"'{arr.dtype}' cannot be interpreted as complex "
+                            f"numbers."
+                        ) from cast_exc
                 else:
                     raise ValueError(_complex_data_message(
                         f"dtype '{arr.dtype}' holding complex values")) from exc

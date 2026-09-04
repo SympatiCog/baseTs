@@ -97,7 +97,10 @@ behaviour is untouched and the filters get only the NaN rule they share. A
 complex value with a NaN in either part is still rejected. Review caught the
 first cut consulting the keyword at the dtype check only, so complex numbers
 hiding in an object array were still told to discard their imaginary part;
-the object branch now casts to complex when allowed. (Object-dtype arrays
+the object branch now casts to complex when allowed — with the cast
+guarded, since `numbers.Complex` is a registrable ABC and a registered
+impostor with no working `__complex__` escaped the first cut as a bare
+`TypeError` from every filter. (Object-dtype arrays
 still cannot be *filtered*, because `scipy.signal.filtfilt` refuses them
 with a bare `NotImplementedError` — identical on `main`, and filed
 separately.)
