@@ -54,6 +54,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — integer parameters follow one rule (#78)
+
+### Fixed — three validation policies for "an integer parameter" became one
+
+#49 gave the filter `order` a strict rule: a non-bool `numbers.Integral` of
+at least 1, coerced to a plain `int`, otherwise `InvalidParameterError`. Its
+siblings did not follow it. `filters.bandpass_filter(window_step=4.0)` and
+`window_step=2.5` were accepted - the parameters are annotated `int` and
+documented as a step and an overlap in samples, but were validated through
+the real-number guard. `sg_filter(window_length=True)` silently returned its
+input unchanged (`True` read as a window of 1, the identity), while
+`window_length=11.0` died inside scipy with a bare `TypeError`.
+`set_outlier_filter(order=4.7)` stored 4 with no error, `'5'` stored 5, and
+`order=True` stored a bool. Same package, three answers.
+
+`_require_order` is now `_require_int(label, value, minimum)`, the one policy,
+and every parameter that counts something goes through it: `order`,
+`window_step`, `overlap`, `window_length`, `polyorder`, and
+`set_outlier_filter`'s `max_iterations`, `order` and `it`. A numpy integer
+is admitted and stored as a plain `int`; a bool, a float (integral-valued or
+not) and a string are refused by name. The floor is the rule's, not the
+caller's: an order, a step, a window length, a pass count and an
+interpolation order must be at least 1; an `overlap`, a `polyorder` and `it`
+may be 0 - the default overlap, the moving average, and the default number
+of robustifying passes respectively. The message names which
+(`window_step must be a positive integer, got 4.0`; `overlap must be a
+non-negative integer, got -1`). `set_outlier_filter` raises the filter
+module's `InvalidParameterError`, which is a `ValueError`, so the contract it
+has always made still holds and `except ValueError` still catches it.
+
+**The design question the issue asked to settle first** was whether
+`window_step` may legitimately be fractional, since it only ever divides the
+rate. It is settled as an integer: the name, the annotation, the docstring
+("step size for windowed analysis") and its partner `overlap`, which is
+subtracted from it, all describe a count of samples, and nothing in the
+package, tests or docs passes a fractional one. `bandpass_at` does not
+expose either parameter, so this is only reachable through a direct
+`filters.bandpass_filter` call.
+
+**Breaking — seven behaviour changes in `bandpass_filter`**, all calls that
+ran and returned output at a rate the caller did not ask for, enumerated by
+the census in `TestTheInvalidParameterContractIsComplete` and asserted
+there: a fractional (`2.5`) or integral-valued float (`4.0`) `window_step`
+or `overlap` (four); a negative `overlap`, which inflated the effective rate
+above the real one - the silent case #30 named and left (one); a zero or
+negative `window_step`, which `max(1, ...)` clamped to 1 (two). In
+`sg_filter`, a bool window length moves from the silent identity to
+`InvalidParameterError`, and a float one from scipy's bare `TypeError`; a
+float, bool, negative or string `polyorder` likewise. In
+`set_outlier_filter`, a float, bool or string integer field is refused
+where it used to be truncated, passed through, or parsed; a zero or negative
+`max_iterations` or `order`, and a negative `it`, are refused where they were
+stored.
+
+**One case stops raising, said plainly.** `bandpass_filter(overlap=10**400)`
+raised under #30 only because coercing it to a float overflowed. As an
+integer it is a legitimate non-negative value; what is wrong with it is its
+relationship to the step, and that is the gap #30 documented and left open:
+an overlap of at least the step clamps to 1 and filters at the full declared
+rate. This change, whose subject is the type rule, does not close it, so an
+oversized overlap now does what `overlap=1` does at the default step -
+nothing - and a test pins that so closing the gap is a decision rather than
+a drift. #30's census therefore keeps twenty of its twenty-one cases; the
+`window_step=10**400` case stays in the contract, its `OverflowError` now
+caught at the division rather than at a float conversion that no longer
+happens, with the message `window_step is too large to divide the sampling
+frequency by`.
+
+The messages for a NaN, `None`, string or unconvertible `window_step` or
+`overlap` changed from "must be a real number" to the integer rule; the
+rejections themselves are #30's and are unchanged. `_require_finite_real`,
+whose only callers were those two parameters, is removed: NaN is not an
+`Integral`, so the integer rule covers the case it existed for.
+
 ## [Unreleased] — object-dtype data reaches numeric code as numbers, and Inf gets its own remedy (#75, #80, #81)
 
 Three issues of one shape: an object-dtype series passing the shared data

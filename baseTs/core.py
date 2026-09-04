@@ -18,7 +18,8 @@ from scipy.ndimage import gaussian_filter
 from typing import Optional, TYPE_CHECKING, Union, List, Tuple
 
 # Import modules - now using relative imports
-from .filters import bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter, highpass_filter, notch_filter
+from .filters import (bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter,
+                      highpass_filter, notch_filter, _require_int)
 from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
 from dataclasses import replace
 from .utils import (coerce_numeric_data,
@@ -1349,9 +1350,21 @@ class baseTs(TimeSeriesData):
             'fill_input_gaps': bool
         }
 
+        # The floor each integer field's rule states (#78). A pass count and
+        # an interpolation order must exist; the robustifying iterations
+        # inside the LOWESS fit default to 0 and may stay there.
+        int_floors = {'max_iterations': 1, 'order': 1, 'it': 0}
+
         def _coerce(param_name, value):
             """Validate one parameter, converting where the type allows."""
             param_type = valid_params[param_name]
+            # The integer fields follow the filters' policy rather than the
+            # generic int() branch below, which stored 4 for 4.7 and 5 for
+            # '5', and passed a bool through as the int it is (#78). The
+            # rejection is InvalidParameterError, which is a ValueError, so
+            # the contract this method has always made still holds.
+            if param_type is int:
+                return _require_int(param_name, value, minimum=int_floors[param_name])
             if param_name == 'tails':
                 if isinstance(value, str):
                     try:
