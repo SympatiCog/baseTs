@@ -196,13 +196,21 @@ def _as_filterable(data: ArrayLike) -> np.ndarray:
     Called *after* the validator, not before it, on purpose: #48's rule is
     that a bad call is reported before bad data, and the O(n) look at an
     object array's elements must not get to speak ahead of a cutoff the
-    caller mistyped. That ordering also means this cannot raise - the
-    validator's data guard ran the same classification on the same array
-    and it passed - so the try/except that would translate its ValueError
-    is deliberately absent. The price is a second pass over object arrays
-    only; numeric input comes back as the same object.
+    caller mistyped. The price is a second pass over object arrays only;
+    numeric input comes back as the same object.
+
+    For ordinary data that second pass cannot fail: the validator's guard
+    ran the same classification on the same array and it passed. But the
+    classification asks numbers.Real, a registrable ABC, and a registered
+    object's __float__ need not answer the same way twice - the first cut
+    said "cannot raise" and left the translation out, and a stateful
+    impostor escaped as a bare ValueError (review). So the same translation
+    _require_finite_data makes, on the same terms: one call in the try.
     """
-    return coerce_numeric_data(data, allow_complex=True)
+    try:
+        return coerce_numeric_data(data, allow_complex=True)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
 
 
 def validate_filter_params(data: ArrayLike,

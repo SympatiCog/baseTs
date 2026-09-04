@@ -75,8 +75,12 @@ The cast now lives in one place, `utils.coerce_numeric_data`, which
 `None`). Each filter computes with that array, coerced *after* validation
 so that #48's "bad call before bad data" precedence holds (pinned: a
 non-numeric array with a bad cutoff still reports the cutoff), on an array
-the guard has just proved coercible - the second pass cannot raise, and is
-paid on object arrays only. An object array of floats now filters to the
+the guard has just proved coercible. The second pass is paid on object
+arrays only, and is translated like the guard's own: review built a
+`numbers.Real`-registered object whose `__float__` gives out after the
+guard's pass, and the first cut let it escape as a bare `ValueError` on the
+strength of a docstring saying that could not happen. An object array of
+floats now filters to the
 bit-identical output of the float array, on all four; an object array of
 complex filters as complex128.
 

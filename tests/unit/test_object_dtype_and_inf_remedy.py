@@ -200,6 +200,35 @@ class TestFiltersAcceptObjectDtype:
         with pytest.raises(InvalidParameterError, match="Cutoff"):
             lowpass_filter(_as_object(["1.5"] * N), -1.0, FS)
 
+    @pytest.mark.parametrize("name, run", FILTERS, ids=FILTER_IDS)
+    def test_a_second_pass_that_disagrees_with_the_first_is_still_translated(self, name, run):
+        """The coercion after validation is a second pass over the same
+        array, and "the guard already proved it" holds only while __float__
+        answers the same way twice. numbers.Real is a registrable ABC, so a
+        stateful impostor can pass the guard's pass and refuse the filter's;
+        the first cut let that out as a bare ValueError on the strength of a
+        docstring saying it could not happen (review). The translation is
+        the same one _require_finite_data makes, pinned here so the contract
+        holds for the input class the "cannot raise" reasoning excluded."""
+        calls = {"n": 0}
+
+        @numbers.Real.register
+        class _Flaky:
+            def __init__(self, v):
+                self.v = v
+
+            def __float__(self):
+                calls["n"] += 1
+                if calls["n"] > N:              # the guard's pass succeeds, the next does not
+                    raise TypeError("exhausted")
+                return float(self.v)
+
+        with pytest.raises(InvalidParameterError, match="not numeric") as exc:
+            run(_as_object(_Flaky(v) for v in _sine()))
+        assert calls["n"] > N                   # ...and it really was the second pass
+        assert isinstance(exc.value.__cause__, ValueError)
+        assert not isinstance(exc.value.__cause__, InvalidParameterError)   # single wrap
+
     @pytest.mark.parametrize("name, run", METHODS, ids=METHOD_IDS)
     def test_the_basets_methods_reach_the_same_fix(self, name, run):
         t = np.arange(N) / FS
