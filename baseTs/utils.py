@@ -394,43 +394,62 @@ def round_values(x: Any, decimals: int = 4) -> Any:
     or return the value unchanged if not a float."""
     return round(x, decimals) if isinstance(x, float) else x
 
+# The three helpers below derive their result from the source with
+# `_create_new_with_data`, the path the class's own methods use, rather
+# than the bare constructor. Built from two arrays, the result came back
+# with all thirteen `_metadata` fields at their defaults - a `ts_offset` the
+# returned timestamps still embodied but the object no longer reported, an
+# empty name, permissive flags - with nothing to say so (#66). None of the
+# three is exported, and the public wrappers `diff_ts()` and `dediff_ts()`
+# only ever borrowed the arrays, which is how it went unnoticed.
+
 def add_constant(ts: Any, constant: float = 0, inplace: bool = False) -> Any:
-    """Add a constant to a time series."""
-    from .core import baseTs
-    x = ts.data.copy()
-    t = ts.times.copy()
-    x = x + constant
-    
+    """Add a constant to a time series.
+
+    Args:
+        ts: Source baseTs.
+        constant: Value added to every sample.
+        inplace: If True, modifies `ts` and returns it. Otherwise returns a
+            new baseTs carrying the source's metadata.
+    """
+    x = ts.data + constant
+
     if inplace:
         ts.data = x
-        ts.times = t
         return ts
-    else:
-        res = baseTs(data=x, times=t)
-        return res
+    return ts._create_new_with_data(x, ts.times.copy())
 
 def diff(ts: Any, zeropad: bool = False) -> Any:
-    """Diff a time series."""
-    from .core import baseTs
-    x = ts.data.copy()
+    """First difference of a time series.
+
+    Args:
+        ts: Source baseTs.
+        zeropad: If True, the first difference is repeated at the front so
+            the result keeps the source's length and index. Otherwise the
+            result is one sample shorter and starts at the source's second
+            timestamp.
+
+    Returns:
+        A new baseTs carrying the source's metadata.
+    """
+    d = np.diff(ts.data)
     t = ts.times.copy()
     if zeropad:
-        d = np.diff(x)
         d = np.insert(d, 0, d[0])
     else:
-        d = np.diff(x)
         t = t[1:]
-    res = baseTs(data=d, times=t)
-    return(res)
+    return ts._create_new_with_data(d, t)
 
 def dediff(ts: Any) -> Any:
-    """Dediff a time series."""
-    from .core import baseTs
-    # x = ts.data.copy()
-    t = ts.times.copy()
-    cs = np.cumsum(ts.data)
-    res = baseTs(data=cs, times=t)
-    return(res)
+    """Cumulative sum of a time series.
+
+    Undoes `diff(zeropad=True)` up to the level `diff` discarded: the
+    result is the source shifted by a constant, not the source.
+
+    Returns:
+        A new baseTs on the source's index, carrying its metadata.
+    """
+    return ts._create_new_with_data(np.cumsum(ts.data), ts.times.copy())
 
 class TimeSeriesError(Exception):   
     """Base exception for time series related errors."""

@@ -428,6 +428,7 @@ INPLACE_ARGS = {
     'dediff_ts': (), 'detrend': (), 'diff_ts': (), 'filter_outliers': (),
     'gauss_filter': (), 'highpass_at': (1.0,), 'highpass_filter': (1.0,),
     'interp_to_uniform_grid': (), 'interpolate_gaps': (),
+    'interpolate_missing': (),
     'interpto_hz': (20.0,), 'interpto_samples': (150,), 'lowess_detrend': (),
     'lowpass_at': (8.0,), 'lowpass_filter': (8.0,), 'normalize_range': (),
     'notch_at': (5.0,), 'notch_filter': (5.0,), 'remove_outliers': (),
@@ -442,10 +443,10 @@ INPLACE_ARGS = {
 #: independently of this change. Named with their issue so the exclusion is
 #: an accounted-for gap rather than a silent skip.
 INPLACE_KNOWN_BROKEN = {
-    # interpolate_missing(inplace=True) passes inplace= to a helper that
-    # returns None, then reads `.data` off it - dead from introduction, on
-    # both pandas majors, with and without NaNs in the data.
-    'interpolate_missing': 'filed separately: dead inplace branch',
+    # Empty since #64: `interpolate_missing(inplace=True)` was the one entry
+    # (dead from introduction, it read `.data` off a helper's `None`). The
+    # dict stays so that the next broken method has somewhere to be
+    # accounted for rather than silently skipped.
 }
 
 

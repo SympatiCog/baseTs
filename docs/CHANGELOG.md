@@ -54,6 +54,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — a helper that derives a baseTs carries its metadata (#64, #66)
+
+### Fixed — `interpolate_missing(inplace=True)` raised on every call
+
+`baseTs.interpolate_missing` forwarded its `inplace` to
+`filters.interpolate_missing_values`, which on that path mutates its
+argument and returns `None` (the pandas convention), and then read `.data`
+off the `None`. `AttributeError` on both pandas majors, with or without a
+NaN in the data, from the day the method was written — the same shape as
+#27's `butterpass_at`. Nothing in the suite or the docs called it with
+`inplace=True`, which is how it survived; the reflection sweep added for
+#35/#39 found it and recorded it in `INPLACE_KNOWN_BROKEN`, which is now
+empty.
+
+The helper's contract is kept. The branch that knows the answer is `None`
+no longer asks for it: on `inplace=True` the method calls the helper for its
+side effect and continues with `self`. The `inplace=False` branch is
+unchanged. `interpolate_missing` joins the sweep's `INPLACE_ARGS`, so the
+identity and metadata pins that cover every other `inplace=` method now
+cover it.
+
+### Fixed — four helpers returned a baseTs with every metadata field reset
+
+`utils.add_constant`, `utils.diff`, `utils.dediff` and
+`LowessOutlierFilter.filter` each built their result with the bare
+constructor from two arrays, so all thirteen `_metadata` fields came back at
+their defaults, and the Series `name`, `attrs` and `flags` with them. The
+sharp one is `ts_offset`: the returned timestamps still embodied the offset
+while the object reported none, so the result said its timestamps meant
+something other than what they meant. The public wrappers `diff_ts()`,
+`dediff_ts()` and `filter_outliers()` were never affected — each starts from
+a copy and borrows only the arrays — and none of the three `utils` helpers
+is exported, which is why this was low priority. `LowessOutlierFilter` is
+exported, so its `filter()` was reachable through the public API (found by
+the codex seat on PR #84).
+
+All four now derive through `_create_new_with_data`, the path the class's
+own methods use. Pinned as a rule rather than as the four sites: a
+source-level test parses `utils.py`, `filters.py` and
+`LowessOutlierFilter.py` and fails on any direct call to the constructor —
+`baseTs(...)` or `<module>.baseTs(...)` — so a fifth helper written the old
+way fails before anyone calls it. An aliased import or a call through a
+variable is not seen, and cannot be in general; where a helper module
+imports the class it does so under its own name, and the pin is calibrated
+to that.
+
+Review round 2 (glm-5.3, prompted directly with the diff) raised three
+mechanism concerns that measured false — the `interpolate_missing()` copy
+path does not append to the source's history, a stamped `lowess_fit`
+reads `None` after the inplace fill, and no derivation shares the source's
+`attrs` dict — and three true claims that nothing pinned: the declared rate
+honoured where the index is kept, the positional slots following #40 on the
+`utils` helpers, and `outlier_filter` carried. All six are pinned now.
+
+Review round 1 (codex) found a regression in the first cut: on already-clean
+data `LowessOutlierFilter.filter` changes no value, so the #40 staleness
+check — which drops a positional slot only when the index or the values
+differ — let the source's own `lowess_fit` and `outlier_indices` through
+unchanged, and a caller reading them off the result would have taken a fit
+from some earlier run for this one. On `main` the bare constructor left
+both `None`. The filter now clears both on the object it returns; its own
+findings travel in the tuple, and stamping them is `filter_outliers()`'s
+job, as before.
+
+### Changed
+
+- `ts.interpolate_missing(inplace=True)` fills the gaps on `ts`, appends
+  `"Interpolated missing values in timeseries"` to its history, sets
+  `last_process` to `"_interp"` and returns `ts`. Before: `AttributeError:
+  'NoneType' object has no attribute 'data'`.
+- `utils.add_constant(ts, c)`, `utils.diff(ts)`, `utils.dediff(ts)` and
+  `LowessOutlierFilter().filter(ts)[0]` return a baseTs carrying the
+  source's `signal_name` (verbatim, per #56), `name`, `attrs`,
+  `flags.allows_duplicate_labels`, `is_filtered`, `is_interpolated`,
+  `is_uniform_grid`, `is_outlier_filtered`, `has_timestamp_offset`,
+  `ts_offset`, `last_process`, `outlier_filter` and a copy of `history`.
+  Before: constructor defaults for all of them (`signal_name=''`,
+  `ts_offset=0`, `history` of one entry, permissive duplicate-label flag).
+- Where the result keeps the source's index (`add_constant`, `dediff`,
+  `diff(zeropad=True)`, `filter`), a declared rate is carried and honoured;
+  before it was re-derived. `diff(zeropad=False)` changes the index, so the
+  declaration expires there as it does everywhere (#38).
+- For `add_constant`, `diff` and `dediff` the positional slots `lowess_fit`
+  and `outlier_indices` follow the #40 rule as on every other derivation:
+  carried, and readable only while the result's index and values are the
+  ones they were stamped against — so `add_constant(ts, 0.0)` keeps them,
+  exactly as `ts + 0.0` does, and `diff(ts)` reads `None`. Before, all
+  three always read `None`, for a different reason (never copied).
+  `LowessOutlierFilter.filter` is the exception, and clears both on its
+  result (see above).
+- `utils.add_constant(ts, c, inplace=True)` no longer reassigns `ts.times`
+  to a copy of itself on the way past.
+
+### Observed, not changed
+
+- `LowessOutlierFilter.filter(ts)` does not mark its result
+  `is_outlier_filtered` or append to its history; `filter_outliers()` does
+  both on the object it builds. The helper returns arrays-in-a-baseTs and
+  the wrapper records the step, as before.
+- `utils.diff(ts, zeropad=True)` on a series of fewer than two samples
+  raises `IndexError` from `d[0]` on an empty difference, as it did before;
+  `zeropad=False` returns an empty series. Pre-existing.
+- `interpolate_missing()` does not set `is_interpolated` on either branch;
+  it did not on the branch that worked before, and the inplace branch now
+  matches it. Whether it should is a separate question.
+- `docs/API.md` documents `diff()` and `dediff()` under "Utility Functions"
+  as methods on `ts`; `ts.diff()` is pandas' own and `ts.dediff()` does not
+  exist — the methods are `diff_ts()` and `dediff_ts()`. Pre-existing.
+
 ## [Unreleased] — the label metadata is always a string, in place too (#61)
 
 ### Fixed — `lag_plot` printed a failure to stdout and labelled the plot `Signal`
