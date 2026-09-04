@@ -358,6 +358,13 @@ Apply notch filter to remove specific frequency. Alias for `notch_at()`.
 **Returns:**
 - `baseTs`: New filtered baseTs object
 
+**Raises:**
+- `InvalidParameterError`: if the notch lies within 1% of Nyquist of either end. The stopped band
+  is `freq ± 1% of Nyquist` (0.05 Hz each side at 10 Hz, 5 Hz each side at 1 kHz), and both
+  edges must stay inside `(0, Nyquist)`, so at a sampling rate `fs` the notch must satisfy
+  `0.01·fs/2 < freq < 0.99·fs/2`, both ends exclusive. The message quotes both limits in Hz. Before
+  #76 a notch in that margin raised a bare scipy `ValueError` about `Wn`.
+
 **Example:**
 ```python
 # Remove 60 Hz power line noise

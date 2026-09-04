@@ -54,6 +54,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the notch filter validates the band it stops (#76)
+
+### Fixed — a notch within 1% of Nyquist of either end died in scipy
+
+`notch_filter` validated `cutoff_hz` against `(0, Nyquist)` and then
+stopped the band `cutoff/Nyquist ± 0.01` in normalised units — two derived
+edges the validator never saw. A cutoff that passed the check could still
+put an edge at or past scipy's `0 < Wn < 1` limit, and did:
+`notch_filter(d, 4.99, 10.0)` and `notch_filter(d, 0.01, 10.0)` both raised
+a bare scipy `ValueError` about `Wn`, outside the `InvalidParameterError`
+contract the docstring promises. The #49 shape, reached by a different
+route: the value filtered was derived from the value validated by a rule
+the validator did not know.
+
+The band is now built in a new `validate_notch_params`, checked as built
+(the predicate is scipy's, on the two floats `butter` receives), and
+returned, so `notch_filter` filters with the edges that were checked. The
+rule itself is unchanged and is now stated: the stopped band is
+`cutoff_hz ± 1% of Nyquist` (`NOTCH_HALF_WIDTH`), which in Hz widens with
+the sampling rate — 0.05 Hz each side at 10 Hz, 5 Hz each side at 1 kHz.
+A Hz- or Q-based width would be a design change and is not made here; the
+drift guard that pins the current rule names both.
+
+**One message for every out-of-range cutoff.** The notch check runs before
+the delegated single-cutoff check, so zero, negative, NaN, at or above
+Nyquist, and inside-the-half-width all get the message that quotes the
+limits a retry has to meet (`more than 0.05 Hz (1% of Nyquist) from both
+0 Hz and the Nyquist frequency (5.0 Hz)`). Delegating first would have
+told a caller passing 5.0 to go `less than Nyquist (5.0 Hz)`, and a retry
+at 4.99 on that advice failed again. Type and conversion rejections
+(`'1'`, `True`, an unconvertible Real, an int too large for a float) keep
+the siblings' `Cutoff frequency ...` wording, byte-identical to `main`.
+
+Measured against a `main` worktree over 19 cutoffs and both method forms:
+every accepted call returns the same array, ten rejections change, all to
+the new message. Parameters are checked before the O(n) data scan, so a
+bad notch on gappy data names the notch, not the gaps (#48 ordering).
+
+### Changed
+
+- `notch_filter(data, cutoff_hz, fs_hz)`, `ts.notch_at(cutoff_hz)` and
+  `ts.notch_filter(freq)` raise `InvalidParameterError` when
+  `cutoff_hz / (fs_hz / 2) ± 0.01` leaves `(0, 1)`. Before: a bare scipy
+  `ValueError` (`Digital filter critical frequencies must be 0 < Wn < 1`
+  near Nyquist, `filter critical frequencies must be greater than 0` near
+  zero). At 10 Hz the accepted range is `0.05 < cutoff_hz < 4.95`, both
+  ends exclusive, as before.
+- A notch cutoff of zero, negative, NaN, Inf, or at or above Nyquist now
+  raises the notch message rather than the generic `Cutoff frequency must
+  be positive and less than Nyquist frequency ...`. Same exception type;
+  the wording a caller matched on has changed.
+- New `filters.validate_notch_params(data, sampling_freq, cutoff_hz,
+  order)` returning `(sampling_freq, low, high, order)` with the edges in
+  normalised units, and `filters.NOTCH_HALF_WIDTH = 0.01`.
+
 ## [Unreleased] — a length-changing `ts.data = x` needs a span to resample over (#65)
 
 ### Fixed — a short series invented a time base when its data changed length

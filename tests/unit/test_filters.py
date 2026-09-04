@@ -972,3 +972,83 @@ class TestTheNaNRemedyClearsAnEdgeGap:
             cts.lowpass_at(5.0)
         out = cts.interpolate_gaps(limit_direction='both').lowpass_at(5.0)
         assert out.dtype.kind == "c" and np.all(np.isfinite(out.values))
+
+
+class TestTheNotchBandIsValidated:
+    """#76: notch_filter validated `cutoff_hz` against (0, Nyquist) and then
+    stopped the band `cutoff/nyquist +/- 0.01` - two derived edges the
+    validator never saw. A cutoff within 1% of Nyquist of either end passed
+    the check and died in scipy with a bare ValueError about `Wn`. The #49
+    shape again: the value validated was not the value filtered, this time
+    because the filtered band is derived from the cutoff by a rule the
+    validator did not know.
+
+    The rule itself (a half-width of 1% of Nyquist each side) is kept and is
+    now stated; the check is on the same two floats `butter` receives.
+    """
+
+    FS = 10.0          # Nyquist 5.0 Hz, half-width 0.05 Hz
+
+    @classmethod
+    def _data(cls):
+        return np.sin(np.arange(500) / 10.0)
+
+    @pytest.mark.parametrize("cutoff", [4.99, 4.95, 0.05, 0.01],
+                             ids=["near-nyquist", "at-1pct-of-nyquist",
+                                  "at-1pct-of-zero", "near-zero"])
+    def test_a_cutoff_inside_the_half_width_is_refused_by_name(self, cutoff):
+        with pytest.raises(InvalidParameterError) as info:
+            notch_filter(self._data(), cutoff, self.FS)
+
+        message = str(info.value)
+        assert "Notch frequency" in message
+        assert "0.05 Hz" in message                       # the half-width
+        assert "5.0 Hz" in message                        # the Nyquist limit
+        assert f"cutoff_hz={cutoff!r}" in message
+        assert "Wn" not in message                        # scipy's word, not ours
+        assert info.value.__cause__ is None               # refused, not translated
+
+    @pytest.mark.parametrize("cutoff", [0.0, -1.0, 5.0, 6.0, float("nan")],
+                             ids=["zero", "negative", "nyquist", "above", "nan"])
+    def test_every_out_of_range_cutoff_gets_the_notch_message(self, cutoff):
+        """One message for every out-of-range cutoff, so the limits it quotes
+        are the limits a retry has to meet. The generic single-cutoff message
+        says `less than Nyquist (5.0 Hz)`, and a caller who retried at 4.99
+        on that advice was refused again by scipy."""
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(self._data(), cutoff, self.FS)
+
+    @pytest.mark.parametrize("cutoff", [0.0500001, 0.06, 4.94, 4.9499999],
+                             ids=["just-above-1pct", "0.06", "4.94", "just-below-99pct"])
+    def test_a_cutoff_outside_the_half_width_still_filters(self, cutoff):
+        out = notch_filter(self._data(), cutoff, self.FS)
+
+        assert out.shape == (500,)
+        assert np.all(np.isfinite(out))
+
+    def test_the_band_is_the_documented_half_width_of_nyquist(self):
+        """Drift guard for the stated rule. The stopped band is
+        `cutoff +/- 1% of Nyquist`, in normalised units `cutoff/nyq +/- 0.01`;
+        a change to the width, or to Hz-based or Q-based widths, has to
+        change this test and the docstring together."""
+        from scipy.signal import butter, filtfilt
+
+        out = notch_filter(self._data(), 1.0, self.FS, order=5)
+        b, a = butter(5, [0.2 - 0.01, 0.2 + 0.01], btype="bandstop")
+        np.testing.assert_array_equal(out, filtfilt(b, a, self._data()))
+
+    def test_a_bad_cutoff_is_reported_before_the_gaps_are(self):
+        """The parameter rule before the O(n) data scan, the #48 ordering: a
+        mistyped notch on gappy data names the notch, not the gaps."""
+        d = self._data()
+        d[200:204] = np.nan
+
+        with pytest.raises(InvalidParameterError, match="Notch frequency"):
+            notch_filter(d, 4.99, self.FS)
+
+    def test_the_method_forms_refuse_the_same_way(self):
+        ts = baseTs(self._data(), np.arange(500) / self.FS)
+
+        for call in (lambda: ts.notch_at(4.99), lambda: ts.notch_filter(4.99)):
+            with pytest.raises(InvalidParameterError, match="Notch frequency"):
+                call()

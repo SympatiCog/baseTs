@@ -1042,6 +1042,10 @@ class baseTs(TimeSeriesData):
     def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a notch filter at the specified frequency.
+
+        The stopped band is `cutoff_hz +/- 1% of Nyquist`
+        (`filters.NOTCH_HALF_WIDTH`), so the notch must sit more than that
+        half-width from both 0 Hz and Nyquist.
         
         Args:
             cutoff_hz: Notch frequency in Hz
@@ -1050,6 +1054,10 @@ class baseTs(TimeSeriesData):
             
         Returns:
             Notch filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the notch lies within the half-width of
+                either end, the rate is unusable, or the data has gaps (#76).
         """
         def notch_func(data):
             return notch_filter(data, cutoff_hz, self.freq, order)
