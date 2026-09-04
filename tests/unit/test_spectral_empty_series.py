@@ -99,13 +99,21 @@ def test_an_empty_series_raises_without_warning(name):
             ENTRY_POINTS[name](_empty())
 
 
-def test_plot_fft_power_draws_nothing_for_an_empty_series():
-    """The #34 draws-nothing guarantee holds for the rejection this adds."""
-    empty = _empty()
-    before = set(plt.get_fignums())
+@pytest.mark.parametrize("name", ["get_frequency_content", "compute_fft_power"])
+def test_emptiness_is_reported_before_the_rate(name):
+    """Precedence for a series wrong in both ways: empty, and no usable rate.
+
+    The door sits above validate_sampling_freq at both computation sites.
+    compute_fft_power always checked emptiness first; get_frequency_content
+    used to report the rate (it had no empty check to report). Empty first
+    is the order that makes the family agree, and it is the more useful
+    diagnosis: an empty series has no rate to derive, so the rate error is a
+    consequence of the emptiness, not a second problem.
+    """
+    both_wrong = baseTs(np.array([]), np.array([]), freq=np.nan)
+    assert np.isnan(both_wrong.freq)
     with pytest.raises(ValueError, match=SHARED_MESSAGE):
-        plot_fft_power(empty)
-    assert set(plt.get_fignums()) == before
+        ENTRY_POINTS[name](both_wrong)
 
 
 class TestTheSharedDoor:
@@ -149,6 +157,30 @@ class TestTheOneSampleDecision:
         freqs, power = _one_sample().get_frequency_content()
         assert freqs.tolist() == [0.0]
         assert len(power) == 1
+
+    def test_get_peak_freq_reports_the_dc_bin(self):
+        """A confident 0.0 for a spectrum with no peak in it - observed and
+        left as get_peak_freq's own question, not an emptiness one."""
+        assert _one_sample().get_peak_freq() == 0.0
+        assert utils.get_peak_freq(_one_sample()) == 0.0
+
+    @pytest.mark.parametrize("call", [
+        lambda ts: ts.relative_band_power(),
+        lambda ts: ts.falff(),
+    ], ids=["relative_band_power", "falff"])
+    def test_band_power_raises_on_its_own_ground(self, call):
+        """The constant-data branch, which runs before the FFT: one sample
+        has a standard deviation of exactly zero."""
+        with pytest.raises(ValueError, match="no spectral power outside the DC component"):
+            call(_one_sample())
+
+    @pytest.mark.filterwarnings(
+        "ignore:Attempting to set identical low and high xlims:UserWarning")
+    def test_plot_fft_power_draws_one_point(self):
+        """matplotlib warns about a singular x-range for one point; that is
+        the draw's, not the door's, and it is what main does at n=1 too."""
+        ax = plot_fft_power(_one_sample())
+        assert len(ax.get_lines()[0].get_xdata()) == 1
 
     def test_compute_fft_power_keeps_its_own_minimum_of_two(self):
         """Its threshold is its own contract and is not the door's."""

@@ -511,8 +511,9 @@ def compute_fft_power(
         Tuple of (frequencies, power_spectrum)
 
     Raises:
-        ValueError: If the time series is empty, has an invalid frequency, is
-            complex, or contains NaN or Inf values
+        ValueError: If the time series is empty or has fewer than two samples
+            (an FFT over one sample is a single DC bin, not a spectrum), has
+            an invalid frequency, is complex, or contains NaN or Inf values
     """
     # Input validation. The empty check was a local copy until #62 replaced
     # it with the shared door, so this function and get_frequency_content

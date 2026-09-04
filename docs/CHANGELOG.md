@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — an empty series is rejected by every spectral entry point (#62)
 
-### Fixed — four of five raised `ZeroDivisionError` from inside numpy
+### Fixed — five of six routes raised `ZeroDivisionError` from inside numpy
 
 `np.fft.fftfreq(n, d)` computes `1.0 / (n * d)`, so an empty series raised a
 bare `ZeroDivisionError: float division by zero` from `numpy/fft/_helper.py`
@@ -76,8 +76,18 @@ spectrum — `get_frequency_content` (which `get_peak_freq`, `relative_band_powe
 copy is deleted in its favour. `relative_band_power` calls it too, before its
 own `np.std`: numpy warns `Degrees of freedom <= 0` on an empty array, so
 without that the diagnosis arrived with a `RuntimeWarning` attached. Pinned
-for all eleven public routes (six methods, four `utils` free functions and the
-plotting function) under `warnings.simplefilter("error")`.
+for all ten public routes — five methods, four `utils` free functions and the
+plotting function — as eleven cases (`get_frequency_content` once more with a
+window, which pins the door above the windowing step), each under
+`warnings.simplefilter("error")`.
+
+**Precedence, decided and pinned:** the door sits *above* `validate_sampling_freq`
+at both computation sites. `compute_fft_power` always checked emptiness first;
+`get_frequency_content` had no empty check, so a series that was empty *and*
+had no usable rate reported the rate. It now reports the emptiness from every
+route, which is what makes the family agree, and is the better diagnosis —
+an empty series has no rate to derive from, so the rate error is a
+consequence, not a second problem.
 
 ### Changed
 
@@ -103,10 +113,11 @@ raise on their own ground ("no spectral power outside the DC component"),
 division by zero; a threshold above zero would not buy a meaningful spectrum
 (two samples also yield only the DC bin, since the Nyquist bin is negative in
 `fftfreq`'s ordering and the positive-frequency mask drops it) and would turn
-two succeeding calls into failures for no gain in the answer. Pinned in
-`TestTheOneSampleDecision` so that changing it is an edit to a stated rule.
-`compute_fft_power`'s minimum of two is its own documented contract and stays
-local to it.
+three succeeding routes into failures for no gain in the answer. All six
+behaviours in the table above are pinned in `TestTheOneSampleDecision`, so
+that changing any of them is an edit to a stated rule. `compute_fft_power`'s
+minimum of two stays local to it and is now named in its `Raises` list, which
+had listed the empty case but not the minimum it enforces one line later.
 
 **Observed, not changed:** `get_peak_freq` on a series with no non-DC bin
 (one or two samples) returns `0.0` — the DC bin is the only candidate, so the
