@@ -330,8 +330,8 @@ def plot_fft_power(ts,
         show: Whether to show the plot
         scale_power: Whether to normalize power spectrum
         highlight_band: Optional (low_freq, high_freq) tuple in Hz to shade,
-            e.g. (0.01, 0.1) to mark the fALFF band alongside
-            ts.relative_band_power(0.01, 0.1)
+            e.g. (0.01, 0.1) to mark the default relative_band_power()
+            band
 
     Returns:
         Matplotlib axes object

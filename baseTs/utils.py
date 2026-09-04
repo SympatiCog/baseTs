@@ -540,8 +540,8 @@ def get_peak_freq(ts: Any, num_pks: int = 1, window: str = None,
 
 def relative_band_power(
     ts: Any,  # TODO: Replace with proper baseTs type
-    low_freq: float,
-    high_freq: float,
+    low_freq: float = 0.01,
+    high_freq: float = 0.1,
     ratio: str = 'power',
     window: Optional[str] = None,
     details: bool = False
@@ -550,8 +550,17 @@ def relative_band_power(
     Compute the relative power (or amplitude) in a frequency band.
 
     This is the quantity behind fractional amplitude of low-frequency
-    fluctuations (fALFF, 0.01-0.1 Hz) and its EEG/HRV cousin, relative band
-    power. See falff() for the classic parameterization.
+    fluctuations (fALFF) and its EEG/HRV cousin, relative band power.
+
+    The band defaults to 0.01-0.1 Hz, a common low-frequency band for
+    resting-state fMRI and other slow physiological fluctuations. It is one
+    convention among several: Zou et al. (2008) computed fALFF over
+    0.01-0.08 Hz, and the HRV literature's LF band is 0.04-0.15 Hz. Pass
+    both edges to measure a different band. The default changes nothing about the
+    constraints below: the upper edge still has to sit at or below Nyquist,
+    so a series sampled below 0.2 Hz raises the same ValueError an explicit
+    (0.01, 0.1) would, and at least one FFT bin still has to fall inside
+    the band.
 
     The two conventions answer different questions and are not
     interchangeable:
@@ -582,8 +591,8 @@ def relative_band_power(
 
     Args:
         ts: Time series object with a get_frequency_content method
-        low_freq: Lower band edge in Hz (inclusive)
-        high_freq: Upper band edge in Hz (inclusive)
+        low_freq: Lower band edge in Hz (inclusive). Defaults to 0.01.
+        high_freq: Upper band edge in Hz (inclusive). Defaults to 0.1.
         ratio: 'power' (variance fraction, default) or 'amplitude' (fALFF)
         window: Window function passed through to get_frequency_content
             ('hann', 'hamming', 'blackman', or None)
@@ -601,14 +610,17 @@ def relative_band_power(
             signal has no spectral power outside DC
 
     Examples:
-        # Fraction of variance between 0.01 and 0.1 Hz
-        ts.detrend('linear').relative_band_power(0.01, 0.1)
+        # Fraction of variance in the default 0.01-0.1 Hz band
+        ts.detrend('linear').relative_band_power()
 
-        # Classic fALFF convention
-        ts.relative_band_power(0.01, 0.1, ratio='amplitude')
+        # A different band, here the HRV low-frequency band
+        ts.relative_band_power(0.04, 0.15)
+
+        # Classic fALFF convention (or use falff(), which defaults to it)
+        ts.relative_band_power(ratio='amplitude')
 
         # Full breakdown, including the white-noise null to compare against
-        res = ts.relative_band_power(0.01, 0.1, details=True)
+        res = ts.relative_band_power(details=True)
         print(res.ratio, res.bin_fraction)
     """
     if ratio not in ('power', 'amplitude'):
@@ -724,15 +736,18 @@ def falff(
     """
     Fractional amplitude of low-frequency fluctuations (fALFF).
 
-    Convenience wrapper around relative_band_power() with the band and
-    convention from Zou et al. (2008), "An improved approach to detection of
-    amplitude of low-frequency fluctuation (ALFF) for resting-state fMRI",
-    J Neurosci Methods 172(1):137-141.
+    Convenience wrapper around relative_band_power() with the convention
+    from Zou et al. (2008), "An improved approach to detection of amplitude
+    of low-frequency fluctuation (ALFF) for resting-state fMRI", J Neurosci
+    Methods 172(1):137-141. Both functions default to the same 0.01-0.1 Hz
+    band, which is wider than the 0.01-0.08 Hz that paper used; pass
+    (0.01, 0.08) to reproduce it.
 
-    Note the deliberate default split: relative_band_power() defaults to
-    ratio='power' because the variance fraction is the better-behaved
-    general-purpose measure, while this function defaults to
-    ratio='amplitude' so it reproduces published fALFF values.
+    What differs is the convention, and the split is deliberate:
+    relative_band_power() defaults to ratio='power' because the variance
+    fraction is the better-behaved general-purpose measure, while this
+    function defaults to ratio='amplitude' so it reproduces published fALFF
+    values.
 
     Caveat: because the amplitude convention's denominator grows with the
     number of noise bins, fALFF values are not comparable across acquisitions
@@ -753,7 +768,7 @@ def falff(
         # Classic fALFF on a detrended signal
         ts.detrend('linear').falff()
 
-        # Custom band
+        # The band Zou et al. (2008) used
         ts.falff(0.01, 0.08)
     """
     return relative_band_power(ts, low_freq, high_freq, ratio=ratio, **kwargs)

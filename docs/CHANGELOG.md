@@ -54,6 +54,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `relative_band_power` defaults to the fALFF band (#46)
+
+### Added — `low_freq=0.01, high_freq=0.1` on `relative_band_power`
+
+`ts.relative_band_power()` now measures 0.01-0.1 Hz, a common low-frequency
+band for resting-state fMRI and other slow physiological fluctuations.
+Before, both edges were required and every call in that domain spelled out
+the same two numbers; `falff()` already defaulted to them. The `utils`
+function and the `baseTs` method both gained the defaults.
+
+The docstrings now say it is one convention among several. Two claims in
+the issue's rationale did not survive review and are not repeated: that
+Zou et al. (2008) documents this band (that paper computed fALFF over
+0.01-0.08 Hz, which the `falff` docstrings now say and its example
+reproduces), and that it is the standard HRV band (the HRV literature's LF
+band is 0.04-0.15 Hz, now the docstrings' example of a different band).
+The default itself is unchanged from what `falff()` already carried.
+
+Not a breaking change. Every existing call passes the edges explicitly, by
+position or keyword, and those calls are unaffected; the new tests assert
+the bare call returns exactly what the explicit `(0.01, 0.1)` call returns.
+
+The convention split with `falff()` is unchanged and deliberate: a bare
+`relative_band_power()` is the variance fraction (`ratio='power'`), a bare
+`falff()` is the amplitude ratio (`ratio='amplitude'`). The two functions now
+differ *only* in that default, and their docstrings say so.
+
+The default does not relax the constraints. A series sampled below 0.2 Hz
+puts the default upper edge above Nyquist and raises the same `ValueError`
+an explicit call would, with the edge the caller never typed in the message.
+The duration constraint is weaker than the docstring's 100 s precondition
+suggests: that figure is what it takes to give the 0.01 Hz edge a bin of
+its own, but the call only refuses when *no* bin lands in the band, which
+for a decade-wide band happens below roughly 10 s. Review caught the first
+draft of this entry claiming a raise at 100 s; a 20 s series at 1 Hz
+succeeds.
+
+**Pinned against drift.** The band now lives in four signatures with
+nothing tying them together at runtime, so
+`test_band_defaults_agree_across_all_four_entry_points` asserts the literal
+defaults on all four. The literal is deliberate: a shared constant would
+make the test tautological, and the literal is what a caller's IDE shows.
+
 ## [Unreleased] — USER_GUIDE Example 4 runs to completion (#44)
 
 ### Fixed — two defects in `scientific_time_series_analysis`, one masking the other

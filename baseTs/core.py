@@ -2114,7 +2114,7 @@ class baseTs(TimeSeriesData):
         return get_peak_freq(self, num_pks=num_pks, window=window, 
                            min_freq=min_freq, max_freq=max_freq)
 
-    def relative_band_power(self, low_freq: float, high_freq: float,
+    def relative_band_power(self, low_freq: float = 0.01, high_freq: float = 0.1,
                             ratio: str = 'power', window: str = None,
                             details: bool = False) -> Union[float, BandPowerResult]:
         """
@@ -2122,7 +2122,15 @@ class baseTs(TimeSeriesData):
 
         This is the quantity behind fractional amplitude of low-frequency
         fluctuations (fALFF) and its EEG/HRV cousin, relative band power.
-        See falff() for the classic 0.01-0.1 Hz parameterization.
+
+        The band defaults to 0.01-0.1 Hz, a common low-frequency band for
+        resting-state fMRI and other slow physiological fluctuations. It is
+        one convention among several: Zou et al. (2008) computed fALFF over
+        0.01-0.08 Hz, and the HRV literature's LF band is 0.04-0.15 Hz.
+        Pass both edges to measure a different band. The default does not relax the
+        constraints below: the upper edge still has to sit at or below
+        Nyquist, so a series sampled below 0.2 Hz raises, and at least one
+        FFT bin still has to fall inside the band.
 
         The two conventions are not interchangeable:
 
@@ -2146,8 +2154,8 @@ class baseTs(TimeSeriesData):
               is 1 / duration, so a 0.01 Hz lower edge needs at least 100 s.
 
         Args:
-            low_freq: Lower band edge in Hz (inclusive)
-            high_freq: Upper band edge in Hz (inclusive)
+            low_freq: Lower band edge in Hz (inclusive). Defaults to 0.01.
+            high_freq: Upper band edge in Hz (inclusive). Defaults to 0.1.
             ratio: 'power' (variance fraction, default) or 'amplitude'
             window: Window function ('hann', 'hamming', 'blackman', None)
             details: If True, return a BandPowerResult breakdown instead of
@@ -2158,14 +2166,17 @@ class baseTs(TimeSeriesData):
             details=True
 
         Examples:
-            # Fraction of variance between 0.01 and 0.1 Hz
-            ts.detrend('linear').relative_band_power(0.01, 0.1)
+            # Fraction of variance in the default 0.01-0.1 Hz band
+            ts.detrend('linear').relative_band_power()
 
-            # Classic fALFF convention
-            ts.relative_band_power(0.01, 0.1, ratio='amplitude')
+            # A different band, here the HRV low-frequency band
+            ts.relative_band_power(0.04, 0.15)
+
+            # Classic fALFF convention (or use falff(), which defaults to it)
+            ts.relative_band_power(ratio='amplitude')
 
             # Compare against the white-noise null
-            res = ts.relative_band_power(0.01, 0.1, details=True)
+            res = ts.relative_band_power(details=True)
             print(res.ratio, res.bin_fraction)
         """
         return relative_band_power(self, low_freq, high_freq, ratio=ratio,
@@ -2177,13 +2188,16 @@ class baseTs(TimeSeriesData):
         """
         Fractional amplitude of low-frequency fluctuations (fALFF).
 
-        Convenience wrapper around relative_band_power() using the band and
+        Convenience wrapper around relative_band_power() using the
         convention from Zou et al. (2008), J Neurosci Methods 172(1):137-141.
+        Both methods default to the same 0.01-0.1 Hz band, which is wider
+        than the 0.01-0.08 Hz that paper used; pass (0.01, 0.08) to
+        reproduce it.
 
-        Note the deliberate default split: relative_band_power() defaults to
-        ratio='power' as the better-behaved general-purpose measure, while
-        this method defaults to ratio='amplitude' so it reproduces published
-        fALFF values.
+        What differs is the convention, and the split is deliberate:
+        relative_band_power() defaults to ratio='power' as the
+        better-behaved general-purpose measure, while this method defaults
+        to ratio='amplitude' so it reproduces published fALFF values.
 
         Caveat: amplitude-convention values are not comparable across
         acquisitions with different sampling rates or bandwidth. Use
@@ -2203,7 +2217,7 @@ class baseTs(TimeSeriesData):
             # Classic fALFF on a detrended signal
             ts.detrend('linear').falff()
 
-            # Custom band
+            # The band Zou et al. (2008) used
             ts.falff(0.01, 0.08)
         """
         return falff(self, low_freq=low_freq, high_freq=high_freq,

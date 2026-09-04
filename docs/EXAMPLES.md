@@ -1391,8 +1391,8 @@ ts = baseTs(signal, t, freq=fs, signal_name="slow_oscillation")
 # leaves the preprocessing pipeline to you.
 clean = ts.detrend('linear')
 
-# Fraction of the signal's variance in the 0.01-0.1 Hz band
-power_ratio = clean.relative_band_power(0.01, 0.1)
+# Fraction of the signal's variance in the 0.01-0.1 Hz band (the default)
+power_ratio = clean.relative_band_power()
 print(f"Power ratio  : {power_ratio:.3f}")     # ~0.717
 
 # Classic fALFF (amplitude convention, Zou et al. 2008)
@@ -1405,7 +1405,7 @@ fraction of bins that fall inside the band — so a "high" number only means som
 that baseline:
 
 ```python
-res = clean.relative_band_power(0.01, 0.1, details=True)
+res = clean.relative_band_power(details=True)
 
 print(f"ratio        : {res.ratio:.3f}")
 print(f"null         : {res.bin_fraction:.3f}   (white-noise expectation)")
@@ -1427,7 +1427,7 @@ that tells you how much data you would need:
 
 ```python
 short = baseTs(signal[:100], t[:100], freq=fs)   # only 50 s
-res_short = short.relative_band_power(0.01, 0.1, details=True)
+res_short = short.relative_band_power(details=True)
 print(f"{res_short.n_band_bins} bins at {res_short.freq_resolution:.3f} Hz resolution")
 # 5 bins at 0.020 Hz resolution   <- it computes, but it is far too coarse to trust
 
@@ -1456,7 +1456,7 @@ for fs_test in (0.5, 2.0, 10.0):
     np.random.seed(3)
     sig = np.sin(2 * np.pi * 0.05 * tt) + 0.5 * np.random.randn(n_test)
     test_ts = baseTs(sig, tt, freq=fs_test)
-    print(f"fs={fs_test:5}  power={test_ts.relative_band_power(0.01, 0.1):.3f}  "
+    print(f"fs={fs_test:5}  power={test_ts.relative_band_power():.3f}  "
           f"amplitude={test_ts.falff():.3f}")
 
 # fs=  0.5  power=0.807  amplitude=0.444
