@@ -222,7 +222,10 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   all-NaN series with no warning. Since #48 they raise `InvalidParameterError` instead. Fill gaps
   first with `interpolate_gaps()`. Note that `filter_outliers()` deliberately leaves pre-existing
   gaps as NaN, so a `filter_outliers()` → `lowpass_filter()` chain needs an `interpolate_gaps()`
-  between them. Complex data is accepted: the real and imaginary parts are filtered independently.
+  between them. A gap at the *start* of the series needs
+  `interpolate_gaps(limit_direction='both')`: the default fills forward only, and the error says
+  so when that is the case (#77). Complex data is accepted: the real and imaginary parts are
+  filtered independently.
 - `sg_filter()` and `gauss_filter()` are windowed convolutions rather than bidirectional passes, so
   they do **not** raise on NaN: a gap stays a gap, widened by the window. That asymmetry is
   deliberate and pinned by a test.
@@ -503,6 +506,13 @@ Interpolate missing values (NaN) in the time series with enhanced capabilities.
 - `limit` (int, optional): Maximum number of consecutive NaN values to interpolate
 - `order` (int, optional): Order for polynomial/spline interpolation methods
 - `inplace` (bool, optional): If True, modifies existing object. Otherwise returns new object
+- `**kwargs`: Passed to `pandas.Series.interpolate`. The one to know about is `limit_direction`:
+  pandas' default `'forward'` fills nothing before the first valid sample, so **a gap at the start
+  of the series survives the default call** and the spectral and filter guards reject the result
+  with the same message that named this method (#77). Pass `limit_direction='both'` to extend the
+  first valid value back over the edge. That is a constant extension, not an interpolation, which
+  is why it is not the default. A trailing gap is already extended by the default. Both hold for
+  `'linear'` and `'time'`; `'polynomial'` never fills an edge, and `'spline'` extrapolates its fit.
 
 **Returns:**
 - `baseTs`: New baseTs object with interpolated data
@@ -511,6 +521,9 @@ Interpolate missing values (NaN) in the time series with enhanced capabilities.
 ```python
 # Linear interpolation
 interpolated = ts.interpolate_gaps(method='linear')
+
+# A gap at the start of the series needs the edge fill (constant, not interpolated)
+edge_filled = ts.interpolate_gaps(limit_direction='both')
 
 # Polynomial interpolation with order 3
 poly_interp = ts.interpolate_gaps(method='polynomial', order=3)
@@ -769,7 +782,8 @@ Get frequency domain representation using enhanced FFT with optional windowing.
   a degraded one, so this raises rather than handing back nonsense. Fill gaps first with
   `interpolate_gaps()`. Note that `filter_outliers()` deliberately leaves pre-existing gaps as NaN,
   so a `filter_outliers()` → `get_frequency_content()` chain needs an `interpolate_gaps()` between
-  them.
+  them. A gap at the *start* of the series needs `interpolate_gaps(limit_direction='both')`: the
+  default fills forward only, and the error says so when that is the case (#77).
 
 **Example:**
 ```python

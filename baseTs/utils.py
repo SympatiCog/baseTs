@@ -305,10 +305,27 @@ def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
                 ) from exc
 
     if not np.all(np.isfinite(arr)):
-        raise ValueError(
-            "Time series data contains NaN or Inf values. Fill gaps first, "
-            "e.g. with interpolate_gaps()."
-        )
+        message = ("Time series data contains NaN or Inf values. Fill gaps first, "
+                   "e.g. with interpolate_gaps().")
+        # A gap at the *start* is the one case the remedy above does not
+        # clear: interpolate_gaps() forwards pandas' default
+        # limit_direction='forward', which fills nothing before the first
+        # valid sample, so a caller who follows the message lands back on it
+        # (#77 - the #28 "remedy reproduces the bug" pattern one level up). A
+        # trailing gap is different: the forward fill extends the last valid
+        # value over it, so the plain remedy works there and gets no hint.
+        # Keyed on NaN, not on non-finite: interpolate_gaps() does not fill
+        # Inf in any direction, so a limit_direction hint would be a second
+        # remedy that does not run for an Inf caller.
+        if np.isnan(arr.ravel()[0]):
+            message += (
+                " The series starts with a gap, which interpolate_gaps() "
+                "leaves in place by default (it fills forward from the first "
+                "valid sample): pass limit_direction='both' to extend the "
+                "first valid value back over the edge - a constant fill, not "
+                "an interpolation - or drop the leading samples."
+            )
+        raise ValueError(message)
 
 
 def round_values(x: Any, decimals: int = 4) -> Any:

@@ -54,6 +54,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the NaN message says what a leading gap needs (#77)
+
+### Fixed — a remedy that reproduced the bug it reported, one level up
+
+`validate_finite_data` rejects NaN with "Fill gaps first, e.g. with
+`interpolate_gaps()`", and since #48 the Butterworth filters raise the same
+message. But `interpolate_gaps()` forwards pandas' default
+`limit_direction='forward'`, which fills nothing before the first valid
+sample, so a gap at the *start* of the series survived the remedy and the
+caller who followed it was rejected again with the exact message they had
+just obeyed:
+
+```python
+d[0:4] = np.nan
+baseTs(d, t).interpolate_gaps().lowpass_at(5.0)   # InvalidParameterError: ...interpolate_gaps()
+```
+
+A leading NaN is realistic in the documented `filter_outliers() → filter`
+chain: a late acquisition start, or an outlier at sample 0. #28's own first
+attempt named a remedy that reproduced the bug it reported, and #48 tested
+its remedy end to end for that reason — but only for an interior gap.
+
+The validator sees the array, so it now says which case the caller is in.
+When the first sample is NaN the message adds that the series starts with a
+gap, that `interpolate_gaps()` leaves it in place by default, and that
+`limit_direction='both'` extends the first valid value back over the edge —
+a constant fill, not an interpolation — or that the leading samples can be
+dropped. An interior or trailing gap keeps the plain message: measured on
+pandas 3.0 and 2.2, the default forward fill already extends the last valid
+value over a *trailing* gap, so that caller needs no hint and gets none. The
+hint is keyed on NaN rather than on non-finite, because `interpolate_gaps()`
+does not fill Inf in any direction and pointing an Inf caller at
+`limit_direction` would be a second remedy that does not run. Both families
+share the helper, so `get_peak_freq` and the other spectral entry points say
+the same thing.
+
+**The default is unchanged.** Making `'both'` the default would have
+`interpolate_gaps()` invent edge values by constant extension without being
+asked, which is what #36 stopped `filter_outliers` from doing; the caller
+makes the fill decision explicitly. The `interpolate_gaps` docstring and
+`API.md` now document `limit_direction`, the edge asymmetry, and that
+`'polynomial'` never fills an edge while `'spline'` extrapolates its fit over
+one. The remedy is executed in the tests, not just named: a leading gap
+through `interpolate_gaps(limit_direction='both')` filters to 600 finite
+samples and recovers the true 0.16 Hz peak.
+
 ## [Unreleased] — the Butterworth filters reject non-finite data (#48)
 
 ### Fixed — four NaN samples in, six hundred NaN out, silently

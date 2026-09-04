@@ -1768,14 +1768,33 @@ class baseTs(TimeSeriesData):
             limit: Maximum number of consecutive NaN values to interpolate
             order: Order for polynomial/spline interpolation (default: 1 for polynomial, 3 for spline)
             inplace: If True, modifies existing object. Otherwise returns new object.
-            **kwargs: Additional parameters passed to pandas interpolate method
-            
+            **kwargs: Additional parameters passed to pandas interpolate method.
+                The one to know about is `limit_direction` - see "Edge gaps".
+
+        Edge gaps:
+            pandas' default `limit_direction='forward'` fills nothing before
+            the first valid sample, so a gap at the *start* of the series
+            survives the default call and the spectral and filter guards
+            reject the result with the same message that sent you here (#77).
+            Pass `limit_direction='both'` to extend the first valid value back
+            over the edge. That edge fill is a constant extension, not an
+            interpolation - there is nothing on the far side to interpolate
+            towards - which is why it is not the default: this method does not
+            invent values unless asked, for the same reason #36 stopped
+            `filter_outliers` doing so. A *trailing* gap is already extended
+            by the default. Both statements hold for 'linear' and 'time';
+            'polynomial' never fills an edge in any direction, and 'spline'
+            extrapolates its fit over it.
+
         Returns:
             Interpolated baseTs object
             
         Examples:
             # Linear interpolation (default)
             ts_linear = ts.interpolate_gaps()
+
+            # A gap at the start of the series needs the edge fill
+            ts_edge = ts.interpolate_gaps(limit_direction='both')
             
             # Polynomial interpolation with order 2
             ts_poly = ts.interpolate_gaps(method='polynomial', order=2)

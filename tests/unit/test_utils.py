@@ -1006,3 +1006,70 @@ def test_default_band_needs_a_bin_in_it_not_100_s():
         res = relative_band_power(ts, details=True)
         assert res.n_band_bins >= 1
         assert 0.0 < res.ratio <= 1.0
+
+
+# --- #77: the NaN remedy does not clear a leading gap ---------------------
+
+def _leading_gap_ts(n_bad=4):
+    """The _gappy_ts sine with the gap at sample 0 instead of sample 100."""
+    data = np.sin(np.arange(500) / 10.0)
+    data[:n_bad] = np.nan
+    return baseTs(data, np.arange(500) / 10.0)
+
+
+def test_a_leading_nan_gets_the_edge_hint_and_an_interior_one_does_not():
+    """pandas' default limit_direction='forward' fills nothing before the first
+    valid sample, so `interpolate_gaps()` - the remedy the message names -
+    leaves a leading gap in place and the caller lands on the same message
+    again (#77). The validator sees the array, so it can say which case the
+    caller is in instead of naming a remedy that will not work for them."""
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError) as leading:
+        validate_finite_data(np.array([np.nan, 1.0, 2.0, 3.0]))
+    assert "limit_direction='both'" in str(leading.value)
+    assert "interpolate_gaps" in str(leading.value)
+
+    for interior_or_trailing in (np.array([1.0, np.nan, 3.0]), np.array([1.0, 2.0, np.nan])):
+        with pytest.raises(ValueError, match="interpolate_gaps") as plain:
+            validate_finite_data(interior_or_trailing)
+        assert "limit_direction" not in str(plain.value)
+
+
+def test_the_edge_hint_keys_on_nan_not_on_inf():
+    """interpolate_gaps() does not fill Inf in any direction, so pointing an
+    Inf caller at limit_direction would be a third remedy that does not run.
+    The base message's remedy is already imprecise for Inf; that is
+    pre-existing and out of scope here, but the new hint must not widen it."""
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="NaN or Inf") as exc:
+        validate_finite_data(np.array([np.inf, 1.0, 2.0]))
+    assert "limit_direction" not in str(exc.value)
+
+
+def test_a_zero_dimensional_nan_still_raises_the_documented_valueerror():
+    """The hint inspects the first sample; a 0-d input has no axis to index.
+    Pinned so the inspection cannot turn the documented ValueError into an
+    IndexError."""
+    from baseTs.utils import validate_finite_data
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.float64(np.nan))
+
+
+def test_a_leading_gap_survives_interpolate_gaps_and_every_spectral_entry_point_says_so():
+    """The spectral family shares the message with the filters, so it shares
+    the trap: the #28 end-to-end remedy test covered an interior gap only."""
+    followed = _leading_gap_ts().interpolate_gaps()
+    assert np.isnan(followed.values[:4]).all()
+
+    for call in _all_four_entry_points(followed):
+        with pytest.raises(ValueError, match=r"limit_direction='both'"):
+            call()
+
+
+def test_the_edge_remedy_recovers_the_true_peak():
+    """Executed, not just named: 0.16 Hz is the peak of the gap-free series."""
+    recovered = _leading_gap_ts().interpolate_gaps(limit_direction='both').get_peak_freq()
+    assert np.isclose(recovered, 0.16), recovered
