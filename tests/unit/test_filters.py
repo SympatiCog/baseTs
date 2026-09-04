@@ -1060,7 +1060,7 @@ class TestTheNotchBandIsValidated:
         with pytest.raises(InvalidParameterError, match=r"0\.05 < cutoff_hz < 4\.95"):
             notch_filter(self._data(), 4.99, self.FS)
 
-    @pytest.mark.parametrize("fs", [3.0, 7.0, 13.0, 0.7, 10.0, 1000.0, 123456.789])
+    @pytest.mark.parametrize("fs", [3.0, 7.0, 13.0, 0.7, 10.0, 1000.0, 123456.789, 119.5])
     def test_the_printed_range_never_contains_the_refused_value(self, fs):
         """The check is scipy's, on the normalised band; the message speaks
         Hz. `NOTCH_HALF_WIDTH * nyquist` and `cutoff / nyquist - NOTCH_HALF_WIDTH`
@@ -1070,7 +1070,10 @@ class TestTheNotchBandIsValidated:
         inward until they pass the predicate themselves; division by a fixed
         positive rate is monotone, so everything strictly inside passes too.
         Pinned both ways: a refused value is never inside the printed range,
-        and one ulp inside each printed bound is accepted."""
+        and one ulp inside each printed bound is accepted. The last rate is
+        one of the ~1% (from a 260k-rate sweep) where the *upper* bound needs
+        the nudge; the first seven only exercised the lower one, and a mutant
+        that dropped the upper nudge survived them."""
         nyquist = fs / 2.0
         probes = []
         for centre in (0.01 * nyquist, nyquist - 0.01 * nyquist):
