@@ -15,6 +15,8 @@ admitted and coerced, a bool is refused by name, an integral-valued float is
 refused too - a count is not a measurement - and the floor is stated by the
 rule, not by the caller.
 """
+import numbers
+
 import numpy as np
 import pytest
 
@@ -142,6 +144,44 @@ class TestSavitzkyGolayParametersAreIntegers:
         short = _data(8)
         assert sg_filter(short, window_length=11, polyorder=2).shape == short.shape
         assert sg_filter(_data(), window_length=10, polyorder=2).shape == (500,)
+
+
+@numbers.Integral.register
+class _UnconvertibleIntegral:
+    """Registers as an Integral but cannot become an int.
+
+    numbers.Integral is a registrable ABC, so membership does not imply a
+    working __int__ - the same trap the real-number guard closes with its
+    `_UnconvertibleReal`. This one has no __int__ at all, so int() raises
+    TypeError; a sibling below has one that raises.
+    """
+
+    def __repr__(self):
+        return "<unconvertible integral>"
+
+
+class _IntegralThatRefuses(int):
+    def __int__(self):
+        raise ValueError("refused")
+
+
+class TestARegisteredIntegralWithoutAUsableIntStaysInTheContract:
+    """The type check passes and the coercion dies - the hole one step in that
+    _as_real_float closes for reals, and that the first cut of the integer
+    rule left open."""
+
+    @pytest.mark.parametrize("bad", [_UnconvertibleIntegral(), _IntegralThatRefuses(3)],
+                             ids=["no __int__", "__int__ raises"])
+    def test_the_filters_translate_the_conversion_error(self, bad):
+        with pytest.raises(InvalidParameterError,
+                           match=r"Filter order could not be converted to an int"):
+            lowpass_filter(_data(), 0.5, FS, order=bad)
+
+    def test_set_outlier_filter_translates_it_too(self):
+        ts = baseTs(_data(), np.arange(500) / FS, freq=FS)
+        with pytest.raises(InvalidParameterError,
+                           match=r"max_iterations could not be converted to an int"):
+            ts.set_outlier_filter(max_iterations=_UnconvertibleIntegral())
 
 
 class TestFilterOrderKeepsItsRule:

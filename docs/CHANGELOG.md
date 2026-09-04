@@ -83,6 +83,10 @@ of robustifying passes respectively. The message names which
 non-negative integer, got -1`). `set_outlier_filter` raises the filter
 module's `InvalidParameterError`, which is a `ValueError`, so the contract it
 has always made still holds and `except ValueError` still catches it.
+`numbers.Integral` is a registrable ABC, so membership does not imply a
+working `__int__`; the coercion is translated like the real-number guard's,
+so a virtual subclass that cannot become an int is refused as "could not be
+converted to an int" rather than escaping as scipy's or Python's own error.
 
 **The design question the issue asked to settle first** was whether
 `window_step` may legitimately be fractional, since it only ever divides the

@@ -154,10 +154,23 @@ def _require_int(label: str, value: Any, minimum: int = 1) -> int:
     """
     rule = {1: "a positive integer", 0: "a non-negative integer"}.get(
         minimum, f"an integer of at least {minimum}")
-    if (isinstance(value, bool) or not isinstance(value, numbers.Integral)
-            or int(value) < minimum):
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise InvalidParameterError(f"{label} must be {rule}, got {value!r}")
-    return int(value)
+
+    # numbers.Integral is a registrable ABC, so membership does not imply a
+    # working __int__ - the hole one step in that _as_real_float closes for
+    # reals, and that the first cut of this rule left open. OverflowError is
+    # caught for symmetry with that guard; int() of an Integral cannot
+    # overflow, but a virtual subclass can raise anything from __int__.
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidParameterError(
+            f"{label} could not be converted to an int, got {value!r}") from exc
+
+    if number < minimum:
+        raise InvalidParameterError(f"{label} must be {rule}, got {value!r}")
+    return number
 
 
 def _require_finite_data(data: ArrayLike) -> None:
