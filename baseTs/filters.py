@@ -15,7 +15,7 @@ from scipy.signal import butter, filtfilt, savgol_filter
 from dataclasses import dataclass
 from scipy import signal
 
-from .utils import validate_sampling_freq
+from .utils import validate_finite_data, validate_sampling_freq
 
 if TYPE_CHECKING:
     from .core import baseTs
@@ -51,11 +51,12 @@ class InvalidParameterError(FilterError, ValueError):
     Widening only - `except FilterError` and `except InvalidParameterError` are
     unaffected, and FilterError precedes ValueError in the MRO.
 
-    Note the shape this creates in the two translation sites below:
+    Note the shape this creates in the translation sites below:
     `except ValueError: raise InvalidParameterError(...)` can now catch this
-    type. Both try blocks deliberately hold a single validate_sampling_freq
-    call, which raises a bare ValueError and never this one, so nothing
-    double-wraps - pinned by a test, since the tightness is what makes it safe.
+    type. Each try block deliberately holds a single call into utils
+    (validate_sampling_freq, or validate_finite_data since #48), which raises
+    a bare ValueError and never this one, so nothing double-wraps - pinned by
+    a test per site, since the tightness is what makes it safe.
     """
     pass
 
@@ -220,6 +221,23 @@ def validate_filter_params(data: ArrayLike,
             f"(cutoff_freq={cutoff_freq!r}, Nyquist={sampling_freq/2} Hz)")
 
     order = _require_order(order)
+
+    # The data last, after every parameter: a bad call is a bug in the call,
+    # bad data is a property of the input, and the O(n) scan should not be
+    # what tells the caller about a cutoff they mistyped.
+    #
+    # filtfilt's bidirectional pass propagates a single NaN across the whole
+    # output, so four bad samples came back as six hundred with no exception
+    # and no warning (#48). #28 placed this same guard at the spectral
+    # family's production site; this is the filter family's. Complex is
+    # allowed - filtfilt filters the two parts independently, and the
+    # one-sided-spectrum reasoning behind the guard's default does not apply.
+    # Translated for the same reason as the rate check above, and pinned
+    # against double-wrapping the same way.
+    try:
+        validate_finite_data(data, allow_complex=True)
+    except ValueError as exc:
+        raise InvalidParameterError(str(exc)) from exc
 
     return sampling_freq, cutoff_freq, order
 

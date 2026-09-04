@@ -539,6 +539,23 @@ def test_validate_finite_data_rejects_complex_by_dtype(value):
     assert ".real" in str(info.value)
 
 
+def test_validate_finite_data_can_be_told_complex_is_fine():
+    """The filter family needs the NaN rule without the spectral complex rule
+    (#48): filtfilt handles complex input correctly, so the one-sided-spectrum
+    reasoning behind #43 does not apply there. One guard, one keyword, and
+    the default is unchanged so the spectral family keeps #43 untouched."""
+    from baseTs.utils import validate_finite_data
+
+    validate_finite_data(np.array([1 + 2j, 3 + 4j]), allow_complex=True)
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(np.nan, 0)]), allow_complex=True)
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        validate_finite_data(np.array([1 + 2j, complex(0, np.inf)]), allow_complex=True)
+    with pytest.raises(ValueError, match="complex"):
+        validate_finite_data(np.array([1 + 2j, 3 + 4j]))
+
+
 @pytest.mark.parametrize("text", [
     np.array(["1+2j", "3+4j"]),                 # fixed-width str, dtype <U4
     np.array(["1+2j", "3+4j"], dtype=object),   # the same, as object

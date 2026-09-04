@@ -161,7 +161,7 @@ def _holds_complex_numbers(arr: Any) -> bool:
     )
 
 
-def validate_finite_data(data: Any) -> None:
+def validate_finite_data(data: Any, allow_complex: bool = False) -> None:
     """Reject sample values an FFT cannot produce a meaningful spectrum from.
 
     The companion to validate_sampling_freq: that one rejects a bad time base,
@@ -183,10 +183,17 @@ def validate_finite_data(data: Any) -> None:
 
     Args:
         data: The sample values to check, as any array-like
+        allow_complex: Accept complex dtypes, applying only the finiteness
+            rule to them. The default rejects complex, which is right for
+            every spectral consumer (#43). The filter family passes True
+            (#48): filtfilt handles complex input correctly, filtering the
+            real and imaginary parts independently, so the one-sided-spectrum
+            reasoning does not apply there and the NaN rule is the one it
+            shares.
 
     Raises:
-        ValueError: If the data contains NaN or Inf, is complex, or is not
-            numeric
+        ValueError: If the data contains NaN or Inf, is complex (unless
+            `allow_complex`), or is not numeric
     """
     arr = np.asarray(data)
 
@@ -248,13 +255,14 @@ def validate_finite_data(data: Any) -> None:
     # complex data to np.fft.fft and threw away the negative half - which,
     # for an analytic signal, is all of it. get_peak_freq reported 0.388 Hz
     # for a 0.05 Hz probe with no warning at all.
-    if arr.dtype.kind == "c":
+    if arr.dtype.kind == "c" and not allow_complex:
         raise ValueError(_complex_data_message(f"dtype '{arr.dtype}'"))
 
     # Anything not already numeric (object arrays, most often) is converted so
     # np.isfinite has a dtype it can loop over - it raises TypeError on object
-    # arrays.
-    if arr.dtype.kind != "f":
+    # arrays. A complex array only reaches here when allowed, and np.isfinite
+    # handles it directly: a value is finite when both parts are.
+    if arr.dtype.kind not in "fc":
         try:
             arr = np.asarray(arr, dtype=float)
         except (TypeError, ValueError) as exc:

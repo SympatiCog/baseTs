@@ -54,6 +54,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — the Butterworth filters reject non-finite data (#48)
+
+### Fixed — four NaN samples in, six hundred NaN out, silently
+
+`bandpass_filter`, `lowpass_filter`, `highpass_filter` and `notch_filter` all
+run `scipy.signal.filtfilt`, whose bidirectional pass propagates any NaN
+across the entire output. A 4-sample dropout in a 600-sample series came back
+as 600 NaNs, with no exception and no `RuntimeWarning`.
+
+#28 fixed exactly this failure for the spectral family by placing
+`utils.validate_finite_data` at the production site. The filter family never
+got it, so since #36 — which made `filter_outliers` leave acquisition gaps as
+NaN — one ordinary pipeline got two opposite answers for the same series:
+
+```python
+cleaned = baseTs(data, t).filter_outliers()   # 4 NaN preserved, by design (#36)
+cleaned.get_peak_freq()                        # ValueError, guarded by #28
+cleaned.bandpass_at(hp_hz=0.1, lp_hz=5.0)      # returned all-NaN, silently
+```
+
+`validate_filter_params` — which all four already delegate to, `bandpass_filter`
+through `validate_band_params` — now calls the same shared guard, after the
+parameter checks and translated to `InvalidParameterError` the way the rate
+check is. One guard rather than four local copies, because local copies are
+what let the spectral checks drift apart before #28. The data is checked
+last so a mistyped cutoff is reported before the O(n) scan, and the
+translation site is pinned against double-wrapping like the existing one.
+
+**Complex data is still accepted.** Reusing the guard verbatim would have
+rejected complex input with #43's message about one-sided spectra, which is
+wrong for a filter: `filtfilt` filters the real and imaginary parts
+independently and correctly. `validate_finite_data` gained an
+`allow_complex` keyword, default `False`, so the spectral family's #43
+behaviour is untouched and the filters get only the NaN rule they share. A
+complex value with a NaN in either part is still rejected.
+
+**`sg_filter` and `gauss_filter` are deliberately left alone.** Both are
+windowed convolutions, not bidirectional IIR passes: a 4-sample gap comes out
+as 14 and 20 NaN respectively, local to where it was. That is degraded output
+rather than a confident wrong answer, and it matches how `filter_outliers`
+treats gaps it did not create. The asymmetry is documented in `API.md` and
+pinned by a test, so it stays a decision rather than an accident of which
+functions route through the validator.
+
+**Breaking, in the same way #28 was.** Any pipeline feeding gappy data into
+one of the four filters used to get NaN out and now gets
+`InvalidParameterError` naming `interpolate_gaps()`. The remedy is tested end
+to end — `filter_outliers() → interpolate_gaps() → lowpass_at()` returns 600
+finite samples — following #28's precedent, whose own first attempt
+recommended a remedy that reproduced the bug it reported. All nine `baseTs`
+entry points (the four `_at` methods, their four aliases, and `butterpass_at`)
+are asserted to agree. No shipped doc pipeline was affected: the one that
+feeds `filter_outliers` into a filter already interpolated first for #28's
+sake, and the README pipeline has spikes but no gaps.
+
 ## [Unreleased] — the single-cutoff filters compute with the value they validated (#49)
 
 ### Fixed — `lowpass_filter`, `highpass_filter` and `notch_filter` divided the caller's original cutoff
