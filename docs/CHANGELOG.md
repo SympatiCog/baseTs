@@ -54,6 +54,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `is_interpolated` means one thing, and every producer follows it (#90)
+
+The flag's docstring said "whether the data has been interpolated". The
+three regridders (`interpto_hz`, `interpto_samples`,
+`interp_to_uniform_grid`) and `set_indices_to_nan_and_interpolate` set it;
+the two gap fillers (`interpolate_missing`, `interpolate_gaps`) never did,
+on either `inplace` branch, though `interpolate_missing` wrote
+"Interpolated missing values" to the history of the same call; nor did
+`filter_outliers`, which replaces each outlier by interpolation.
+
+### Changed — the rule, and three producers that now follow it
+
+**`is_interpolated` is True once at least one value in the series is an
+interpolated estimate rather than a measured sample** - the issue's second
+reading, the one the name and docstring already state (the first, "the
+values were resampled onto a new grid", is what `is_uniform_grid` says).
+A producer sets it exactly when it wrote at least one such value:
+
+- `interpolate_missing` and `interpolate_gaps` set it when they filled a
+  gap, both branches of `inplace`. A call on gap-free data estimated
+  nothing and leaves the flag as it found it; so does an `interpolate_gaps`
+  whose `limit` or default forward fill left every gap in place (#77), while
+  one that filled some of a gap did estimate and sets it.
+- `filter_outliers` sets it when it replaced an outlier, or filled an input
+  gap under `fill_input_gaps=True`. Clean data, or gaps left as NaN under
+  the #36 default, leave it as found.
+- The regridders always set it (every value is re-estimated), as before;
+  `set_indices_to_nan_and_interpolate` always sets it, as before, and
+  refuses an empty index list, so a call that returns has estimated
+  something. Both pinned.
+
+Nothing resets the flag, and `_metadata` carries it, so a series derived
+from interpolated values reports as interpolated; pinned. Reachable in
+normal use, so stated: `filter_outliers().is_interpolated` and
+`interpolate_gaps().is_interpolated` are now True where they were False.
+The docstring, `API.md`'s `interpolate_gaps` entry and `API_SERIES.md`'s
+`_metadata` comment say the rule.
+
 ## [Unreleased] — a first difference needs two samples, and says so (#89)
 
 `utils.diff` computed `np.diff(ts.data)`, which is empty for zero or one

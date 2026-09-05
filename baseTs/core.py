@@ -1534,7 +1534,14 @@ class baseTs(TimeSeriesData):
             newTs.lowess_fit = lowess_fit
             newTs.outlier_indices = idx
             result = newTs
-        
+
+        # is_interpolated means "at least one value is an interpolated
+        # estimate" (#90). The filter replaces each outlier by interpolation
+        # and, with fill_input_gaps, the input's gaps too; if it did either,
+        # the result holds estimates. Clean data left as found says nothing.
+        if len(idx) > 0 or (n_gaps and self.outlier_filter.config.fill_input_gaps):
+            result.is_interpolated = True
+
         if qcplot:
             # Carry the new fit and label on the snapshot, not on self: with
             # inplace=False the caller's object must come back untouched, and
@@ -1587,6 +1594,10 @@ class baseTs(TimeSeriesData):
         # inplace branch raised on every call from the day it was written
         # (#64). The helper's contract is kept; the branch that knows the
         # answer is None does not ask for it.
+        # The flag means "at least one value is an interpolated estimate"
+        # (#90), so it is set exactly when there was a gap to fill; a call
+        # on gap-free data estimated nothing and leaves it as found.
+        had_gap = bool(pd.isna(self.values).any())
         if inplace:
             interpolate_missing_values(self, inplace=True)
             processed = self
@@ -1596,6 +1607,8 @@ class baseTs(TimeSeriesData):
             hist_msg="Interpolated missing values in timeseries",
             last_process="_interp"
         )
+        if had_gap:
+            processed.is_interpolated = True
         return processed
     
     def diff_ts(self, zeropad: bool = False, inplace: bool = False) -> "baseTs":
@@ -2030,6 +2043,11 @@ class baseTs(TimeSeriesData):
             else:
                 interpolated = source.interpolate(method=method, limit=limit, **kwargs)
         
+        # is_interpolated means "at least one value is an interpolated
+        # estimate" (#90): set exactly when this call filled a gap. A limit
+        # or a leading gap under forward fill can leave gaps behind - what
+        # counts is whether any was filled, not whether all were.
+        filled_a_gap = int(pd.isna(interpolated.values).sum()) < int(pd.isna(self.values).sum())
         if inplace:
             # Update current object
             self._adopt_data_inplace(interpolated.values, interpolated.index)
@@ -2038,6 +2056,8 @@ class baseTs(TimeSeriesData):
                 f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
+            if filled_a_gap:
+                self.is_interpolated = True
             return self
         else:
             new_obj = self._create_new_with_data(interpolated.values, interpolated.index.values)
@@ -2046,6 +2066,8 @@ class baseTs(TimeSeriesData):
                 f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
+            if filled_a_gap:
+                new_obj.is_interpolated = True
             return new_obj
     
     def align_with(self, other: "baseTs", method: str = 'outer') -> tuple:

@@ -556,6 +556,10 @@ print(f"Removed {ts.len() - cleaned.len()} outliers")
 
 ### `interpolate_gaps(method='linear', limit=None, order=None, inplace=False)`
 
+Sets `is_interpolated` when it filled at least one gap (#90); a call on gap-free
+data, or one whose `limit` or forward fill left every gap in place, leaves the
+flag as it found it.
+
 Interpolate missing values (NaN) in the time series with enhanced capabilities.
 
 **Parameters:**
