@@ -212,10 +212,10 @@ The open choices above, as pinned by
    first and is pinned on both the array and the conversion path.
 6. **Precision rule for `datetimes`**: origin rebuilt at the microsecond;
    seconds split whole/fraction before scaling to nanoseconds, rounded to
-   the microsecond beyond 2**22 s (48.5 days) from the origin, where a
+   the microsecond beyond 2**23 s (97 days) from the origin, where a
    float64 second stops holding nanoseconds. Exact for any stamp at
    microsecond resolution or coarser at any span, and for nanosecond
-   stamps within 48.5 days; a nanosecond origin is within 0.5 µs.
+   stamps within 97 days; a nanosecond origin is within 0.5 µs.
    `pd.to_datetime(origin + seconds, unit='s')` was inexact on 7 of the
    first 14 census cases, and always-nanosecond rounding put a microsecond
    stamp 200 days out 2 ns off. `Timedelta.total_seconds()` rounds to the

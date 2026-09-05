@@ -740,10 +740,19 @@ def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[
     return None
 
 
-#: Below this many seconds a float64 second still resolves nanoseconds
-#: (its ulp is under 1e-9); at or above it, microseconds are what the
-#: float can vouch for. 2**22 s is 48.5 days.
-_NANOSECOND_EXACT_BELOW = 2.0 ** 22
+#: Below this many seconds a float64 second still resolves nanoseconds:
+#: its ulp is under 1e-9, so the stored value is within half a nanosecond
+#: of the true one and rounds back to it. At 2**23 s the ulp becomes
+#: 1.86e-9 and microseconds are what the float can vouch for. 2**23 s is
+#: 97 days. (A first cut said 2**22, where the ulp merely passes half a
+#: nanosecond - one octave early; the glm review round caught the
+#: arithmetic and a 1000-consecutive-nanosecond sweep per octave
+#: confirmed it: 0 mismatches at 97 days, 463 at 97.1.)
+_NANOSECOND_EXACT_BELOW = 2.0 ** 23
+
+#: Seconds whose nanosecond count no longer fits int64: pandas stamps are
+#: int64 nanoseconds, so nothing this far from the origin is a stamp.
+_STAMP_RANGE_SECONDS = 2.0 ** 63 / 1_000_000_000
 
 
 def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
@@ -763,20 +772,27 @@ def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
 def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
     """origin + seconds, as a DatetimeIndex, at the precision the float holds.
 
-    A float64 second resolves nanoseconds only below 2**22 s from the
-    origin (48.5 days; its ulp passes 1e-9 there) and microseconds below
+    A float64 second resolves nanoseconds only below 2**23 s from the
+    origin (97 days; its ulp passes 1e-9 there) and microseconds below
     2**33 s (272 years). Each second is therefore rebuilt at the finer of
     those its magnitude allows: split into whole and fraction (the whole
-    part is an exact integer; the fraction is below 1 and scales to
-    nanoseconds exactly - `round(seconds * 1e9)` on the whole value loses
-    nanoseconds past 2**53), then the nanoseconds are rounded to the
-    microsecond beyond 2**22 s. The rule, measured over a census in
+    part is an exact integer; the fraction is below 1 and its product with
+    1e9 is within 1.2e-7 ns of exact, which the rounding absorbs -
+    `round(seconds * 1e9)` on the whole value loses nanoseconds past
+    2**53), then the nanoseconds are rounded to the microsecond beyond
+    2**23 s. The rule, measured over a census in
     test_datetime_index_converts_at_the_constructor.py: every stamp at
     microsecond resolution or coarser round-trips exactly at any span, and
-    a nanosecond stamp does so within 48.5 days of the origin and comes
+    a nanosecond stamp does so within 97 days of the origin and comes
     back rounded to the microsecond beyond that. (Rounding always to the
     nanosecond, an earlier cut, put a microsecond stamp 200 days out 2 ns
     off; the digits were not in the float.)
+
+    A second more than 2**63 ns (292 years) from the origin is refused
+    with OverflowError rather than wrapped: the int64 product wrapped
+    silently and 9.5e9 s came back as a date in 1686. pandas raises the
+    same OverflowError itself when origin + seconds leaves its 1677-2262
+    stamp range, so both limits surface the same way.
 
     The split is `trunc`, not `floor`: for a negative second `x - trunc(x)`
     is exact (Sterbenz - the two are within a factor of two, or trunc is
@@ -793,6 +809,12 @@ def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex
     ns = np.full(secs.shape, np.iinfo(np.int64).min, dtype=np.int64)
     finite = np.isfinite(secs)
     kept = secs[finite]
+    if np.any(np.abs(kept) >= _STAMP_RANGE_SECONDS):
+        worst = kept[np.argmax(np.abs(kept))]
+        raise OverflowError(
+            f"cannot place a second {worst!r} from the origin on the calendar: "
+            "pandas stamps are int64 nanoseconds, which span 292 years either "
+            "side of the origin.")
     whole = np.trunc(kept)
     frac_ns = np.round((kept - whole) * _NS_PER_SECOND)
     beyond = np.abs(kept) >= _NANOSECOND_EXACT_BELOW

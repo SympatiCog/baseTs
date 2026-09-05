@@ -120,16 +120,16 @@ things read it:
   over a 14-case census (daily, hourly, 10 ms, ms, µs, ns grids; ms, µs
   and ns fractional starts; 1900, 1960, 2200; an irregular index; an
   unsorted one; then a microsecond stamp 200 days out, one 176 years
-  out, nanosecond stamps 48 days out, and an interior NaT): the origin is
+  out, nanosecond stamps 97 days out, and an interior NaT): the origin is
   rebuilt at the microsecond, because a float64 epoch in the 2020s
   resolves to ~2.4e-7 s and the nanosecond digits of a finer origin were
   never in the float; each second is split into whole and fraction before
   scaling to integer nanoseconds (`round(seconds * 1e9)` loses nanoseconds
   past 2**53), and the nanoseconds are rounded to the microsecond beyond
-  2**22 s (48.5 days) from the origin, where a float64 second's ulp
+  2**23 s (97 days) from the origin, where a float64 second's ulp
   passes 1e-9. The rule that follows: every stamp at microsecond
   resolution or coarser round-trips exactly at any span; a nanosecond
-  stamp does so within 48.5 days of the origin and comes back rounded to
+  stamp does so within 97 days of the origin and comes back rounded to
   the microsecond beyond; a nanosecond origin comes back 2.11e-7 s off.
   (`pd.to_datetime(origin + seconds, unit='s')`, the obvious spelling,
   was off by up to 2.6e-7 s on 7 of the first 14 cases; `Timestamp(

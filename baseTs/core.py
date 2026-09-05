@@ -1849,8 +1849,9 @@ class baseTs(TimeSeriesData):
         against the origin the way the index's own seconds were: as integer
         nanoseconds divided by 1e9, so a bound that names a sample lands on
         that sample exactly. (`Timedelta.total_seconds()` rounds to the
-        microsecond, which is why it is not used.) An aware bound is an
-        instant, like an aware index.
+        microsecond - `Timedelta('500ns').total_seconds()` is 0.0 on pandas
+        2.2.3, 2.3.3 and 3.0.1 - which is why it is not used.) An aware
+        bound is an instant, like an aware index.
 
         Raises:
             TypeError: a calendar bound on a series with no origin.

@@ -220,15 +220,15 @@ class TestTheDatetimesAccessor:
         pd.DatetimeIndex(['2023-01-02', '2023-01-01', '2023-01-03']),
         pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2023-07-20 12:34:56.789012']),
         pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2199-07-20 12:34:56.789012']),
-        pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=48),
+        pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=97),
         pd.DatetimeIndex(['2023-01-01', 'NaT', '2023-01-03']),
     ], ids=['daily', '10ms', 'ms', 'us', 'ms_start', 'us_start', '1900', 'pre_1970',
             '2200', 'irregular', 'unsorted', 'us_stamp_200_days_out',
-            'us_stamp_176_years_out', 'ns_stamps_48_days_out', 'interior_nat'])
+            'us_stamp_176_years_out', 'ns_stamps_97_days_out', 'interior_nat'])
     def test_it_round_trips_the_original_index_exactly(self, index):
         """Exact whenever the first stamp lies on a microsecond and each
         later stamp is at microsecond resolution or coarser - at any span -
-        or at nanosecond resolution within 2**22 s (48.5 days) of the
+        or at nanosecond resolution within 2**23 s (97 days) of the
         origin. Those are the precisions a float64 second holds at those
         magnitudes; the origin is rebuilt at the microsecond because a
         float64 epoch in the 2020s resolves to ~2.4e-7 s, and the
@@ -257,12 +257,21 @@ class TestTheDatetimesAccessor:
         ts.set_timestamp_offset(epoch_seconds(pd.Timestamp('2023-01-01')))
         assert ts.datetimes[0] == pd.Timestamp('2022-12-31 23:59:58.999999999')
 
-    def test_a_nanosecond_stamp_beyond_48_days_comes_back_at_the_microsecond(self):
-        """Past 2**22 s a float64 second's ulp exceeds a nanosecond, so the
-        nanosecond digits are rounded away rather than reported as noise."""
-        index = pd.DatetimeIndex(['2023-01-01', '2023-04-11 00:00:00.000000501'])
+    def test_a_nanosecond_stamp_beyond_97_days_comes_back_at_the_microsecond(self):
+        """Past 2**23 s a float64 second's ulp exceeds a nanosecond, so the
+        nanosecond digits are rounded away rather than reported as noise.
+        97 days is 8.38e6 s, just inside; 97.1 days is just outside."""
+        index = pd.DatetimeIndex(['2023-01-01', '2023-04-08 02:24:00.000000501'])   # 97.1 days
         ts = baseTs(np.arange(2.0), times=index)
-        assert ts.datetimes[1] == pd.Timestamp('2023-04-11 00:00:00.000001')
+        assert ts.datetimes[1] == pd.Timestamp('2023-04-08 02:24:00.000001')
+
+    def test_a_second_beyond_the_stamp_range_is_refused_not_wrapped(self):
+        """The int64 nanosecond product wrapped silently: 9.5e9 s came back
+        as a date in 1686. pandas' own range is 1677-2262."""
+        ts = baseTs(np.arange(2.0), [0.0, 9.5e9])
+        ts.set_timestamp_offset(0.0)
+        with pytest.raises(OverflowError, match="292 years"):
+            ts.datetimes
 
     def test_it_raises_on_a_series_with_no_origin(self):
         ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
