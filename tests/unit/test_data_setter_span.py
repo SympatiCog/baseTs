@@ -232,9 +232,15 @@ class TestTheTwoStepRouteStillWorks:
         assert out.data.tolist() == [3.0]
         assert out.times.tolist() == [5.0]
 
-    def test_diff_ts_on_one_sample_gives_an_empty_series(self):
-        out = one_sample().diff_ts()
-        assert len(out) == 0
+    def test_diff_ts_on_one_sample_is_refused_before_the_two_step_route_runs(self):
+        """Until #89 this pinned an empty result - the shrink-to-empty leg of
+        the route. A first difference now needs two samples, so the method
+        raises at utils.diff and the setter never sees the transient."""
+        ts = one_sample()
+        before = ts.data.tolist()
+        with pytest.raises(ValueError, match="at least two samples"):
+            ts.diff_ts()
+        assert ts.data.tolist() == before
 
     def test_remove_outliers_on_one_sample(self):
         out = one_sample().remove_outliers()

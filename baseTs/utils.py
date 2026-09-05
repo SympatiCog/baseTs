@@ -508,7 +508,18 @@ def diff(ts: Any, zeropad: bool = False) -> Any:
 
     Returns:
         A new baseTs carrying the source's metadata.
+
+    Raises:
+        ValidationError: If the source has fewer than two samples. A first
+            difference needs two; `np.diff` of one is empty, which the
+            zeropad branch then indexed (#89, a bare IndexError) and the
+            plain branch returned quietly as an empty series.
     """
+    n = len(ts.data)
+    if n < 2:
+        raise ValidationError(
+            f"A first difference needs at least two samples; this series has {n}."
+        )
     d = np.diff(ts.data)
     t = ts.times.copy()
     if zeropad:

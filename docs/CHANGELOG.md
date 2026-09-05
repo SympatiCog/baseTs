@@ -54,6 +54,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — a first difference needs two samples, and says so (#89)
+
+`utils.diff` computed `np.diff(ts.data)`, which is empty for zero or one
+sample, and then, with `zeropad=True`, read `d[0]` off it to pad the
+front: a bare `IndexError` ("index 0 is out of bounds for axis 0 with
+size 0"). With `zeropad=False` the same input came back as an empty
+series, quietly. The two branches disagreed on whether a degenerate
+input is an error, and the loud one was loud by accident.
+`baseTs.diff_ts` reaches the same line.
+
+### Changed — `diff` / `diff_ts` raise `ValidationError` on fewer than two samples, both branches
+
+"A first difference needs at least two samples; this series has 0."
+(or 1), a `ValidationError`, so `except ValueError` still catches it,
+for `zeropad` True and False, the free function and the method, `inplace`
+or not; the series is left unchanged. **The `zeropad=False` branch is
+the behaviour change**: it returned an empty series and now raises. The
+alternative the issue offered - an empty result on both branches - could
+not honour `zeropad=True`'s own contract (the input's length and index)
+without inventing a value, and the family's other degenerate inputs are
+refused with a diagnosis rather than returned empty (#62). Two samples
+is the boundary and is pinned (one difference; two with `zeropad`).
+`dediff` is unchanged: a cumulative sum of nothing is nothing.
+
+#65's pin that `diff_ts` on one sample gives an empty series - there to
+show the data-then-times route survives a shrink to empty - now pins
+that the refusal comes before the route runs.
+
 ## [Unreleased] — every fenced Python block in docs/ runs, and a test says so (#69, #91)
 
 Suggested in #44 and measured in #69: executing each ```python block in

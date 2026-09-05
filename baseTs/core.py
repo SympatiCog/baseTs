@@ -1601,6 +1601,16 @@ class baseTs(TimeSeriesData):
     def diff_ts(self, zeropad: bool = False, inplace: bool = False) -> "baseTs":
         """
         Compute the first difference of the timeseries.
+
+        Args:
+            zeropad: If True, the first difference is repeated at the front so
+                the result keeps this series' length and index. Otherwise the
+                result is one sample shorter and starts at the second timestamp.
+            inplace: If True, modifies existing object. Otherwise returns new object.
+
+        Raises:
+            ValidationError: If the series has fewer than two samples (#89).
+                A `ValueError`; the series is left unchanged.
         """
         def diff_func(data):
             result = diff(self, zeropad=zeropad)
