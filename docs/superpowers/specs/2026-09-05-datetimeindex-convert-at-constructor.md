@@ -237,3 +237,16 @@ The open choices above, as pinned by
    a stamped index, read through `pd.to_datetime(utc=True)`; a `Decimal`
    bound is seconds (`numbers.Number`, the #30 lesson); the accessor's
    span limit is 292 years of the origin, refused not wrapped.
+10. **The origin carries the index it describes** (review round 2, both
+    panelists): `_origin_index` in `_metadata`, checked at read by
+    `datetimes` and calendar bounds - the current index must be drawn
+    from those seconds (equal or subset). `reset_index`, `groupby` keys,
+    a `reindex`/`set_axis`/`ts.index =` onto a new grid, and arithmetic
+    aligned onto a different grid are refused by name instead of reading
+    positions as seconds. Only the package's own doors re-stamp (`times`,
+    `data`, `set_timestamp_offset`, `_create_new_with_data`,
+    `_adopt_data_inplace`); pandas' `ts.index =` does not, because
+    `reset_index(inplace=True)` installs positions through it. Legacy
+    pickles and duck sources are stamped on load/conversion. A concat of
+    pieces sharing one origin keeps it. The same mechanism as #20's
+    positional slots, with subset instead of equality.

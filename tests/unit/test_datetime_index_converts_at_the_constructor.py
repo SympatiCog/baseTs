@@ -830,3 +830,133 @@ class TestRoundOneBoundsAndLimits:
         assert ts.index.dtype == object
         assert ts.index.tolist() == [None, None]
         assert ts.has_timestamp_offset is False
+
+
+class TestTheOriginDescribesTheIndexItWasRecordedAgainst:
+    """Review round 2 (consensus panel, codex + agy): the pair rode along
+    through pandas operations that replace the index with something that is
+    not seconds - positions, group keys, the values - and `datetimes` read
+    positions 0..3 of an hourly series as the first four seconds after
+    midnight. Same mechanism as the positional slots (#20): the origin
+    carries the index it was declared against (`_origin_index`), and a read
+    checks that the index now held is drawn from those seconds."""
+
+    HOURLY = pd.date_range('2020-01-01', periods=4, freq='h')
+
+    def _hourly(self):
+        return baseTs([10.0, 20.0, 30.0, 40.0], times=self.HOURLY)
+
+    @pytest.mark.parametrize("replace", [
+        lambda ts: ts.reset_index(drop=True),
+        lambda ts: ts.groupby(ts.index // 7200).mean(),
+        lambda ts: ts.reindex([0.5, 1.5]),
+        lambda ts: ts + baseTs([1.0, 1.0], times=[0.0, 5.0]),
+        lambda ts: ts.set_axis([0.0, 60.0, 120.0, 180.0]),
+    ], ids=['reset_index', 'groupby_keys', 'reindex_new_grid',
+            'aligned_onto_another_grid', 'set_axis_new_grid'])
+    def test_an_index_that_is_no_longer_those_seconds_refuses_the_calendar(self, replace):
+        out = replace(self._hourly())
+        assert out.has_timestamp_offset is True          # the pair was carried
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            out.datetimes
+        with pytest.raises(TypeError, match="no longer describes this index"):
+            out.time_slice(start_time='2020-01-01 01:00')
+
+    def test_reset_index_inplace_skips_finalize_and_is_still_caught(self):
+        """`_update_inplace` swaps the manager without `__finalize__`; the
+        read-time check needs nothing to run at write time."""
+        ts = self._hourly()
+        ts.reset_index(drop=True, inplace=True)
+        assert list(ts.index) == [0, 1, 2, 3]
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            ts.datetimes
+
+    @pytest.mark.parametrize("keep", [
+        lambda ts: ts.iloc[1:3],
+        lambda ts: ts[ts.index >= 3600.0],
+        lambda ts: ts.sort_values(ascending=False),
+        lambda ts: ts.sort_index(ascending=False),
+        lambda ts: ts.dropna(),
+        lambda ts: ts * 2.0,
+        lambda ts: ts + ts.iloc[::2],
+        lambda ts: ts.astype('float32'),
+        lambda ts: ts.where(ts > 15.0),
+        lambda ts: ts.resample('2h'),
+        lambda ts: ts.interpto_hz(1 / 1800.0),
+        lambda ts: ts.time_slice(end_time='2020-01-01 02:00'),
+        lambda ts: ts.diff_ts(),
+        lambda ts: ts.copy(),
+        lambda ts: pickle.loads(pickle.dumps(ts)),
+    ], ids=['iloc', 'mask', 'sort_values', 'sort_index', 'dropna', 'scalar_mul',
+            'aligned_onto_own_subgrid', 'astype', 'where', 'resample', 'interpto_hz',
+            'time_slice', 'diff_ts', 'copy', 'pickle'])
+    def test_an_index_drawn_from_those_seconds_still_reads(self, keep):
+        out = keep(self._hourly())
+        stamps = out.datetimes
+        assert len(stamps) == len(out)
+        assert stamps[0] >= self.HOURLY[0] - pd.Timedelta(hours=1)
+
+    def test_the_data_setter_regrids_in_the_same_base(self):
+        ts = self._hourly()
+        ts.data = np.arange(7.0)                        # linspace over the same span
+        assert ts.datetimes[-1] == self.HOURLY[-1]
+
+    def test_the_times_setter_declares_seconds_in_this_base(self):
+        """The package's door asserts the base; pandas' door does not."""
+        ts = self._hourly()
+        ts.times = np.array([0.0, 60.0, 120.0, 180.0])
+        assert ts.datetimes[1] == pd.Timestamp('2020-01-01 00:01')
+
+    def test_pandas_index_assignment_of_a_new_grid_is_refused_at_read(self):
+        """`ts.index = ...` is the door `reset_index(inplace=True)` uses to
+        install positions, so a numeric index arriving there is not
+        re-stamped; one drawn from the origin's seconds still reads."""
+        ts = self._hourly()
+        ts.index = pd.Index([0.0, 60.0, 120.0, 180.0])
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            ts.datetimes
+        ts = self._hourly()
+        ts.index = pd.Index([10800.0, 7200.0, 3600.0, 0.0])          # the same seconds
+        assert ts.datetimes[0] == self.HOURLY[3]
+
+    def test_concat_of_pieces_sharing_an_origin_keeps_it(self):
+        ts = self._hourly()
+        out = pd.concat([ts.iloc[:2], ts.iloc[2:]])
+        assert out.ts_offset == ts.ts_offset
+        assert out.datetimes.equals(self.HOURLY)
+
+    def test_concat_of_pieces_with_different_origins_has_none(self):
+        a = self._hourly()
+        b = baseTs([1.0, 2.0], times=pd.date_range('2021-01-01', periods=2, freq='h'))
+        out = pd.concat([a, b])
+        assert out.has_timestamp_offset is False
+
+    def test_concat_with_a_piece_that_has_no_origin_has_none(self):
+        out = pd.concat([self._hourly(), baseTs([1.0, 2.0], times=[0.0, 1.0])])
+        assert out.has_timestamp_offset is False
+
+    def test_an_object_index_of_nat_alone_is_a_stamped_index_and_refused(self):
+        """NaT is typed missing: `[NaT]` behaves like `DatetimeIndex([NaT])`,
+        where `[None]` (untyped) is left as it is (round 2, agy)."""
+        with pytest.raises(ValueError, match="first stamp is NaT"):
+            baseTs([1.0], times=pd.Index([pd.NaT], dtype=object))
+
+    def test_a_pickle_from_before_the_stamp_is_healed_on_load(self):
+        """A blob written before `_origin_index` existed carries the pair,
+        no stamp, and the registry of its day - which is the shape a real
+        one has, not merely a missing attribute."""
+        ts = self._hourly()
+        state = ts.__getstate__()
+        state = dict(state)
+        state.pop('_origin_index')
+        state['_metadata'] = [n for n in state['_metadata'] if n != '_origin_index']
+        legacy = baseTs.__new__(baseTs)
+        legacy.__setstate__(state)
+        assert legacy.datetimes.equals(self.HOURLY)
+        assert legacy._origin_index.equals(legacy.index)
+        assert '_origin_index' in legacy._metadata            # the class registry governs
+
+    def test_the_stamp_is_in_metadata_and_defaults_to_none(self):
+        assert '_origin_index' in TimeSeriesData._metadata
+        assert baseTs(np.arange(3.0), [0.0, 1.0, 2.0])._origin_index is None
+        assert self._hourly()._origin_index.equals(pd.Index([0.0, 3600.0, 7200.0, 10800.0]))

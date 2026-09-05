@@ -161,7 +161,11 @@ Always seconds. However an index arrives - the constructor, `ts.times = x`,
 `DatetimeIndex` becomes seconds since its first stamp and sets the origin, a
 `TimedeltaIndex` becomes seconds and leaves the origin alone, seconds are
 taken as given. A derivation keeps its parent's origin unless its own index
-arrived stamped, in which case the stamps' origin holds.
+arrived stamped, in which case the stamps' origin holds. Seconds assigned
+through `ts.times = x` are declared to be seconds in this series' time base;
+seconds arriving through pandas' own `ts.index = x` are not, and must be drawn
+from the ones the origin was declared against, or `datetimes` refuses them —
+see there.
 
 #### `datetimes`
 ```python no-run
@@ -175,10 +179,15 @@ calendar conveniences read: `ts.groupby(ts.datetimes.month)`,
 `pd.Series(ts.values, index=ts.datetimes).rolling('1h')`. Naive UTC. Exact
 for stamps at microsecond resolution or coarser, within 292 years of the
 origin (pandas' nanosecond range; beyond it raises `OverflowError`). Raises
-`ValueError` on a
-series with no origin — built from seconds or durations and never given one
-via `set_timestamp_offset(epoch_seconds)`, which declares the origin without
-moving the index.
+`ValueError` on a series with no origin — built from seconds or durations and
+never given one via `set_timestamp_offset(epoch_seconds)`, which declares the
+origin without moving the index — and on a series whose index is no longer
+the seconds the origin was declared against: the origin is recorded with that
+index, and a slice, mask, sort, `dropna` or an alignment onto the same grid
+keeps it readable, while `reset_index` (positions), a `groupby` result (keys),
+a `reindex`/`set_axis`/`ts.index =` onto a new grid, or arithmetic aligned
+onto a different grid is refused by name rather than read as seconds. Take
+the calendar before such an operation, or declare the origin again.
 
 #### `len()`
 ```python no-run

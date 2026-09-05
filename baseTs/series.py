@@ -707,20 +707,75 @@ def _holds_calendar_datetimes(index: pd.Index) -> bool:
     """True if every element of an object index is a calendar datetime.
 
     The rule is by element type, not by parsing: `datetime.date` and its
-    subclasses (`datetime`, `Timestamp`, NaT) and `numpy.datetime64`
-    count; a missing value (None, NaN, NaT) is allowed among them; a string
-    is not a datetime however it reads, so a text index stays text. An
-    index with no datetime in it at all is not one either.
+    subclasses (`datetime`, `Timestamp`, and NaT, which is typed missing)
+    and `numpy.datetime64` count; an untyped missing value (None, NaN) is
+    allowed among them but does not make an index a stamped one on its
+    own; a string is not a datetime however it reads, so a text index
+    stays text. So `[NaT]` is a stamped index and is refused for its NaT
+    first stamp as a DatetimeIndex of NaT is (review round 2, agy), while
+    `[None, None]` is left as it is.
     """
     seen_stamp = False
     for element in index:
         if isinstance(element, (datetime.date, np.datetime64)):
-            seen_stamp = seen_stamp or not pd.isna(element)
+            seen_stamp = True
         elif element is None or (isinstance(element, float) and np.isnan(element)):
             continue
         else:
             return False
     return seen_stamp
+
+
+def _heal_origin_stamp(obj) -> None:
+    """Give a pair that has no stamp the index it is on now.
+
+    The stamp arrived with #100's round 2; a pair from before it - a
+    legacy pickle, a duck-typed source, a keyword declaration - described
+    the index the object had when the pair was set, which is the index it
+    has now. Only fills an absent stamp; never replaces one.
+    """
+    if obj.__dict__.get('has_timestamp_offset') and obj.__dict__.get('_origin_index') is None:
+        object.__setattr__(obj, '_origin_index', obj.index)
+
+
+def _origin_problem(obj) -> Optional[str]:
+    """Why the recorded origin cannot be read against the current index.
+
+    None when it can. The pair `ts_offset`/`has_timestamp_offset` says an
+    origin was declared; `_origin_index` is the index it was declared
+    against, and the index the object holds now must be drawn from those
+    seconds - equal to them, or a subset (a slice, a mask, a sort, a
+    dropna, an alignment onto the same grid). A pandas operation that
+    replaces the index with something that is not those seconds -
+    `reset_index` (positions), `groupby` (keys), `value_counts` (the
+    values), `reindex` onto a new grid, arithmetic aligned onto a
+    different grid - leaves the pair in place with an index it no longer
+    describes, and on `main` at 0cbffcb-era code the accessor read
+    positions 0..3 of an hourly series as the first four *seconds* after
+    midnight (review round 2, both panelists). The package's own grid
+    changers (`resample`, `interpto_hz`, the `data` setter) re-stamp the
+    grid they build, because they build it in this series' time base.
+
+    Same mechanism as the positional slots (#20): the value carries the
+    index it describes, and the read checks. The subset test is the
+    difference - a subset of seconds is still seconds from the origin,
+    where a subset of a fit is not the fit.
+    """
+    if not obj.__dict__.get('has_timestamp_offset'):
+        return ("this series has no timestamp origin: its index is seconds "
+                "with no calendar attached. Build it from a DatetimeIndex, "
+                "or declare the origin with set_timestamp_offset(epoch_seconds).")
+    stamp = obj.__dict__.get('_origin_index')
+    index = obj.index
+    if stamp is None or stamp.equals(index) or bool(index.isin(stamp).all()):
+        return None
+    return ("the recorded timestamp origin no longer describes this index: "
+            f"it was declared against {len(stamp)} seconds, and the index now "
+            "holds values that are not among them - a pandas operation such as "
+            "reset_index, groupby or value_counts has replaced the seconds with "
+            "positions or keys, or the series was aligned onto another grid. "
+            "Take the calendar from `datetimes` before such an operation, or "
+            "declare the origin again with set_timestamp_offset(epoch_seconds).")
 
 
 def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[float]]]:
@@ -983,7 +1038,7 @@ class TimeSeriesData(pd.Series):
     _metadata = pd.Series._metadata + [
         '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
-        'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
+        'has_timestamp_offset', '_origin_index', '_outlier_indices', '_lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
 
@@ -1028,6 +1083,9 @@ class TimeSeriesData(pd.Series):
         if not hasattr(self, _IDENTITY_NAME_SLOT):
             object.__setattr__(self, _IDENTITY_NAME_SLOT, None)
         _complete_positional_slots(self)
+        # A blob written before the origin stamp existed carries the pair
+        # and no `_origin_index`; the pair described the pickled index.
+        _heal_origin_stamp(self)
 
     # What propagates is the (value, index, values) triple, not the bare
     # value - so pandas copying it verbatim is correct, because the child
@@ -1157,6 +1215,10 @@ class TimeSeriesData(pd.Series):
             # expects, and __finalize__ copies the pair onward, so an
             # incoherent one would ride into every derived object.
             self.ts_offset = 0
+            self._origin_index = None
+        # A pair declared here by keyword describes the index as built;
+        # one converted from the index was stamped by _set_axis already.
+        _heal_origin_stamp(self)
 
         # Declare the rate only when one was supplied. With no declaration the
         # `freq` property derives from the index on read, so there is nothing
@@ -1222,6 +1284,17 @@ class TimeSeriesData(pd.Series):
         if origin is not None:
             object.__setattr__(self, 'ts_offset', origin)
             object.__setattr__(self, 'has_timestamp_offset', True)
+            object.__setattr__(self, '_origin_index', index)
+        # A numeric index installed here is NOT re-stamped as seconds in
+        # this series' base, deliberately: pandas' own doors come through
+        # here too, and `reset_index(drop=True, inplace=True)` installs
+        # positions 0..n-1 through this very call. Re-stamping made that
+        # read as seconds after the origin - the round-2 finding, one
+        # level up. Only the package's doors, which know they are handing
+        # over seconds in the base (`times`, `data`, the resamplers),
+        # re-stamp; a numeric index that arrives any other way must still
+        # be drawn from the seconds the origin describes, or `datetimes`
+        # refuses it.
 
     def _restore_origin_from_index(self) -> bool:
         """Give the pair the origin the installed index brought, if any.
@@ -1244,6 +1317,7 @@ class TimeSeriesData(pd.Series):
             return False
         object.__setattr__(self, 'ts_offset', origin)
         object.__setattr__(self, 'has_timestamp_offset', True)
+        object.__setattr__(self, '_origin_index', self.index)
         return True
 
     @property
@@ -1264,11 +1338,9 @@ class TimeSeriesData(pd.Series):
             ValueError: when the series has no origin - built from seconds or
                 durations and never given one.
         """
-        if not self.has_timestamp_offset:
-            raise ValueError(
-                "this series has no timestamp origin: its index is seconds "
-                "with no calendar attached. Build it from a DatetimeIndex, "
-                "or declare the origin with set_timestamp_offset(epoch_seconds).")
+        problem = _origin_problem(self)
+        if problem is not None:
+            raise ValueError(problem)
         return _stamps_from_seconds(_origin_timestamp(self.ts_offset), self.index)
 
     def _initialize_default_metadata(self):
@@ -1278,6 +1350,7 @@ class TimeSeriesData(pd.Series):
         self.is_uniform_grid = False
         self.ts_offset = 0
         self.has_timestamp_offset = False
+        self._origin_index = None
         self._outlier_indices = None
         self._lowess_fit = None
         self.last_process = ""
@@ -1337,6 +1410,9 @@ class TimeSeriesData(pd.Series):
         _carry_identity(self, base_ts)
 
         _detach_shared_metadata(self)
+        # A duck-typed source carries a pair but no stamp; the pair
+        # describes the index this conversion took from it.
+        _heal_origin_stamp(self)
 
     def _calculate_effective_frequency(self) -> float:
         """Derive the sampling frequency from the time index.
@@ -1466,6 +1542,18 @@ class TimeSeriesData(pd.Series):
                     for name in self._metadata:
                         if hasattr(source, name):
                             object.__setattr__(self, name, getattr(source, name))
+                elif nonempty and all(getattr(obj, 'has_timestamp_offset', False)
+                                      and getattr(obj, 'ts_offset', None) == nonempty[0].ts_offset
+                                      for obj in nonempty):
+                    # A genuine concat of pieces that share one origin is
+                    # still seconds from that origin (review round 2,
+                    # codex): the two halves of a stamped series glued back
+                    # together came out with no origin at all. Pieces with
+                    # different origins get none - their seconds do not
+                    # share a base.
+                    object.__setattr__(self, 'ts_offset', nonempty[0].ts_offset)
+                    object.__setattr__(self, 'has_timestamp_offset', True)
+                    object.__setattr__(self, '_origin_index', self.index)
         # The pair was just copied from `other`; if this object's own index
         # arrived stamped (reindex(dates) builds through the constructor
         # and lands here), that index's origin is the one that holds (#100,

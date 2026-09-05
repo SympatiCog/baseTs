@@ -173,6 +173,32 @@ parent's seconds inherits the parent's origin, and one whose index arrived
 stamped (`reindex(dates)`, `_create_new_with_data(x, dates)`) keeps the
 stamps' own.
 
+**And the origin describes the index it was declared against.** A new
+`_metadata` entry, `_origin_index`, holds that index, and the two readers
+(`datetimes`, a calendar bound to `time_slice`) check that the index the
+series holds now is drawn from those seconds - equal to them, or a subset:
+a slice, a mask, a sort, a `dropna`, an alignment onto the same grid. A
+pandas operation that replaces the index with something that is not those
+seconds - `reset_index` (positions), `groupby` (keys), `reindex` onto a
+new grid, `set_axis` or `ts.index = ...` with a new grid, arithmetic
+aligned onto a different grid - leaves the pair in place with an index it
+no longer describes, and the readers refuse it by name (`"no longer
+describes this index"`) rather than reading positions 0..3 of an hourly
+series as the first four seconds after midnight, which is what the
+round-1 code did (review round 2). Same mechanism as the positional slots
+(#20), with a subset test instead of equality: a subset of seconds is
+still seconds from the origin. The package's own doors re-stamp, because
+they know they hand over seconds in the series' base: `ts.times = x`,
+`ts.data = x` (its regrid), `set_timestamp_offset`, and every method that
+builds through `_create_new_with_data` or `_adopt_data_inplace`
+(`resample`, `interpto_hz`, `time_slice`, the filters). pandas' door
+`ts.index = x` does not: `reset_index(inplace=True)` installs positions
+through it. A pair with no stamp - a pickle from before this entry, a
+duck-typed source - is stamped with the index it is on when loaded or
+converted. A genuine `pd.concat` of pieces that share one origin keeps it
+(the two halves of a stamped series glued back together had none);
+pieces with different origins, or one with none, give none.
+
 `resample` works unchanged on the seconds index, and `_create_new_with_data`
 carries the pair, so the result keeps the origin and its `datetimes` are
 the bin starts. Bins are counted from the origin, not the calendar: a
@@ -221,6 +247,11 @@ the documented `ValueError` instead of numpy's `TypeError` on pandas 3.
   shrink were all documented as "the DatetimeIndex case"; an object index
   of strings is what reaches them now, and the pins were retargeted to
   one.
+
+- **`TimeSeriesData._metadata` gains `_origin_index`** (fifteen names).
+  The metadata census `butterpass_at` is pinned against is ten preserved,
+  five changed (was nine and five): the call keeps the index, so the
+  re-stamp equals the seed's.
 
 ### Docs
 
@@ -285,6 +316,38 @@ the list matches the test. A mutation round in between found the
 so its seconds were 0, 1 and 2 ns; it starts at 2023-01-01 now. Then
 the threshold survivor: 30 mutants over every new guard, arm and
 rounding step, all killed.
+
+### Review round 2 (consensus panel, codex + agy)
+
+Both panelists, independently, found the class one level up from round
+1: "an index carries its origin, and a copied pair stands when the new
+index brought none" read `_origin_from_index is None` as "no news" where
+it meant "unknown", so `reset_index(drop=True)` (positions) and
+`groupby(ts.index // 7200).mean()` (keys) carried the hourly series'
+pair and `datetimes` reported 00:00:00, 00:00:01, 00:00:02, 00:00:03 -
+a confident wrong answer where `main` had an inert field and no
+accessor. `reset_index(inplace=True)` reached the same result through
+`_update_inplace`, which skips `__finalize__` altogether. Closed the way
+#20 closed the positional slots: the origin now carries the index it was
+declared against and the read checks (the paragraph above). While
+pinning it, the first cut of the stamp re-stamped every numeric index
+`_set_axis` installed, on the theory that seconds assigned are seconds
+in the base - and `reset_index(inplace=True)` installs its positions
+through that very call, so the pin caught the fix laundering the finding
+it was for. Only the package's doors re-stamp now.
+
+codex alone: a genuine `pd.concat` of two halves of one stamped series
+came out with no origin - pandas hands a multi-operand concat's
+`__finalize__` a namespace its generic copy ignores, and the package's
+own concat arm only served nlargest/nsmallest - so pieces that share an
+origin keep it now. agy alone: an object index of NaT alone stayed an
+unconverted object index where a `DatetimeIndex` of NaT is refused; NaT
+counts as a typed missing stamp now, `None` stays untyped. Two agy
+claims measured false (concat never leaked one operand's origin; the
+overflow past the stamp range is an `OverflowError` on the operation the
+code performs). The `ensure_index` import and the `_set_axis` signature
+were measured on pandas 2.2.3 in this session, which the panel's
+environment could not.
 
 ## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
 

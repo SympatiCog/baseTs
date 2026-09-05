@@ -455,6 +455,8 @@ _metadata = [
     'ts_offset',              # The origin the index's seconds are counted
                                # from, in epoch seconds (#100)
     'has_timestamp_offset',   # Whether an origin applies (`datetimes` reads it)
+    '_origin_index',          # The index the origin was declared against;
+                               # `datetimes` refuses an index not drawn from it
     'outlier_indices',        # Positions of the samples filtered as outliers
     'lowess_fit',             # LOWESS fit data (if applicable)  — one value
                                # per sample; both are positional, see below

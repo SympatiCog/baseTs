@@ -33,7 +33,8 @@ from .series import (TimeSeriesData, _detach_shared_metadata,
                      _UNSET, _UnsetType,
                      _carries_metadata, _carry_identity,
                      _apply_duplicate_label_declaration,
-                     _refuse_undeclarable_index, _origin_timestamp)
+                     _refuse_undeclarable_index, _origin_timestamp,
+                     _origin_problem)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -362,8 +363,17 @@ class baseTs(TimeSeriesData):
         first stamp and sets the origin, a TimedeltaIndex becomes seconds
         and leaves the origin alone, and seconds are taken as given - the
         same rule as the constructor, `ts.index = ...` and `set_axis`.
+
+        One difference from pandas' `ts.index = ...`: seconds assigned here
+        are declared to be seconds in this series' time base, so the
+        origin, if there is one, describes the new index. pandas' door
+        makes no such declaration - `reset_index(inplace=True)` uses it to
+        install positions - so seconds arriving there must still be drawn
+        from the ones the origin was declared against.
         """
         self.index = pd.Index(value)
+        if self.has_timestamp_offset and self.__dict__.get('_origin_from_index') is None:
+            self._origin_index = self.index
         # No freq recalculation. The property derives from the index, so a new
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
@@ -428,7 +438,10 @@ class baseTs(TimeSeriesData):
         # arrived stamped its origin holds over the preserved pair (#100).
         # No package path hands a stamped index here - every caller derives
         # it from the numeric one - so this is pinned directly.
-        self._restore_origin_from_index()
+        if not self._restore_origin_from_index() and self.has_timestamp_offset:
+            # Re-initialised in this series' own time base: the preserved
+            # pair describes the index just installed, not the old one.
+            self._origin_index = self.index
 
         if attrs:
             self.attrs = attrs
@@ -586,6 +599,13 @@ class baseTs(TimeSeriesData):
             # overwritten by the parent's.
             if new_obj.__dict__.get('_origin_from_index') is None:
                 metadata_attrs += ['has_timestamp_offset', 'ts_offset']
+                # And the pair then describes the new index, whatever grid
+                # it is: every caller builds `new_times` in this series'
+                # time base (a slice, a resampled grid, the same index).
+                # Not `_origin_index` from the parent - a copied stamp would
+                # refuse the grid resample just built.
+                if self.has_timestamp_offset:
+                    new_obj._origin_index = new_obj.index
 
             # Not iterating self._metadata: this list is deliberately curated
             # and excludes signal_name and history, which are handled above
@@ -1881,12 +1901,13 @@ class baseTs(TimeSeriesData):
             return bound
         # Before parsing: on a series with no origin the mistake is the kind
         # of bound, whatever the string says, and that is the message owed.
-        if not self.has_timestamp_offset:
+        # The same helper `datetimes` reads decides whether the origin
+        # applies to the index the series holds now.
+        problem = _origin_problem(self)
+        if problem is not None:
             raise TypeError(
                 f"time_slice got a calendar bound for {which} ({bound!r}), but "
-                "this series has no timestamp origin: its index is seconds. "
-                "Pass seconds, build the series from a DatetimeIndex, or "
-                "declare the origin with set_timestamp_offset(epoch_seconds).")
+                f"{problem} Pass seconds instead.")
         stamp = pd.Timestamp(bound)
         if stamp.tz is not None:
             stamp = stamp.tz_convert(None)
@@ -2897,6 +2918,7 @@ class baseTs(TimeSeriesData):
             f"Set timestamp offset to {ts_offset}", "_tso" + str(ts_offset)
         )
         self.has_timestamp_offset = True
+        self._origin_index = self.index          # the origin describes this index
 
     def to_dataframe(self, set_index: bool = False) -> pd.DataFrame:
         """
