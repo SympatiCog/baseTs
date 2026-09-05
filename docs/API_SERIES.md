@@ -382,22 +382,29 @@ print(f"Peak frequency: {peak_freq} Hz")
 ### Pandas Integration
 
 ```python
-# Direct access to pandas functionality, on a daily series with a DatetimeIndex
+# Direct access to pandas functionality, on a daily series built from a DatetimeIndex.
+# The constructor converts the dates to seconds since the first one (#100), so
+# the index is numeric and every baseTs method reads it; the dates themselves
+# are the `datetimes` accessor
 dates = pd.date_range('2023-01-01', periods=365, freq='D')
 daily = baseTs(np.random.randn(365), times=dates, signal_name="sensor_data")
+assert daily.times[1] == 86400.0 and daily.datetimes[1] == dates[1]
 
-# Use pandas methods directly
-monthly_stats = daily.groupby(daily.index.month).agg(['mean', 'std', 'min', 'max'])
+# Use pandas methods directly, keyed on the dates
+monthly_stats = daily.groupby(daily.datetimes.month).agg(['mean', 'std', 'min', 'max'])
 quantiles = daily.quantile([0.1, 0.25, 0.5, 0.75, 0.9])
+
+# Fixed-length bins resample from the origin and stay a baseTs
+weekly_means = daily.resample('7D')
 
 # Convert to DataFrame for complex analysis
 df = daily.to_frame('value')
-df['month'] = df.index.month
-df['day_of_week'] = df.index.dayofweek
+df['month'] = daily.datetimes.month
+df['day_of_week'] = daily.datetimes.dayofweek
 
-# baseTs.resample() reads a numeric-seconds index and cannot take a DatetimeIndex
-# yet (#100); pandas' own resample works on the frame
-weekly_means = df['value'].resample('W').mean()
+# A calendar-anchored bin ('W', 'ME') needs a DatetimeIndex: pandas' own
+# resample, on a frame or Series over the dates
+calendar_weeks = df.set_index(daily.datetimes)['value'].resample('W').mean()
 
 # Seasonal decomposition using pandas
 seasonal_means = df.groupby('month')['value'].mean()
@@ -414,7 +421,21 @@ only while the index still matches the one it was set against; any operation
 that changes the index (`iloc`, `sort_values`, `resample`, `dropna`) re-derives.
 Setting a non-positive, non-finite or non-numeric rate raises `ValueError`.
 Reads as `NaN` when the index cannot support a rate — fewer than two samples,
-a zero or negative span, or a non-numeric index such as a `DatetimeIndex`.
+a zero or negative span, or a non-numeric index (an object index of strings;
+a `DatetimeIndex` is converted to seconds at the constructor, #100, and
+derives normally).
+
+### `datetimes` Property
+
+**`datetimes`** *(property, `pd.DatetimeIndex`)* — the index as calendar
+stamps. The index itself is always seconds; a series built from a
+`DatetimeIndex` counts them from its first stamp and records that stamp as
+`ts_offset` (epoch seconds), and this property is the way back:
+`ts.groupby(ts.datetimes.month)`, `pd.Series(ts.values,
+index=ts.datetimes).rolling('1h')`. Raises `ValueError` on a series with no
+origin — one built from seconds or a `TimedeltaIndex` and never given one via
+`set_timestamp_offset`. Naive UTC: a timezone-aware index is recorded as its
+UTC instant.
 
 ### Metadata Attributes
 
@@ -431,8 +452,9 @@ _metadata = [
     'is_interpolated',        # Whether at least one value is an interpolated
                                # estimate rather than a measured sample (#90)
     'is_uniform_grid',        # Whether the data is on a uniform time grid
-    'ts_offset',              # Timestamp offset in seconds
-    'has_timestamp_offset',   # Whether a timestamp offset has been applied
+    'ts_offset',              # The origin the index's seconds are counted
+                               # from, in epoch seconds (#100)
+    'has_timestamp_offset',   # Whether an origin applies (`datetimes` reads it)
     'outlier_indices',        # Positions of the samples filtered as outliers
     'lowess_fit',             # LOWESS fit data (if applicable)  — one value
                                # per sample; both are positional, see below

@@ -19,7 +19,6 @@ caller has. The rule therefore only ever bites where the transient would have
 been *kept*: a caller who changes the length and does not supply times.
 """
 import numpy as np
-import pandas as pd
 import pytest
 
 from baseTs import baseTs
@@ -179,14 +178,17 @@ class TestWhatIsStillAllowed:
         assert len(ts) == 0
         assert len(ts.times) == 0
 
-    def test_shrinking_a_datetime_index_to_empty_keeps_its_dtype(self):
+    def test_shrinking_a_non_numeric_index_to_empty_keeps_its_dtype(self):
         """Incidental: on `main` this crashed inside numpy (`linspace` on
-        `Timestamp` endpoints with n=0). Review round 1 measured it."""
-        stamps = pd.date_range("2024-01-01", periods=3, freq="s")
-        ts = baseTs(np.arange(3.0), times=stamps)
+        `Timestamp` endpoints with n=0). Review round 1 measured it on a
+        DatetimeIndex; since #100 the constructor converts one to seconds,
+        so an object index of strings is what still exercises the slice."""
+        ts = baseTs(np.arange(3.0), times=np.array(['a', 'b', 'c'], dtype=object))
+        before = ts.index.dtype       # object, or pandas 3's `str`
         ts.data = np.array([])
         assert len(ts) == 0
-        assert isinstance(ts.index, pd.DatetimeIndex)
+        assert ts.index.dtype == before
+        assert ts.index.dtype != np.float64
 
     def test_two_samples_resample_over_their_span(self):
         ts = baseTs(np.array([1.0, 2.0]), times=np.array([0.0, 1.0]))
@@ -284,14 +286,15 @@ class TestTheTwoStepRouteStillWorks:
     def test_an_unmeasurable_span_is_refused_not_leaked(self, resample):
         """The shared precondition's non-finite arm and its TypeError catch.
 
-        `duration()` on a DatetimeIndex raises TypeError (a Timedelta does
-        not `float()`); the helper turns that into the same degenerate-span
-        refusal with `duration nan` rather than leaking the conversion
-        error. Mutation testing found neither arm pinned for `interpto_hz`
-        before the extraction; both resamplers pin them now.
+        `duration()` on a non-numeric index raises TypeError (`'c' - 'a'`
+        has no meaning; a DatetimeIndex used to be the case, until #100
+        converted it to seconds at the constructor); the helper turns that
+        into the same degenerate-span refusal with `duration nan` rather
+        than leaking the conversion error. Mutation testing found neither
+        arm pinned for `interpto_hz` before the extraction; both resamplers
+        pin them now.
         """
-        stamps = pd.date_range("2024-01-01", periods=3, freq="s")
-        ts = baseTs(np.arange(3.0), times=stamps)
+        ts = baseTs(np.arange(3.0), times=np.array(['a', 'b', 'c'], dtype=object))
         with pytest.raises(ValueError, match="degenerate \\(duration nan\\)"):
             resample(ts)
 

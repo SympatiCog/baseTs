@@ -95,17 +95,19 @@ def demonstrate_pandas_features(data, times):
         'quantile_95': ts.rolling(50).quantile(0.95)
     }
     
-    # Time-based slicing with datetime index
+    # The DatetimeIndex was converted to seconds since its first stamp at
+    # the constructor; the stamps are the `datetimes` accessor, and a date
+    # string bound on time_slice is placed against that origin
     time_slice = ts.time_slice(start_time='2023-01-01 00:01:00',
                                end_time='2023-01-01 00:03:00')
-    
-    # Statistical summary. (get_statistics() cannot read a DatetimeIndex
-    # yet - issue #100 - so this uses pandas' describe() on it.)
-    stats = ts.describe()
+
+    # Statistical summary, on the seconds index like every other method
+    stats = ts.get_statistics()
 
     print(f"\nEnhanced capabilities:")
     print(f"  Rolling mean length: {rolling_stats['mean'].len()}")
     print(f"  Time slice length: {time_slice.len()}")
+    print(f"  First stamp: {ts.datetimes[0]}, duration {stats['duration']:.2f} s")
     print(f"  Native pandas correlation: {ts.autocorr(lag=1):.3f}")
     
     return ts, rolling_stats, time_slice
@@ -387,9 +389,9 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
     
     Args:
         measurements: Array of measured values
-        timestamps: Array of measurement times, in seconds. (A DatetimeIndex is
-            accepted by the constructor, but get_statistics() in step 5 cannot
-            read one yet - see issue #100.)
+        timestamps: Array of measurement times, in seconds, or a
+            DatetimeIndex (converted to seconds since its first stamp at
+            the constructor; the stamps stay reachable as `ts.datetimes`)
         metadata: Dictionary of experimental metadata
     
     Returns:
@@ -1630,55 +1632,60 @@ def scientific_pandas_integration(ts_data):
     Returns:
         Advanced analysis results using pandas functionality
     """
-    # Ensure datetime index for time-based operations
-    if not isinstance(ts_data.index, pd.DatetimeIndex):
-        # Convert to datetime if numeric
-        ts_data = baseTs(data=ts_data.data, 
-                        times=pd.to_datetime(ts_data.times, unit='s'),
-                        signal_name=ts_data.signal_name)
-    
+    # A baseTs keeps a seconds index whatever it was built from; the
+    # calendar it was built from is the `datetimes` accessor. A series built
+    # from seconds has no origin yet, so declare one first.
+    if not ts_data.has_timestamp_offset:
+        ts_data = ts_data.copy()
+        ts_data.set_timestamp_offset(pd.Timestamp('2023-01-01').timestamp())
+    stamps = ts_data.datetimes
+
+    # pandas' calendar conveniences - offset-string windows such as
+    # rolling('1h'), calendar-anchored resampling such as 'W' - need a
+    # DatetimeIndex, so they run on a plain Series over the stamps
+    calendar = pd.Series(ts_data.values, index=stamps)
+
     # Advanced pandas time series operations
     results = {}
-    
-    # 1. Resampling for different time scales. baseTs.resample() reads a
-    # numeric-seconds index and cannot take a DatetimeIndex yet (#100), so
-    # this drops to pandas' own resample on a plain Series.
-    plain = pd.Series(ts_data.values, index=ts_data.index)
-    results['hourly_mean'] = plain.resample('h').mean()
-    results['daily_max'] = plain.resample('D').max()
-    results['daily_std'] = plain.resample('D').std()
-    results['weekly_std'] = plain.resample('W').std()
-    
-    # 2. Time-based grouping and analysis
-    results['monthly_stats'] = ts_data.groupby(ts_data.index.month).agg([
+
+    # 1. Resampling for different time scales. baseTs.resample() bins the
+    # seconds from the origin, so fixed-length intervals stay a baseTs;
+    # a weekly bin is calendar-anchored and goes through pandas
+    results['hourly_mean'] = ts_data.resample('h')
+    results['daily_max'] = ts_data.resample('D', method='max')
+    results['daily_std'] = ts_data.resample('D', method='std')
+    results['weekly_std'] = calendar.resample('W').std()
+
+    # 2. Time-based grouping and analysis, keyed on the stamps
+    results['monthly_stats'] = ts_data.groupby(stamps.month).agg([
         'mean', 'std', 'min', 'max', 'count'
     ])
-    
-    results['hourly_pattern'] = ts_data.groupby(ts_data.index.hour).mean()
-    results['day_of_week_pattern'] = ts_data.groupby(ts_data.index.dayofweek).mean()
-    
-    # 3. Advanced rolling operations
+
+    results['hourly_pattern'] = ts_data.groupby(stamps.hour).mean()
+    results['day_of_week_pattern'] = ts_data.groupby(stamps.dayofweek).mean()
+
+    # 3. Advanced rolling operations with offset-string windows
     results['rolling_stats'] = {
-        'mean_1h': ts_data.rolling('1h').mean(),
-        'std_6h': ts_data.rolling('6h').std(),
-        'quantile_95_1d': ts_data.rolling('1D').quantile(0.95),
-        'autocorr_1h': ts_data.rolling('1h', min_periods=3).apply(lambda x: x.autocorr(lag=1))
+        'mean_1h': calendar.rolling('1h').mean(),
+        'std_6h': calendar.rolling('6h').std(),
+        'quantile_95_1d': calendar.rolling('1D').quantile(0.95),
+        'autocorr_1h': calendar.rolling('1h', min_periods=3).apply(lambda x: x.autocorr(lag=1))
     }
-    
+
     # 4. Trend analysis
     # Detrend and calculate trend strength
-    detrended = ts_data - ts_data.rolling('1D').mean()
-    trend_strength = 1 - detrended.var() / ts_data.var()
-    
+    detrended = calendar - calendar.rolling('1D').mean()
+    trend_strength = 1 - detrended.var() / calendar.var()
+
     # 5. Seasonal decomposition (simplified)
     # Extract different time scales
-    daily_cycle = ts_data.groupby([ts_data.index.hour, ts_data.index.minute]).mean()
-    weekly_cycle = ts_data.groupby(ts_data.index.dayofweek).mean()
-    monthly_cycle = ts_data.groupby(ts_data.index.day).mean()
-    
+    daily_cycle = ts_data.groupby([stamps.hour, stamps.minute]).mean()
+    weekly_cycle = ts_data.groupby(stamps.dayofweek).mean()
+    monthly_cycle = ts_data.groupby(stamps.day).mean()
+
     # 6. Change point detection using rolling statistics
-    rolling_mean = ts_data.rolling('2h').mean()
-    rolling_std = ts_data.rolling('2h').std()
+    rolling_mean = calendar.rolling('2h').mean()
+    rolling_std = calendar.rolling('2h').std()
     
     # Z-score of differences
     mean_changes = rolling_mean.diff().abs()
@@ -1699,9 +1706,10 @@ def scientific_pandas_integration(ts_data):
     train_data = ts_data[:split_point]
     test_data = ts_data[split_point:]
     
-    # Compare patterns between halves
-    train_hourly = train_data.groupby(train_data.index.hour).mean()
-    test_hourly = test_data.groupby(test_data.index.hour).mean()
+    # Compare patterns between halves; a slice keeps the origin, so each
+    # half's stamps are its own
+    train_hourly = train_data.groupby(train_data.datetimes.hour).mean()
+    test_hourly = test_data.groupby(test_data.datetimes.hour).mean()
     
     # Correlation between training and testing patterns
     pattern_stability = train_hourly.corr(test_hourly)
@@ -1719,8 +1727,8 @@ def scientific_pandas_integration(ts_data):
             'change_points': change_points
         },
         'summary_statistics': {
-            'total_duration': ts_data.index[-1] - ts_data.index[0],
-            'sampling_frequency': len(ts_data) / ((ts_data.index[-1] - ts_data.index[0]).total_seconds()),
+            'total_duration': pd.Timedelta(seconds=ts_data.duration()),
+            'sampling_frequency': ts_data.freq,
             'data_completeness': 1 - ts_data.isna().sum() / len(ts_data)
         }
     }

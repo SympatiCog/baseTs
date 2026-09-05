@@ -54,6 +54,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — A `DatetimeIndex` is converted to seconds at the constructor (#100)
+
+The constructor accepted a `pd.DatetimeIndex` - API.md's own example built
+one - and minted an object four methods could not read. Measured on `main`
+at 0cbffcb (pandas 3.0.1, numpy 2.5.2), on a 365-day daily series:
+`freq` derived NaN (the derivation's TypeError arm caught the Timedelta
+span and fell to NaN), so every spectral method needed a declared rate;
+`duration()` raised `TypeError: float() argument must be ... not
+'Timedelta'`, and `get_statistics()` with it; `resample('D')` raised
+`TypeError: dtype datetime64[us] cannot be converted to timedelta64[ns]`
+(`pd.to_timedelta(self.index, unit='s')`); `diff_ts()` raised
+`UFuncTypeError` multiplying object by timedelta. The pandas-native
+methods (`rolling_mean`, `time_slice`, `detect_outliers`) worked, which
+is what made the object look usable.
+
+### The design: one time base, one door
+
+Decided by Stan (2026-09-05, spec in
+`docs/superpowers/specs/2026-09-05-datetimeindex-convert-at-constructor.md`):
+the package keeps one time base - a float index of seconds - and a
+stamped index joins it at the door, rather than every method learning
+two index kinds (the guard-at-consumption pattern this arc keeps paying
+for) or the constructor refusing what pandas can already read.
+
+**The rule**, in `TimeSeriesData.__init__` after pandas has normalised the
+index (so one check covers a `DatetimeIndex`, a datetime64 array, a list
+of Timestamps, the index of a Series passed as `data`, and the `index=`
+alias pandas uses), and in the `times` setter, the other door:
+
+- A `DatetimeIndex` becomes float64 seconds since its **first** stamp
+  (not its earliest: an unsorted index goes negative, as the numeric path
+  keeps an unsorted index as given), and that stamp is recorded as
+  `ts_offset` in epoch seconds with `has_timestamp_offset` True. On the
+  issue's example: `times` starts `[0, 86400, 172800]`, `ts_offset` is
+  `1672531200.0`, `freq` derives as `1/86400`, `duration()` is
+  `31449600.0`, `resample('D')` returns 365 bins with the origin kept,
+  `diff_ts()` 364 samples starting at 86400 s.
+- A `TimedeltaIndex` becomes its own seconds, with no origin.
+- A timezone-aware index is an instant, and epoch seconds identify an
+  instant exactly, so it converts like a naive one read as UTC; the zone
+  name is kept nowhere (`'2023-01-01' US/Eastern` records `1672549200.0`,
+  and comes back as `05:00 UTC`). Naive stamps are read as UTC.
+- An empty index has no first stamp and no origin. A NaT first stamp is
+  refused (`"first stamp is NaT"`); an interior NaT becomes a NaN second,
+  which the numeric index admits already.
+- `ts_offset=` alongside a `DatetimeIndex` is refused as a second origin
+  (`"carries its own origin"`), from the constructor, `TimeSeriesData` and
+  `from_df` alike; alongside a `TimedeltaIndex`, which carries none, it is
+  accepted. `has_timestamp_offset=False` alongside a `DatetimeIndex` keeps
+  the seconds and drops the origin - a coherent request for relative
+  seconds.
+
+**`ts_offset` now means something.** It was in `_metadata`, defaulted,
+copied, settable and displayed, and nothing computed from it. It is the
+origin the index's seconds are counted from, in epoch seconds, and three
+things read it:
+
+- **`datetimes`**, a property on both classes: the origin plus each
+  second, as a naive-UTC `DatetimeIndex`. This is the way back to the
+  stamps and what pandas' calendar conveniences take:
+  `ts.groupby(ts.datetimes.month)`, `pd.Series(ts.values,
+  index=ts.datetimes).rolling('1h')`. Raises `ValueError` naming
+  `set_timestamp_offset` on a series with no origin. Precision, measured
+  over a 14-case census (daily, hourly, 10 ms, ms, µs, ns grids; ms, µs
+  and ns fractional starts; 1900, 1960, 2200; an irregular index; an
+  unsorted one): the origin is rebuilt at the microsecond, because a
+  float64 epoch in the 2020s resolves to ~2.4e-7 s and the nanosecond
+  digits of a finer origin were never in the float; each second is split
+  into whole and fraction before scaling to integer nanoseconds, because
+  `round(seconds * 1e9)` loses nanoseconds past 2**53. Every stamp at
+  microsecond resolution or coarser round-trips exactly, for decades of
+  span; a nanosecond origin comes back 2.11e-7 s off, and a nanosecond
+  stamp more than ~52 days from the origin by 1e-9 s. (`pd.to_datetime(
+  origin + seconds, unit='s')`, the obvious spelling, was off by up to
+  2.6e-7 s on 7 of the 14 cases; `Timestamp(origin) + to_timedelta(
+  seconds)` on 5.)
+- **`time_slice`** takes a calendar bound - a date string, `datetime`,
+  `date`, `np.datetime64`, `pd.Timestamp` - on a series with an origin,
+  placed as integer nanoseconds from the origin divided by 1e9, the
+  arithmetic that produced the index's own seconds, so a bound that names
+  a sample lands on it (`Timedelta.total_seconds()` rounds to the
+  microsecond and is not used). A number is seconds on the index, as
+  before. A calendar bound on a series with no origin raises `TypeError`
+  naming the remedy, before parsing - whatever the string says, the kind
+  of bound is the mistake; an unparseable string on a series with an
+  origin raises pandas' `ValueError`.
+- **`set_timestamp_offset(x)`** declares the origin. See the breaking
+  change below.
+
+`resample` works unchanged on the seconds index, and `_create_new_with_data`
+carries the pair, so the result keeps the origin and its `datetimes` are
+the bin starts. Bins are counted from the origin, not the calendar: a
+series starting at 08:00 has day bins at 08:00. A calendar-anchored rule
+(`'W'`, `'ME'`) is refused by pandas as on any seconds index
+(`"requires fixed-duration freq"`); pandas' own resample over
+`ts.datetimes` is the route for those, and the API_SERIES and EXAMPLES
+blocks show it.
+
+`from_df` accepts a datetime or timedelta time column (it used to reject
+one as "must be numeric"); NaT is a missing value there as before. The
+numeric test is guarded to numpy dtypes now, so a string column raises
+the documented `ValueError` instead of numpy's `TypeError` on pandas 3.
+
+### Breaking
+
+- **`ts.index` is seconds for a caller who passed dates.** `ts.index.month`,
+  `ts.rolling('1h')`, `ts.groupby(ts.index.hour)` and a date-string
+  comparison against the raw index stop working on the object;
+  `ts.datetimes` and `time_slice`'s calendar bounds are the replacements,
+  and pandas' offset-string windows run on `pd.Series(ts.values,
+  index=ts.datetimes)`.
+- **`freq` derives for such a series** (it read NaN), so every spectral
+  method works without a declared rate, and a declared rate is honoured
+  as on any index.
+- **`set_timestamp_offset(x)` no longer moves the index.** It shifted the
+  times by `x` *and* recorded `x`, which under "seconds since the origin"
+  counts the offset twice - `datetimes` would have started at origin +
+  offset. It records only; a second call replaces the origin; a declared
+  rate survives it (nothing about the index changes). A caller who wanted
+  the shift writes `ts.times = ts.times + x`. `to_dataframe()` after it
+  returns the unshifted times.
+- **The offset pair moved to `TimeSeriesData.__init__`**, which gains
+  `ts_offset=` and `has_timestamp_offset=` keywords, because that is where
+  the index is built and where an explicit offset and a stamped index
+  have to meet. `baseTs.__init__` passes them through. The outcomes for
+  every combination of the two keywords, on the array path and on the
+  conversion path from a source carrying `(1.5, True)`, were measured on
+  `main` and are pinned unchanged.
+- **`utils.shift_timeseries` on a baseTs built from stamps** now blanks
+  the head with NaN in a float array; it blanked with NaT in a datetime64
+  array. The NaT arm still exists for a duck-typed source carrying a
+  datetime64 `times`, and is pinned through one.
+- The rate derivation's TypeError arm, `duration()`'s TypeError catch in
+  the resamplers' span check, and `_update_series_data`'s dtype-keeping
+  shrink were all documented as "the DatetimeIndex case"; an object index
+  of strings is what reaches them now, and the pins were retargeted to
+  one.
+
+### Docs
+
+`API.md` (constructor `times`/`ts_offset`, the datetime example now
+asserts the seconds, the rate and the round-trip; `from_df`; a `times`
+setter paragraph and a `datetimes` entry; `freq`'s NaN sentence;
+`resample`'s bin-origin paragraph; `time_slice`'s parameters and raises),
+`API_SERIES.md` (the pandas-integration block keys on `datetimes` and
+shows both resample routes; a `datetimes` section; the `_metadata`
+comments), `EXAMPLES.md` (the enhanced-features example calls
+`get_statistics()` on the stamped series; the experimental-analysis
+docstring; the long-term pandas example, which used to convert its
+seconds to a `DatetimeIndex` and drop to a plain Series for every
+calendar operation, declares an origin and keys on `datetimes`). Every
+block runs under the harness; API.md's no-run count is 13 (was 12, the
+`datetimes` stub).
+
 ## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
 
 `compute_fft_power` has two branches. Data whose std is below 1e-15 took
@@ -313,14 +467,16 @@ character only; it pairs by character and length now, so a ```python
 line inside a longer ```` block is content, not an opening. The psutil
 sentence above was corrected: CI does install it.
 
-### Filed, not folded in — #100
+### Filed, not folded in — #100 (since answered, see the entry above)
 
-A `DatetimeIndex` series derives `freq` as NaN, and `duration()`,
-`get_statistics()`, `resample()` and `diff_ts()` raise on it, while the
-constructor accepts one and API.md shows the form. Three doc examples
-used to hit this and now say so instead. Whether to support that index or
-refuse it at the constructor is a design decision; filed with the four
-sites.
+A `DatetimeIndex` series derived `freq` as NaN, and `duration()`,
+`get_statistics()`, `resample()` and `diff_ts()` raised on it, while the
+constructor accepted one and API.md showed the form. Three doc examples
+used to hit this and said so instead. Whether to support that index or
+refuse it at the constructor was a design decision; filed with the four
+sites, and decided as: convert it to seconds at the constructor. The three
+"#100" comments those examples carried are gone, and each example now
+runs on the converted series.
 
 ## [Unreleased] — `compute_fft_power` computes on a float64 copy of the data (#96)
 

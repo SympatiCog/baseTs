@@ -41,14 +41,21 @@ Create a new baseTs object.
 
 **Parameters:**
 - `data` (array-like): The signal values (y-axis data)
-- `times` (array-like): The time points (x-axis data) 
+- `times` (array-like): The time points (x-axis data), in seconds. A
+  `DatetimeIndex` (or datetime64 array, or list of Timestamps) is converted
+  here to seconds since its first stamp, and that stamp is recorded as
+  `ts_offset`; the stamps stay reachable as [`datetimes`](#datetimes). A
+  `TimedeltaIndex` becomes its seconds with no origin. A timezone-aware
+  index is recorded as its UTC instant.
 - `signal_name` (str, optional): Name for the signal
 - `freq` (float, optional): Sampling frequency in Hz. Declares an explicit
   rate rather than deriving one from `times`; see the [`freq`](#freq)
   property for how long the declaration is honoured. Defaults to `np.nan`,
   the sentinel meaning "not supplied" — `np.nan` is accepted here without
   raising, but assigning `ts.freq = np.nan` after construction does raise.
-- `ts_offset` (float, optional): Time offset in seconds
+- `ts_offset` (float, optional): The origin the seconds are counted from,
+  in seconds since the Unix epoch. Refused alongside a `DatetimeIndex`,
+  which carries its own origin.
 
 **Returns:**
 - `baseTs`: New baseTs instance
@@ -71,9 +78,13 @@ times = np.arange(1000) / 100.0          # 10 s at exactly 100 Hz
 data = np.sin(2 * np.pi * 0.2 * times)
 ts = baseTs(data=data, times=times)
 
-# Create time series with datetime index
+# Create time series from a datetime index: the index becomes seconds since
+# the first stamp, the rate derives from it, and the stamps are `datetimes`
 dates = pd.date_range('2023-01-01', periods=365, freq='D')
 ts_series = baseTs(data=np.random.randn(365), times=dates)
+assert ts_series.times[1] == 86400.0
+assert ts_series.freq == 1 / 86400
+assert ts_series.datetimes.equals(dates)
 
 # With metadata
 ts_named = baseTs(data=data, times=times, 
@@ -87,14 +98,17 @@ Create a baseTs object from a pandas DataFrame. A module-level function
 
 **Parameters:**
 - `df` (pd.DataFrame): Input DataFrame
-- `time_col` (str): Column name for time values, which must be numeric
-  (seconds); a datetime column is rejected with `ValueError`. Default: 'time'
+- `time_col` (str): Column name for time values: seconds, or a datetime or
+  timedelta column, converted as the constructor converts an index (a
+  datetime column sets the origin). Anything else is rejected with
+  `ValueError`. Default: 'time'
 - `data_col` (str): Column name for data values. Default: 'value'
 - `signal_name` (str, optional): Signal name
 - `freq` (float, optional): Sampling frequency. Passed through to the
   constructor; see [`freq`](#freq) above for how an explicit rate is
   validated and how long it is honoured.
-- `ts_offset` (float, optional): Time offset
+- `ts_offset` (float, optional): The origin the time column's seconds are
+  counted from, in epoch seconds. Refused alongside a datetime column.
 
 **Returns:**
 - `baseTs`: New baseTs instance
@@ -142,6 +156,26 @@ def times(self) -> np.ndarray:
     """Access the underlying time array."""
 ```
 
+Always seconds. Assigning `ts.times = x` is the other door an index arrives
+by, with the constructor's rule: a `DatetimeIndex` becomes seconds since its
+first stamp and sets the origin, a `TimedeltaIndex` becomes seconds and leaves
+the origin alone, seconds are taken as given.
+
+#### `datetimes`
+```python no-run
+@property
+def datetimes(self) -> pd.DatetimeIndex:
+    """The index as calendar stamps: the origin plus each second."""
+```
+
+The one way back to the stamps a series was built from, and what pandas'
+calendar conveniences read: `ts.groupby(ts.datetimes.month)`,
+`pd.Series(ts.values, index=ts.datetimes).rolling('1h')`. Naive UTC. Exact
+for stamps at microsecond resolution or coarser. Raises `ValueError` on a
+series with no origin — built from seconds or durations and never given one
+via `set_timestamp_offset(epoch_seconds)`, which declares the origin without
+moving the index.
+
 #### `len()`
 ```python no-run
 def len(self) -> int:
@@ -183,7 +217,8 @@ against; any operation that changes the index (`iloc`, `sort_values`,
 `resample`, `dropna`) re-derives. Setting a non-positive, non-finite or
 non-numeric rate raises `ValueError`. Reads as `NaN` when the index cannot
 support a rate — fewer than two samples, a zero or negative span, or a
-non-numeric index such as a `DatetimeIndex`.
+non-numeric index (an object index of strings; a `DatetimeIndex` is
+converted to seconds at the constructor and derives normally).
 
 #### `is_filtered`
 ```python no-run
@@ -620,7 +655,11 @@ This overrides `pandas.Series.resample`, and has to: a baseTs carries a plain
 numeric (float seconds) index, and pandas' `resample` requires a `DatetimeIndex`,
 `TimedeltaIndex` or `PeriodIndex`. Calling pandas' version directly would raise
 `TypeError`. This method converts the numeric index to a timedelta, resamples,
-aggregates, and converts back.
+aggregates, and converts back. On a series built from a `DatetimeIndex` the
+bins are counted from the first stamp, not from the calendar (a series
+starting at 08:00 has day bins at 08:00), and the origin is kept, so the
+result's `datetimes` are the bin starts; for calendar-anchored bins use
+pandas' resample on `pd.Series(ts.values, index=ts.datetimes)`.
 
 **Parameters:**
 - `freq` (str): Target interval as a pandas offset string — `'1s'`, `'100ms'`,
@@ -757,8 +796,12 @@ rolling_range = rolling_max - rolling_min  # Custom calculation
 Extract time series slice by time/date range.
 
 **Parameters:**
-- `start_time` (optional): Start bound, compared against the index as given:
-  a date string or datetime-like on a DatetimeIndex, seconds on a numeric one
+- `start_time` (optional): Start bound, inclusive. A number is seconds on
+  the index. A date string or datetime-like (`datetime`, `date`,
+  `np.datetime64`, `pd.Timestamp`) is a calendar bound, placed against the
+  series' origin — the first stamp of the `DatetimeIndex` it was built
+  from, or the origin declared with `set_timestamp_offset`. An aware
+  stamp is an instant.
 - `end_time` (optional): End bound, same rule
 - `inplace` (bool, optional): If True, modifies the existing object. Default: False
 
@@ -766,14 +809,16 @@ Extract time series slice by time/date range.
 - `baseTs`: New baseTs object with sliced data
 
 **Raises:**
-- `TypeError`: If a bound cannot be compared with the index (a date string
-  against a numeric index). A `start_time` after `end_time` is not rejected;
-  it returns an empty series.
+- `TypeError`: A calendar bound on a series with no origin (built from
+  seconds and never given one). A `start_time` after `end_time` is not
+  rejected; it returns an empty series.
+- `ValueError`: A string `pd.Timestamp` cannot parse.
 
 **Example:**
 ```python
-# Date strings (automatically parsed)
+# Date strings, placed against the origin the daily series was built with
 january = daily.time_slice(start_time='2023-01-01', end_time='2023-01-31')
+assert len(january) == 31 and january.datetimes[-1] == pd.Timestamp('2023-01-31')
 
 # Specific time ranges
 morning = daily.time_slice(start_time='2023-01-01 06:00', end_time='2023-01-01 12:00')

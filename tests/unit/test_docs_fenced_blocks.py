@@ -54,7 +54,7 @@ FILES = ["USER_GUIDE.md", "EXAMPLES.md", "API.md", "API_SERIES.md"]
 EXPECTED_NO_RUN = {
     "USER_GUIDE.md": 0,
     "EXAMPLES.md": 0,
-    "API.md": 12,
+    "API.md": 13,
     "API_SERIES.md": 0,
 }
 

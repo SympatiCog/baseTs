@@ -6,7 +6,7 @@ Created for baseTs pandas migration.
 """
 
 from __future__ import annotations
-from typing import Optional, Union, Any, Dict, List
+from typing import Optional, Union, Any, Dict, List, Tuple
 import copy as copy_module
 import numpy as np
 import pandas as pd
@@ -694,6 +694,87 @@ def normalise_label(value: Any) -> str:
     return str(value)
 
 
+#: Nanoseconds per second, as the int64 the stamp arithmetic below works in.
+_NS_PER_SECOND = 1_000_000_000
+
+
+def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[float]]]:
+    """Turn a stamped index into the seconds the package reads (#100).
+
+    The package keeps one time base - a float index of seconds - and this is
+    where a calendar index joins it. A `DatetimeIndex` becomes seconds since
+    its *first* stamp (not its earliest: the numeric path keeps an unsorted
+    index as given, and so does this one), and that stamp is the origin,
+    returned as epoch seconds. A `TimedeltaIndex` is already durations and
+    becomes its own seconds, with no origin. Anything else returns None and
+    is left alone, which is what keeps the numeric path untouched.
+
+    A timezone-aware index is an instant, and epoch seconds identify an
+    instant exactly, so it converts like a naive one read as UTC; the zone
+    name is kept nowhere. `datetimes` gives naive UTC back.
+
+    An empty index has no first stamp and therefore no origin. A NaT
+    *first* stamp is refused: every second would be NaN and the origin NaN
+    with it, a pair nothing downstream can read. An interior NaT becomes a
+    NaN second, which is what the numeric index admits already.
+
+    Returns:
+        `(seconds, origin)` - a float64 Index and the origin in epoch
+        seconds, None when the index carries no origin - or None when the
+        index is not a stamped one.
+    """
+    if isinstance(index, pd.DatetimeIndex):
+        if len(index) == 0:
+            return pd.Index(np.array([], dtype=float), name=index.name), None
+        first = index[0]
+        if pd.isna(first):
+            raise ValueError(
+                "cannot convert this DatetimeIndex to seconds: its first "
+                "stamp is NaT, and the first stamp is the origin the seconds "
+                "are counted from. Drop or fill it first.")
+        seconds = np.asarray((index - first).total_seconds(), dtype=float)
+        return pd.Index(seconds, name=index.name), first.value / _NS_PER_SECOND
+    if isinstance(index, pd.TimedeltaIndex):
+        seconds = np.asarray(index.total_seconds(), dtype=float)
+        return pd.Index(seconds, name=index.name), None
+    return None
+
+
+def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
+    """The origin `ts_offset` names, rebuilt at microsecond resolution.
+
+    A float64 epoch in the 2020s resolves to about 2.4e-7 s, so the
+    nanosecond digits of a finer origin were never in the float; rounding
+    to the microsecond recovers exactly any origin that lies on one, which
+    is every `date_range` start and every stamp at microsecond resolution
+    or coarser. A nanosecond origin comes back within half a microsecond.
+    """
+    return pd.Timestamp(int(round(float(ts_offset) * 1_000_000)), unit='us')
+
+
+def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
+    """origin + seconds, as a DatetimeIndex, exact to the nanosecond.
+
+    Split each second into its whole and fractional parts before scaling:
+    `round(seconds * 1e9)` loses nanoseconds once `seconds * 1e9` passes
+    2**53 (about 104 days), while the fraction alone is below 1 and scales
+    exactly. The whole part is an exact integer already. So every stamp
+    whose distance from the origin is a float64 second to the nanosecond
+    is rebuilt exactly - which is every stamp at microsecond resolution or
+    coarser for decades, and nanosecond stamps within ~52 days.
+
+    A NaN or infinite second becomes NaT, as the datetime64 NaT sentinel
+    (int64 min) in the view below.
+    """
+    secs = np.asarray(seconds, dtype=float)
+    ns = np.full(secs.shape, np.iinfo(np.int64).min, dtype=np.int64)
+    finite = np.isfinite(secs)
+    whole = np.floor(secs[finite])
+    ns[finite] = (whole.astype(np.int64) * _NS_PER_SECOND
+                  + np.round((secs[finite] - whole) * _NS_PER_SECOND).astype(np.int64))
+    return origin + pd.TimedeltaIndex(ns.view('timedelta64[ns]'))
+
+
 def _freq_token(index: Any) -> tuple:
     """Fingerprint an index for the purpose of sampling-rate derivation.
 
@@ -887,15 +968,28 @@ class TimeSeriesData(pd.Series):
         "Positions of the samples filter_outliers rejected.")
 
     def __init__(self, data=None, index=None, freq: Optional[float] = None,
-                 signal_name: Union[str, _UnsetType] = _UNSET, **kwargs):
+                 signal_name: Union[str, _UnsetType] = _UNSET,
+                 ts_offset: Union[float, _UnsetType] = _UNSET,
+                 has_timestamp_offset: Union[bool, _UnsetType] = _UNSET,
+                 **kwargs):
         """
         Initialize TimeSeriesData object.
-        
+
+        A `DatetimeIndex` or `TimedeltaIndex` - however spelled: an Index, a
+        datetime64 array, a list of Timestamps, or the index of a Series
+        passed as `data` - is converted here to the float seconds every
+        method reads (#100). See _seconds_since_origin for the rule.
+
         Args:
             data: Array-like data or baseTs object
             index: Time index values (if data is array-like)
             freq: Sampling frequency in Hz
             signal_name: Name of the signal
+            ts_offset: The origin the index's seconds are counted from, in
+                epoch seconds. A DatetimeIndex carries its own origin (its
+                first stamp) and refuses a second one.
+            has_timestamp_offset: Whether an origin applies. False alongside
+                a DatetimeIndex keeps the seconds and drops the origin.
             **kwargs: Additional Series initialization parameters
         """
         # Handle different input formats
@@ -936,7 +1030,48 @@ class TimeSeriesData(pd.Series):
             # Standard pandas Series initialization
             super().__init__(data, index=index, **kwargs)
             self._initialize_default_metadata()
-            
+
+        # After the three branches, on the index pandas has already
+        # normalised - so one check covers every spelling of a stamped
+        # index - and before the rate declaration below, whose token reads
+        # the index this installs. Runs on the conversion branch too: an
+        # index carries its origin, so a stamped one wins over a copied
+        # offset.
+        origin_from_index = self._adopt_stamped_index()
+
+        # The offset pair is owned here, where the index is built, so that a
+        # DatetimeIndex and an explicit `ts_offset` meet in one place. The
+        # order - flag first, then the offset, then the one-way coherence
+        # rule - is the order baseTs.__init__ applied before the pair moved
+        # here, and the outcomes for every combination of the two keywords
+        # are pinned on both the array and the conversion path.
+        if not isinstance(has_timestamp_offset, _UnsetType):
+            self.has_timestamp_offset = has_timestamp_offset
+        if not isinstance(ts_offset, _UnsetType):
+            if origin_from_index:
+                raise ValueError(
+                    "ts_offset was given alongside a DatetimeIndex, which "
+                    "carries its own origin (its first stamp). One origin "
+                    "or the other: pass seconds or a TimedeltaIndex with "
+                    "ts_offset, or the DatetimeIndex alone.")
+            self.ts_offset = ts_offset
+            self.has_timestamp_offset = True
+        elif (not isinstance(has_timestamp_offset, _UnsetType)
+              and not has_timestamp_offset):
+            # Explicitly cleared, with no offset named. Truthiness, not
+            # `is False`: np.False_ is what `arr.any()` and any comparison
+            # result give, and it is not the False singleton, so an identity
+            # test let through exactly the pair this exists to prevent.
+            #
+            # One direction only. The reverse - asserting the flag without an
+            # offset - is a caller's own assertion, and rejecting it would
+            # break a call that works today.
+            #
+            # "no offset applied, offset 1.5" is a state nothing downstream
+            # expects, and __finalize__ copies the pair onward, so an
+            # incoherent one would ride into every derived object.
+            self.ts_offset = 0
+
         # Declare the rate only when one was supplied. With no declaration the
         # `freq` property derives from the index on read, so there is nothing
         # to store - the `else` branch that used to derive into an attribute
@@ -962,6 +1097,54 @@ class TimeSeriesData(pd.Series):
         # Initialize or update history
         if not hasattr(self, 'history') or self.history is None:
             self.history = [f"Created TimeSeriesData with {len(self)} samples"]
+
+    def _adopt_stamped_index(self) -> bool:
+        """Convert a stamped index already installed on self to seconds.
+
+        The one door (#100): the constructor calls it on whatever pandas
+        installed, and baseTs' `times` setter after installing the caller's
+        index. A DatetimeIndex sets the origin pair; a TimedeltaIndex leaves
+        the pair alone, since durations say nothing about an origin; a
+        numeric index is not touched at all.
+
+        Returns:
+            True when an origin was recorded from the index.
+        """
+        converted = _seconds_since_origin(self.index)
+        if converted is None:
+            return False
+        seconds, origin = converted
+        self.index = seconds
+        if origin is None:
+            return False
+        self.ts_offset = origin
+        self.has_timestamp_offset = True
+        return True
+
+    @property
+    def datetimes(self) -> pd.DatetimeIndex:
+        """The index as calendar stamps: the origin plus each second.
+
+        The index itself is seconds (#100), so this is the one way back to
+        the stamps a series was built from, and what pandas' calendar
+        conveniences read - `ts.groupby(ts.datetimes.month)`,
+        `pd.Series(ts.values, index=ts.datetimes).rolling('1h')`. The stamps
+        are naive UTC; an aware index was recorded as its UTC instant.
+
+        Exact for any series built from stamps at microsecond resolution or
+        coarser - see _origin_timestamp and _stamps_from_seconds for the two
+        limits.
+
+        Raises:
+            ValueError: when the series has no origin - built from seconds or
+                durations and never given one.
+        """
+        if not self.has_timestamp_offset:
+            raise ValueError(
+                "this series has no timestamp origin: its index is seconds "
+                "with no calendar attached. Build it from a DatetimeIndex, "
+                "or declare the origin with set_timestamp_offset(epoch_seconds).")
+        return _stamps_from_seconds(_origin_timestamp(self.ts_offset), self.index)
 
     def _initialize_default_metadata(self):
         """Initialize default metadata values."""
@@ -1040,8 +1223,10 @@ class TimeSeriesData(pd.Series):
         a raw TypeError escaping from here would name the subtraction
         instead, some distance from the mistake.
 
-        The TypeError arm specifically covers a DatetimeIndex, where
-        index[-1] - index[0] is a Timedelta and float() refuses it.
+        The TypeError arm covers a non-numeric index - strings, say. A
+        DatetimeIndex used to be the case that reached it (its span is a
+        Timedelta, which float() refuses); since #100 the constructor
+        converts one to seconds before anything derives from it.
 
         Returns:
             Samples per unit time, or NaN when the index cannot support a rate

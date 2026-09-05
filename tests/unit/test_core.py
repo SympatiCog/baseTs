@@ -896,10 +896,13 @@ class TestButterpassAt:
         ts.is_outlier_filtered = True
         ts.lowess_fit = np.arange(len(ts), dtype=float)
         ts.outlier_indices = np.array([3, 7, 11])
-        # Declared last, on purpose: set_timestamp_offset shifts the index and
-        # would expire a declaration made before it (#38), leaving a stale
-        # token that says nothing about propagation. Declared here the token
-        # is live, and filtering preserves the index, so it must still be live
+        # Declared last, on purpose: set_timestamp_offset used to shift the
+        # index and would have expired a declaration made before it (#38),
+        # leaving a stale token that says nothing about propagation. It only
+        # records the origin since #100, but the order stays: anything that
+        # could change the index goes before anything declared against it.
+        # Declared here the token is live, and filtering preserves the index,
+        # so it must still be live
         # on the far side. The value deliberately disagrees with the 30 Hz the
         # index derives, as at test_explicit_freq_still_honoured - a rate that
         # matched would be indistinguishable from re-derivation.

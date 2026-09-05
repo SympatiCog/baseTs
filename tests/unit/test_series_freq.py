@@ -52,22 +52,32 @@ class TestFreqToken:
 class TestDerivationHardening:
     """A non-numeric index must derive NaN, not raise.
 
-    float(index[-1] - index[0]) raises TypeError on a DatetimeIndex
-    ("not 'Timedelta'"). Today that fires at the constructor, which derives
-    eagerly. Once derivation moves to read-time an unguarded TypeError would
-    surface from .freq, info(), __repr__ or any spectral call - which is
-    exactly issue #31's complaint, "the error lands three calls away from the
-    mistake", reintroduced by the fix for it.
+    float(index[-1] - index[0]) raises TypeError on an object index of
+    strings. It used to be a DatetimeIndex ("not 'Timedelta'") that showed
+    this, until #100 made the constructor convert one to seconds - so the
+    stamped case now derives a rate, and the string index is what still
+    reaches the TypeError arm. Once derivation moved to read-time an
+    unguarded TypeError would surface from .freq, info(), __repr__ or any
+    spectral call - which is exactly issue #31's complaint, "the error lands
+    three calls away from the mistake", reintroduced by the fix for it.
     """
 
-    def test_datetime_index_constructs_and_derives_nan(self):
-        ts = baseTs(np.arange(10.0), pd.date_range('2020-01-01', periods=10, freq='s'))
+    @staticmethod
+    def _strings(n):
+        return np.array([f"t{i}" for i in range(n)], dtype=object)
+
+    def test_an_object_index_constructs_and_derives_nan(self):
+        ts = baseTs(np.arange(10.0), self._strings(10))
         assert np.isnan(ts.freq)
 
-    def test_datetime_index_reaches_the_consumption_guard(self):
-        ts = baseTs(np.arange(64.0), pd.date_range('2020-01-01', periods=64, freq='s'))
+    def test_an_object_index_reaches_the_consumption_guard(self):
+        ts = baseTs(np.arange(64.0), self._strings(64))
         with pytest.raises(ValueError, match="Invalid sampling frequency"):
             ts.get_frequency_content()
+
+    def test_a_datetime_index_now_derives(self):
+        ts = baseTs(np.arange(10.0), pd.date_range('2020-01-01', periods=10, freq='s'))
+        assert ts.freq == 1.0
 
     def test_numeric_index_still_derives(self):
         ts = baseTs(np.sin(np.arange(100) / 10.0), np.arange(100) / 10.0)
