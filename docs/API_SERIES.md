@@ -10,6 +10,21 @@ baseTs now inherits directly from pandas Series via the TimeSeriesData class, pr
 - Optimized rolling, resampling, and statistical functions
 - Native pandas integration for time-based operations
 
+The examples below share one setup: a 100 Hz sine with a little noise
+over 10 seconds, and a second series on the same time base.
+
+```python
+import numpy as np
+import pandas as pd
+from baseTs import baseTs
+
+times = np.arange(1000) / 100.0          # 10 s at exactly 100 Hz
+data = np.sin(2 * np.pi * 0.5 * times) + 0.1 * np.random.randn(1000)
+ts = baseTs(data, times, freq=100.0, signal_name="sensor")
+ts1 = ts
+ts2 = baseTs(np.cos(2 * np.pi * 0.5 * times), times, freq=100.0, signal_name="reference")
+```
+
 ## Enhanced Time-Series Methods
 
 ### Resampling and Frequency Conversion
@@ -19,7 +34,7 @@ baseTs now inherits directly from pandas Series via the TimeSeriesData class, pr
 Resample time series to a different frequency using pandas resampling.
 
 **Parameters:**
-- `freq` (str): Target frequency string (e.g., '1S', '100ms', '0.1S')
+- `freq` (str): Target frequency string (e.g., '1s', '100ms', '0.1s')
 - `method` (str): Aggregation method ('mean', 'median', 'sum', 'min', 'max', 'std')
 - `**kwargs`: Additional arguments passed to pandas resample
 
@@ -28,13 +43,13 @@ Resample time series to a different frequency using pandas resampling.
 **Examples:**
 ```python
 # Downsample to 1Hz
-ts_1hz = ts.resample('1S', method='mean')
+ts_1hz = ts.resample('1s', method='mean')
 
 # Upsample to 100Hz  
 ts_100hz = ts.resample('10ms', method='mean')
 
 # Resample with custom aggregation
-ts_max = ts.resample('5S', method='max')
+ts_max = ts.resample('5s', method='max')
 ```
 
 ### Gap Filling and Interpolation
@@ -301,8 +316,8 @@ import numpy as np
 from baseTs import baseTs
 
 # Create time series
-data = np.sin(2*np.pi*0.5*np.linspace(0, 100, 10000)) + 0.1*np.random.randn(10000)
-times = np.linspace(0, 100, 10000)
+times = np.arange(10000) / 100.0         # 100 s at exactly 100 Hz
+data = np.sin(2*np.pi*0.5*times) + 0.1*np.random.randn(10000)
 ts = baseTs(data, times, freq=100.0, signal_name="example")
 
 # Apply traditional processing
@@ -313,7 +328,7 @@ ts_clean = ts_filtered.filter_outliers().interpolate_gaps()
 
 # Apply new enhanced processing  
 ts_smooth = ts_clean.rolling_mean(window=50)
-ts_resampled = ts_smooth.resample('1S', method='mean')
+ts_resampled = ts_smooth.resample('1s', method='mean')
 outliers = ts_resampled.detect_outliers(method='iqr')
 
 # Analysis
@@ -358,18 +373,22 @@ print(f"Peak frequency: {peak_freq} Hz")
 ### Pandas Integration
 
 ```python
-# Direct access to pandas functionality
-ts = baseTs(data, times, freq=100.0, signal_name="sensor_data")
+# Direct access to pandas functionality, on a daily series with a DatetimeIndex
+dates = pd.date_range('2023-01-01', periods=365, freq='D')
+daily = baseTs(np.random.randn(365), times=dates, signal_name="sensor_data")
 
 # Use pandas methods directly
-monthly_stats = ts.groupby(ts.index.month).agg(['mean', 'std', 'min', 'max'])
-daily_resample = ts.resample('D', method='mean')
-quantiles = ts.quantile([0.1, 0.25, 0.5, 0.75, 0.9])
+monthly_stats = daily.groupby(daily.index.month).agg(['mean', 'std', 'min', 'max'])
+quantiles = daily.quantile([0.1, 0.25, 0.5, 0.75, 0.9])
 
 # Convert to DataFrame for complex analysis
-df = ts.to_frame('value')
+df = daily.to_frame('value')
 df['month'] = df.index.month
 df['day_of_week'] = df.index.dayofweek
+
+# baseTs.resample() reads a numeric-seconds index and cannot take a DatetimeIndex
+# yet (#100); pandas' own resample works on the frame
+weekly_means = df['value'].resample('W').mean()
 
 # Seasonal decomposition using pandas
 seasonal_means = df.groupby('month')['value'].mean()

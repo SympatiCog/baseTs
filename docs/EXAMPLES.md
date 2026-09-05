@@ -96,12 +96,13 @@ def demonstrate_pandas_features(data, times):
     }
     
     # Time-based slicing with datetime index
-    time_slice = ts.time_slice(start='2023-01-01 00:01:00', 
-                              end='2023-01-01 00:03:00')
+    time_slice = ts.time_slice(start_time='2023-01-01 00:01:00',
+                               end_time='2023-01-01 00:03:00')
     
-    # Enhanced statistical analysis
-    stats = ts.get_statistics()
-    
+    # Statistical summary. (get_statistics() cannot read a DatetimeIndex
+    # yet - issue #100 - so this uses pandas' describe() on it.)
+    stats = ts.describe()
+
     print(f"\nEnhanced capabilities:")
     print(f"  Rolling mean length: {rolling_stats['mean'].len()}")
     print(f"  Time slice length: {time_slice.len()}")
@@ -386,7 +387,9 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
     
     Args:
         measurements: Array of measured values
-        timestamps: Array of measurement times (datetime or numeric)
+        timestamps: Array of measurement times, in seconds. (A DatetimeIndex is
+            accepted by the constructor, but get_statistics() in step 5 cannot
+            read one yet - see issue #100.)
         metadata: Dictionary of experimental metadata
     
     Returns:
@@ -396,8 +399,8 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
         metadata = {}
     
     # Create baseTs object with enhanced capabilities
-    ts = baseTs(data=measurements, times=pd.to_datetime(timestamps) if isinstance(timestamps[0], str) else timestamps,
-                signal_name=metadata.get('experiment_name', 'Experiment'), 
+    ts = baseTs(data=measurements, times=timestamps,
+                signal_name=metadata.get('experiment_name', 'Experiment'),
                 freq=metadata.get('sampling_rate', 1.0))
     
     # Quality assessment
@@ -448,6 +451,10 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
     
     # 7. Correlation analysis (if multiple measurements)
     autocorr_1 = np.corrcoef(detrended.data[:-1], detrended.data[1:])[0, 1] if len(detrended.data) > 1 else 0
+
+    # rolling_mean trims the window's edges, so the smoothed series is shorter
+    # than detrended; subtracting as series aligns them on the time index
+    residual = (detrended - smoothed).dropna()
     
     return {
         'original': ts,
@@ -457,7 +464,7 @@ def analyze_experimental_timeseries(measurements, timestamps, metadata=None):
         'quality_metrics': {
             'data_completeness': data_completeness,
             'outlier_rate': n_outliers / len(measurements),
-            'signal_to_noise_ratio': np.std(smoothed.data) / np.std(detrended.data - smoothed.data) if np.std(detrended.data - smoothed.data) > 0 else np.inf
+            'signal_to_noise_ratio': np.std(smoothed.data) / np.std(residual.data) if np.std(residual.data) > 0 else np.inf
         },
         'frequency_analysis': freq_content,
         'statistics': stats,
@@ -477,7 +484,7 @@ n_points = int(duration_hours * 60)  # 1440 points
 
 # Generate realistic environmental data (temperature)
 time_hours = np.linspace(0, duration_hours, n_points)
-timestamps = pd.date_range('2023-07-15 00:00:00', periods=n_points, freq='1min')
+timestamps = time_hours * 3600.0  # seconds since the start of the run
 
 # Simulate daily temperature cycle with noise
 daily_cycle = 20 + 8 * np.sin(2 * np.pi * time_hours / 24 - np.pi/2)  # Temperature cycle
@@ -1544,8 +1551,8 @@ def process_large_dataset(data_source, chunk_size=100000, operations=None):
 
 # Example data generator for scientific measurements
 def scientific_data_generator(chunk_size):
-    """Generate large scientific dataset in chunks."""
-    total_size = 1000000  # 1 million points
+    """Generate a large scientific dataset in chunks."""
+    total_size = 100000  # 100 thousand points here; millions work the same way
     n_chunks = total_size // chunk_size
     sampling_rate = 1000.0  # 1 kHz
     
@@ -1585,8 +1592,8 @@ scientific_operations = [
 
 # Process large dataset
 print("Processing large scientific dataset...")
-result_ts, stats = process_large_dataset(scientific_data_generator, 
-                                        chunk_size=50000, 
+result_ts, stats = process_large_dataset(scientific_data_generator,
+                                        chunk_size=25000,
                                         operations=scientific_operations)
 
 print(f"\nProcessing completed:")
@@ -1633,12 +1640,14 @@ def scientific_pandas_integration(ts_data):
     # Advanced pandas time series operations
     results = {}
     
-    # 1. Resampling for different time scales
-    # Aggregate with method=; the aggregation happens inside resample().
-    # Offsets must be fixed - 'W' and 'M' are not valid on a timedelta index.
-    results['hourly_mean'] = ts_data.resample('h', method='mean')
-    results['daily_max'] = ts_data.resample('D', method='max')
-    results['daily_std'] = ts_data.resample('D', method='std')
+    # 1. Resampling for different time scales. baseTs.resample() reads a
+    # numeric-seconds index and cannot take a DatetimeIndex yet (#100), so
+    # this drops to pandas' own resample on a plain Series.
+    plain = pd.Series(ts_data.values, index=ts_data.index)
+    results['hourly_mean'] = plain.resample('h').mean()
+    results['daily_max'] = plain.resample('D').max()
+    results['daily_std'] = plain.resample('D').std()
+    results['weekly_std'] = plain.resample('W').std()
     
     # 2. Time-based grouping and analysis
     results['monthly_stats'] = ts_data.groupby(ts_data.index.month).agg([
@@ -1650,10 +1659,10 @@ def scientific_pandas_integration(ts_data):
     
     # 3. Advanced rolling operations
     results['rolling_stats'] = {
-        'mean_1h': ts_data.rolling('1H').mean(),
-        'std_6h': ts_data.rolling('6H').std(),
+        'mean_1h': ts_data.rolling('1h').mean(),
+        'std_6h': ts_data.rolling('6h').std(),
         'quantile_95_1d': ts_data.rolling('1D').quantile(0.95),
-        'autocorr_1h': ts_data.rolling('1H').apply(lambda x: x.autocorr(lag=1))
+        'autocorr_1h': ts_data.rolling('1h', min_periods=3).apply(lambda x: x.autocorr(lag=1))
     }
     
     # 4. Trend analysis
@@ -1668,8 +1677,8 @@ def scientific_pandas_integration(ts_data):
     monthly_cycle = ts_data.groupby(ts_data.index.day).mean()
     
     # 6. Change point detection using rolling statistics
-    rolling_mean = ts_data.rolling('2H').mean()
-    rolling_std = ts_data.rolling('2H').std()
+    rolling_mean = ts_data.rolling('2h').mean()
+    rolling_std = ts_data.rolling('2h').std()
     
     # Z-score of differences
     mean_changes = rolling_mean.diff().abs()
