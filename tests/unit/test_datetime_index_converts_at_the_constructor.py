@@ -713,12 +713,27 @@ class TestSetAxisIsTheOneDoor:
 
     def test_reindex_to_dates_keeps_the_dates_origin_not_the_parents(self):
         """`reindex` builds through the constructor and then `__finalize__`
-        copies the parent's pair; the child's index carries its origin."""
-        parent = stamped(DAILY, np.arange(365.0))
+        copies the parent's pair; the child's index carries its origin.
+
+        The parent is hourly and the child daily, on purpose: a daily
+        parent's seconds contain a daily child's, so a stamp left over from
+        the parent would pass the subset check by coincidence (mutation
+        round 4 found the pin vacuous that way)."""
+        parent = baseTs(np.arange(4.0), times=pd.date_range('2023-01-01', periods=4, freq='h'))
         out = parent.reindex(pd.date_range('2024-01-01', periods=3, freq='D'))
         assert out.ts_offset == epoch_seconds(pd.Timestamp('2024-01-01'))
-        assert out.datetimes[0] == pd.Timestamp('2024-01-01')
+        assert out.datetimes.equals(pd.date_range('2024-01-01', periods=3, freq='D'))
         assert np.isnan(out.data).all()                    # no overlap, as pandas says
+
+    def test_dates_assigned_through_index_are_stamped_too(self):
+        """The stamp is set where the origin is, in `_set_axis`, so a later
+        replacement of the index is still caught (mutation round 4: with
+        the stamp left None there, positions read as seconds again)."""
+        ts = baseTs(np.arange(4.0), [0.0, 1.0, 2.0, 3.0])
+        ts.index = pd.date_range('2020-01-01', periods=4, freq='h')
+        ts.reset_index(drop=True, inplace=True)
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            ts.datetimes
 
     def test_create_new_with_data_given_dates_keeps_their_origin(self):
         """The hardcoded copy list overwrote the fresh origin with the
