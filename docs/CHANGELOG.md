@@ -54,6 +54,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `compute_fft_power` computes on a float64 copy of the data (#96)
+
+Filed from #93's verification and its review. The shared data guard,
+`validate_finite_data`, admits integer and bool data (neither can hold
+NaN) and hands numeric arrays back as they are; `compute_fft_power` then
+demeaned **in place** on a copy of that array. `get_frequency_content`,
+`get_peak_freq`, `relative_band_power` and `falff` accept both dtypes;
+this one, the only one that demeans by hand, refused them.
+
+### Fixed — `compute_fft_power(demean=True)` raised numpy's bare `UFuncTypeError` on integer and bool data
+
+numpy will not write a float difference into an integer or bool array
+under its `same_kind` casting rule, so `demean=True` (the default) on an
+`int64`, `int8`, `uint8` or `bool` series died with `Cannot cast ufunc
+'subtract' output from dtype('float64') to dtype('int64')` - outside the
+`ValueError` contract the docstring makes - while `demean=False` on the
+same series worked. The function now computes on
+`validate_finite_data(ts.data).astype(float)`, a float64 copy, so an
+integer or bool series gives exactly the spectrum of its float64 cast
+with either setting of `demean` and `scale_power`. The `.copy()` #93 kept
+is subsumed: `astype(float)` copies, and the in-place demeaning needs it
+(for a float64 series the guard returns the caller's own array; the
+caller's series is unchanged after a call, pinned for float64, int64 and
+bool). Under pandas 3's copy-on-write that array is read-only, so a
+`copy=False` there would raise `output array is read-only` on pandas 3
+and demean the caller's series on pandas 2 (review); the test catches
+both.
+
+### Fixed — the constancy check was taken in the input's own precision
+
+The sibling #93's second review round found: `compute_fft_power`'s
+constancy check (`np.std(data) < 1e-15`) ran on the array as the guard
+returned it, so a float32 series was judged in float32, where
+`relative_band_power` has always judged in float64. The series that
+review built - 600 samples alternating between two adjacent float32
+values near 2.9e-8 - has a float64 std of 8.9e-16 (constant: the DC
+branch) and a float32 std of 1.3e-15 (the FFT branch). It now takes the
+float64 verdict, `relative_band_power`'s and the float64 series' own,
+whatever the input's precision. The "DC power 600x the float64 series'"
+that #93's entry reports for it is not a precision effect but the two
+branches disagreeing by a factor of `n` (below, #98); this change settles
+which branch such a series takes, not what either branch reports.
+
+### Changed — a float32 or float16 series gives its float64 cast's spectrum, and the power is float64
+
+Reachable in normal use, so stated: on numpy 2.x `np.fft.fft` computes a
+float32 array in float32 and returned a float32 power, against the
+function's `float64` annotation, and on either numpy the demeaning ran in
+the input's precision (measured on `main` under numpy 1.26: the FFT was
+widened to float64, the two `demean=True` float32 cases still differed
+from the float64 cast's spectrum, the other six matched). A float32 or
+float16 series now gives the spectrum of its float64 cast bit for bit,
+with a float64 power, on numpy 1.26 and 2.5 alike. The differences are
+float32 rounding (a maximum absolute difference of 2.4e-6 on a unit-
+amplitude sine's raw power), and the numpy-1 answer is the one that
+stays. Callers comparing a float32 series' spectrum against a stored
+numpy-2 result will see that rounding move.
+
+The docstrings (`utils.compute_fft_power`, the method) and API.md say so.
+`get_frequency_content` is untouched: it neither demeans nor checks
+constancy, so neither defect reaches it. It does compute a float32 series
+in float32 on numpy 2.x (a float32 power; on the same unit sine, 1.4e-3
+off the float64 cast's at a peak of 9e4 - the unnormalised counterpart of
+the 2.4e-6 above, which is that divided by n; an earlier draft of this
+entry said 1.0e-11, measured against the wrong series), and `get_peak_freq`,
+`relative_band_power`, `falff` and `plot_fft_power` inherit that.
+Observed, not changed: it is the same version-dependent precision, but
+widening it is a change to five entry points' float32 output and is not
+what #96 asks for.
+
+### Filed, not folded in — #98
+
+`compute_fft_power`'s constant-signal branch writes `power[0] = mean**2`
+while the FFT branch's DC bin is `n * mean**2` under its `|fft|**2 / n`
+scaling, so a constant series and one nudged just past the `1e-15` std
+threshold (every other sample of 3.0 raised by 1e-13, a few dozen ulps)
+report DC powers `n` apart with `scale_power=False` (9.0 vs 5400 for 600
+samples of 3.0). Pre-existing on `main`, invisible under the default
+`scale_power=True`; surfaced while writing this fix's tests.
+
 ## [Unreleased] — the spectral family and `gauss_filter` compute with the array the guard returns (#93)
 
 The same shape as #75 and #80, in the consumers those did not cover. Since
@@ -122,15 +202,15 @@ floats, and always did.
 
 ### Not folded in
 
-`compute_fft_power(demean=True)` on an **integer or bool** series fails in
-the in-place demeaning (`Cannot cast ufunc 'subtract' output from
-dtype('float64') to dtype('int64')`), on `main` as here. Surfaced while
-verifying that the guard returns numeric arrays untouched; filed as #96.
-Its sibling, found by review round two: `compute_fft_power`'s own
-constancy check (`np.std(data) < 1e-15`) is taken in the input's native
-precision, so the float32 series above reports a DC power 600x the float64
-series' - on `main` as here, and the one `astype(float)` that would settle
-it is the change #96 asks for. Noted on #96 rather than folded in.
+`compute_fft_power(demean=True)` on an **integer or bool** series failed
+in the in-place demeaning (`Cannot cast ufunc 'subtract' output from
+dtype('float64') to dtype('int64')`), on `main` as it was here. Surfaced
+while verifying that the guard returns numeric arrays untouched; filed as
+#96 and fixed there (the entry above). Its sibling, found by review round
+two: `compute_fft_power`'s own constancy check (`np.std(data) < 1e-15`)
+was taken in the input's native precision, so the float32 series above
+reported a DC power 600x the float64 series' - and the one `astype(float)`
+that settles it is #96's change. Noted on #96 rather than folded in.
 
 `gauss_filter` on a **float16** series still dies in scipy (`array type
 dtype('float16') not supported`): the coercer passes every numeric dtype

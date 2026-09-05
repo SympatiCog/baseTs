@@ -2282,6 +2282,10 @@ class baseTs(TimeSeriesData):
         """
         Compute the FFT power of the timeseries.
 
+        Computed on a float64 copy of the data: an integer, bool or
+        narrower-float series gives exactly its float64 cast's spectrum
+        (#96). See utils.compute_fft_power.
+
         Raises:
             ValueError: If the series is empty or has fewer than two samples,
                 if the sampling frequency is not usable, if the data is
