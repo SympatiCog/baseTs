@@ -831,6 +831,10 @@ arrays of different lengths (#91).
 **Returns:**
 - `baseTs`: New baseTs object with first differences
 
+**Raises:**
+- `ValidationError` (a `ValueError`): If the series has fewer than two samples; a first
+  difference needs two (#89). The series is left unchanged.
+
 **Example:**
 ```python
 # Rate of change (useful for returns, velocities, etc.)
