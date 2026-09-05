@@ -200,9 +200,12 @@ converted. A genuine `pd.concat` of pieces that share one origin keeps it
 pieces with different origins, or one with none, give none.
 
 The stamp narrows to each derivation's own index whenever that index is
-drawn from the stamped seconds - in `__finalize__`, in `_set_axis`, and
-in `_update_inplace`, the door `dropna(inplace=True)` and its kind swap
-the manager through. Narrowing never widens, so it refuses nothing the
+drawn from the stamped seconds - in `__finalize__`, and in
+`_update_inplace`, the door `dropna(inplace=True)` and its kind swap the
+manager through. (A third call in `_set_axis` was deleted: mutation
+testing showed the only index it ever narrowed against was a same-length
+permutation of the seconds already stamped, and both tests are blind to
+order.) Narrowing never widens, so it refuses nothing the
 subset test accepted; it shrinks the room for coincidence. With the
 stamp left at the parent's seconds, a 1 Hz series sliced to seconds
 3..5 and then `reset_index`ed carried positions 0..2, members of the

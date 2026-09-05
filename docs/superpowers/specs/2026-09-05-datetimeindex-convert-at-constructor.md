@@ -253,7 +253,8 @@ The open choices above, as pinned by
 11. **The stamp narrows** (review round 3, quick-review): a value subset
     cannot tell a slice's seconds from positions that happen to be
     members, so every read-valid derivation narrows the stamp to its own
-    index (`__finalize__`, `_set_axis`, `_update_inplace`). The residual
+    index (`__finalize__`, `_update_inplace`; a third call in `_set_axis`
+    was deleted as order-only, by mutation). The residual
     - positions equal to the series' own seconds - is stated in the docs
     and pinned; the refusal's remedy is scoped to a grid the caller built.
 12. **An unstamped pair is refused, not guessed at** (round 3, panel): a
