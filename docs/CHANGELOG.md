@@ -59,9 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Filed from #93's verification and its review. The shared data guard,
 `validate_finite_data`, admits integer and bool data (neither can hold
 NaN) and hands numeric arrays back as they are; `compute_fft_power` then
-demeaned **in place** on a copy of that array. The other four spectral
-entry points accept both dtypes; this one, the only one that demeans by
-hand, refused them.
+demeaned **in place** on a copy of that array. `get_frequency_content`,
+`get_peak_freq`, `relative_band_power` and `falff` accept both dtypes;
+this one, the only one that demeans by hand, refused them.
 
 ### Fixed — `compute_fft_power(demean=True)` raised numpy's bare `UFuncTypeError` on integer and bool data
 
@@ -77,7 +77,10 @@ with either setting of `demean` and `scale_power`. The `.copy()` #93 kept
 is subsumed: `astype(float)` copies, and the in-place demeaning needs it
 (for a float64 series the guard returns the caller's own array; the
 caller's series is unchanged after a call, pinned for float64, int64 and
-bool).
+bool). Under pandas 3's copy-on-write that array is read-only, so a
+`copy=False` there would raise `output array is read-only` on pandas 3
+and demean the caller's series on pandas 2 (review); the test catches
+both.
 
 ### Fixed — the constancy check was taken in the input's own precision
 
@@ -112,8 +115,10 @@ numpy-2 result will see that rounding move.
 The docstrings (`utils.compute_fft_power`, the method) and API.md say so.
 `get_frequency_content` is untouched: it neither demeans nor checks
 constancy, so neither defect reaches it. It does compute a float32 series
-in float32 on numpy 2.x (a float32 power, a maximum absolute difference of
-1.0e-11 from the float64 cast's on the same sine), and `get_peak_freq`,
+in float32 on numpy 2.x (a float32 power; on the same unit sine, 1.4e-3
+off the float64 cast's at a peak of 9e4 - the unnormalised counterpart of
+the 2.4e-6 above, which is that divided by n; an earlier draft of this
+entry said 1.0e-11, measured against the wrong series), and `get_peak_freq`,
 `relative_band_power`, `falff` and `plot_fft_power` inherit that.
 Observed, not changed: it is the same version-dependent precision, but
 widening it is a change to five entry points' float32 output and is not

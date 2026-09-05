@@ -143,7 +143,10 @@ class TestTheWorkingArrayIsFloat64:
     def test_the_callers_series_is_untouched(self, values):
         """The demeaning is still an in-place subtraction, so the float64
         copy is load-bearing: `astype(float, copy=False)` would hand a
-        float64 series' own array back and demean the caller's series."""
+        float64 series' own array back and demean the caller's series -
+        on pandas 2; on pandas 3 that array is read-only under
+        copy-on-write and the subtraction raises instead (review). This
+        fails either way."""
         ts = _ts(values)
         before = ts.values.copy()
 
@@ -151,3 +154,37 @@ class TestTheWorkingArrayIsFloat64:
 
         np.testing.assert_array_equal(ts.values, before)
         assert ts.dtype == values.dtype
+
+
+# --- the array computed on is the guard's, not a second cast of the raw one --
+
+class TestTheGuardsArrayIsTheOneComputedOn:
+
+    def test_an_object_element_that_converts_once_is_converted_once(self):
+        """#93's rule, which the object-array-of-floats tests cannot pin:
+        `np.array(obj, dtype=float)` converts a column of ordinary floats
+        the same way the guard does, so discarding the guard's array and
+        casting `ts.data` again passes every one of them (a mutant that
+        survived). An element whose `__float__` answers once and then
+        raises tells the two apart: the guard converts it, and whatever
+        is computed on must be the array the guard handed back."""
+        import numbers
+
+        @numbers.Real.register
+        class _ConvertsOnce:
+            def __init__(self, value):
+                self._value = float(value)
+                self._spent = False
+
+            def __float__(self):
+                if self._spent:
+                    raise RuntimeError("converted a second time")
+                self._spent = True
+                return self._value
+
+        values = _sine()
+        expected = _ts(values).compute_fft_power()
+
+        got = _ts(np.array([_ConvertsOnce(v) for v in values], dtype=object)).compute_fft_power()
+
+        _assert_same_spectrum(got, expected)

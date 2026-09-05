@@ -629,7 +629,9 @@ def compute_fft_power(
     # in float64 as relative_band_power's is - taken in a float32 series'
     # own precision it can reach the other verdict. `astype(float)` copies,
     # which the in-place subtraction needs: for a float64 array the guard
-    # returns the caller's own array.
+    # returns the caller's own array - read-only under pandas 3's
+    # copy-on-write, so `copy=False` would raise there and demean the
+    # caller's series on pandas 2.
     data = validate_finite_data(ts.data).astype(float)
 
     if demean:
