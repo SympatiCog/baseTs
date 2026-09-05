@@ -779,7 +779,10 @@ class TimeSeriesData(pd.Series):
         signal_name: Name of the signal
         history: Processing history list
         is_filtered: Whether the data has been filtered
-        is_interpolated: Whether the data has been interpolated
+        is_interpolated: Whether at least one value is an interpolated
+            estimate rather than a measured sample: set by the regridders,
+            by a gap fill that filled a gap, and by filter_outliers when it
+            replaced an outlier or filled an input gap; never reset (#90)
         is_uniform_grid: Whether the data is on a uniform time grid
         ts_offset: Timestamp offset in seconds
         has_timestamp_offset: Whether a timestamp offset has been applied

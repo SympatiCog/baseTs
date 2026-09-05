@@ -54,6 +54,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `is_interpolated` means one thing, and every producer follows it (#90)
+
+The flag's docstring said "whether the data has been interpolated". The
+three regridders (`interpto_hz`, `interpto_samples`,
+`interp_to_uniform_grid`) and `set_indices_to_nan_and_interpolate` set it;
+the two gap fillers (`interpolate_missing`, `interpolate_gaps`) never did,
+on either `inplace` branch, though `interpolate_missing` wrote
+"Interpolated missing values" to the history of the same call; nor did
+`filter_outliers`, which replaces each outlier by interpolation.
+
+### Changed — the rule, and three producers that now follow it
+
+**`is_interpolated` is True once at least one value in the series is an
+interpolated estimate rather than a measured sample** - the issue's second
+reading, the one the name and docstring already state (the first, "the
+values were resampled onto a new grid", is what `is_uniform_grid` says).
+A producer sets it exactly when it wrote at least one such value:
+
+- `interpolate_missing` and `interpolate_gaps` set it when they filled a
+  gap, both branches of `inplace`. A call on gap-free data estimated
+  nothing and leaves the flag as it found it; so does an `interpolate_gaps`
+  whose `limit` or default forward fill left every gap in place (#77), while
+  one that filled some of a gap did estimate and sets it.
+- `filter_outliers` sets it when it replaced an outlier, or filled an input
+  gap under `fill_input_gaps=True`. Clean data, or gaps left as NaN under
+  the #36 default, leave it as found.
+- The regridders always set it (every value is re-estimated), as before.
+  `set_indices_to_nan_and_interpolate` sets it when it was given an index:
+  it used to set it unconditionally, and an empty *integer array* (what
+  `np.where(ts.data > 1000)[0]` returns when nothing matches) passes its
+  guards and estimates nothing - only an empty list is refused, by the
+  accident of `np.array([])` being float64 (review round 2). Both pinned.
+
+Nothing resets the flag, and `_metadata` carries it, so a series derived
+from interpolated values reports as interpolated; pinned. Reachable in
+normal use, so stated: `interpolate_missing().is_interpolated`,
+`interpolate_gaps().is_interpolated` and `filter_outliers().is_interpolated`
+are now True where they were False. The docstring, `API.md`'s
+`interpolate_gaps` entry and `API_SERIES.md`'s `_metadata` comment say
+the rule.
+
+### Review round 1 (consensus panel, codex + agy)
+
+Both found the first cut setting `interpolate_missing`'s flag on "the
+input had a gap" rather than "a gap was filled": an all-NaN series has
+nothing for the `ffill().bfill()` fallback to propagate from, comes back
+all NaN, and was marked interpolated. Counted now, before against after,
+as `interpolate_gaps` already did; pinned. One harness then found the
+two helpers the wrappers call - `filters.interpolate_missing_values` and
+`LowessOutlierFilter.filter` - are public and callable without them, and
+set nothing. **The flag is now set where the values are made**: each
+helper sets it on the series it returns, exactly when it filled a gap or
+replaced an outlier, and the wrappers carry the helper's flag rather than
+re-derive it. A direct caller of either helper sees the flag; pinned.
+
+### Review round 2 (quick-review, a different harness)
+
+The entry had said `set_indices_to_nan_and_interpolate` "refuses an empty
+index list, so a call that returns has estimated something". An empty
+integer array is not refused, and the flag was set on it; now set only
+when an index was given, the flag as found otherwise, both pinned.
+
 ## [Unreleased] — a first difference needs two samples, and says so (#89)
 
 `utils.diff` computed `np.diff(ts.data)`, which is empty for zero or one
@@ -874,7 +936,8 @@ job, as before.
   and `zeropad=False` returned an empty series. Pre-existing; filed as #89
   and fixed there (both branches now raise `ValidationError`, the entry
   above).
-- `interpolate_missing()` does not set `is_interpolated` on either branch;
+- (Answered by #90, above: it does now, when it filled a gap.)
+  `interpolate_missing()` does not set `is_interpolated` on either branch;
   it did not on the branch that worked before, and the inplace branch now
   matches it. Whether it should is a separate question.
 - `docs/API.md` documents `diff()` and `dediff()` under "Utility Functions"

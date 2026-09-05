@@ -54,6 +54,15 @@ ts_max = ts.resample('5s', method='max')
 
 ### Gap Filling and Interpolation
 
+`is_interpolated` means one thing across the package (#90): at least one value
+in the series is an interpolated estimate rather than a measured sample. The
+regridders (`interpto_hz`, `interpto_samples`, `interp_to_uniform_grid`)
+always set it, since every value is re-estimated; `interpolate_gaps` and
+`interpolate_missing` set it when they filled a gap; `filter_outliers` sets it
+when it replaced an outlier or filled an input gap. A call that estimated
+nothing leaves the flag as it found it, and nothing resets it: a series
+derived from interpolated values is still built on estimates.
+
 #### `interpolate_gaps(method='linear', limit=None, inplace=False)`
 
 Interpolate missing values (NaN) in the time series.
@@ -419,7 +428,8 @@ _metadata = [
     'signal_name',            # Name of the signal
     'history',                # Processing history list
     'is_filtered',            # Whether the data has been filtered
-    'is_interpolated',        # Whether the data has been interpolated  
+    'is_interpolated',        # Whether at least one value is an interpolated
+                               # estimate rather than a measured sample (#90)
     'is_uniform_grid',        # Whether the data is on a uniform time grid
     'ts_offset',              # Timestamp offset in seconds
     'has_timestamp_offset',   # Whether a timestamp offset has been applied

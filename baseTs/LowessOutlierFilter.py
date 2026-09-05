@@ -261,6 +261,14 @@ class LowessOutlierFilter:
             # object is `filter_outliers()`'s job, as before.
             cleaned_data.lowess_fit = None
             cleaned_data.outlier_indices = None
+            # is_interpolated means "at least one value is an interpolated
+            # estimate" (#90), and this is where the estimates are written:
+            # each outlier is replaced by interpolation, and with
+            # fill_input_gaps the input's gaps are too. Set here, on the
+            # producer, so a direct caller of this method sees it as well as
+            # filter_outliers(); clean data left as found says nothing.
+            if outlier_indices or (np.any(input_gaps) and self.config.fill_input_gaps):
+                cleaned_data.is_interpolated = True
 
         outlier_indices = sorted(set(outlier_indices))
 

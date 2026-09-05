@@ -1534,7 +1534,14 @@ class baseTs(TimeSeriesData):
             newTs.lowess_fit = lowess_fit
             newTs.outlier_indices = idx
             result = newTs
-        
+
+        # is_interpolated is set by the filter on the series it returns,
+        # exactly when it replaced an outlier or filled an input gap (#90).
+        # This wrapper borrows only the arrays from `filt`, so the flag is
+        # carried over here rather than re-derived.
+        if filt.is_interpolated:
+            result.is_interpolated = True
+
         if qcplot:
             # Carry the new fit and label on the snapshot, not on self: with
             # inplace=False the caller's object must come back untouched, and
@@ -1587,6 +1594,8 @@ class baseTs(TimeSeriesData):
         # inplace branch raised on every call from the day it was written
         # (#64). The helper's contract is kept; the branch that knows the
         # answer is None does not ask for it.
+        # is_interpolated is set by the helper, on the producer, exactly when
+        # it filled a gap (#90); this wrapper adds only the history line.
         if inplace:
             interpolate_missing_values(self, inplace=True)
             processed = self
@@ -2030,6 +2039,11 @@ class baseTs(TimeSeriesData):
             else:
                 interpolated = source.interpolate(method=method, limit=limit, **kwargs)
         
+        # is_interpolated means "at least one value is an interpolated
+        # estimate" (#90): set exactly when this call filled a gap. A limit
+        # or a leading gap under forward fill can leave gaps behind - what
+        # counts is whether any was filled, not whether all were.
+        filled_a_gap = int(pd.isna(interpolated.values).sum()) < int(pd.isna(self.values).sum())
         if inplace:
             # Update current object
             self._adopt_data_inplace(interpolated.values, interpolated.index)
@@ -2038,6 +2052,8 @@ class baseTs(TimeSeriesData):
                 f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
+            if filled_a_gap:
+                self.is_interpolated = True
             return self
         else:
             new_obj = self._create_new_with_data(interpolated.values, interpolated.index.values)
@@ -2046,6 +2062,8 @@ class baseTs(TimeSeriesData):
                 f"Interpolated gaps using {method}{order_str}",
                 f"_interpolate_{method}"
             )
+            if filled_a_gap:
+                new_obj.is_interpolated = True
             return new_obj
     
     def align_with(self, other: "baseTs", method: str = 'outer') -> tuple:
@@ -3000,5 +3018,10 @@ class baseTs(TimeSeriesData):
             hist_msg=f"Set indices {indices.tolist()} to NaN and interpolated using {interpolation_method}",
             last_process=f"_set_nan_interp_{interpolation_method}",
             inplace=inplace,
-            is_interpolated=True
+            # The flag means "at least one value is an interpolated
+            # estimate" (#90), so it is set only when an index was given:
+            # an empty integer array passes the guards (an empty *list*
+            # is refused only because np.array([]) is float64), estimates
+            # nothing, and must leave the flag as found (review round 2).
+            **({"is_interpolated": True} if len(indices) else {})
         )

@@ -825,11 +825,19 @@ def interpolate_missing_values(ts: baseTs,
     # Handle any remaining NaN values
     if interpolated_series.isnull().any():
         interpolated_series = interpolated_series.ffill().bfill()
-        
+    # is_interpolated means "at least one value is an interpolated estimate"
+    # (#90): set exactly when this call filled a gap, on the producer, so a
+    # direct caller sees it as well as interpolate_missing(). Counted, not
+    # assumed from the input having a gap: an all-NaN series has nothing to
+    # fill from and comes back all NaN (review round 1).
+    filled_a_gap = int(interpolated_series.isnull().sum()) < int(cleaned_series.isnull().sum())
     if inplace:
         ts.data = interpolated_series.values
+        if filled_a_gap:
+            ts.is_interpolated = True
         return None
-    
     res = ts.copy()
     res.data = interpolated_series.values
+    if filled_a_gap:
+        res.is_interpolated = True
     return res
