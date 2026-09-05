@@ -14,8 +14,8 @@ the series is an interpolated estimate rather than a measured sample.**
 So a producer sets it exactly when it wrote at least one such value - a
 regridder always (every value is re-estimated), a gap filler when it
 filled a gap, the outlier filter when it replaced an outlier or filled
-an input gap, and `set_indices_to_nan_and_interpolate` always (it refuses
-an empty index list). A call that changed nothing leaves the flag as it found it,
+an input gap, and `set_indices_to_nan_and_interpolate` when it was given
+an index. A call that changed nothing leaves the flag as it found it,
 and nothing resets it: a series derived from interpolated values is still
 built on estimates, which is why `_metadata` carries it.
 """
@@ -217,11 +217,31 @@ class TestSetIndicesToNanAndInterpolate:
     def test_given_an_index_it_sets_it(self):
         assert _clean().set_indices_to_nan_and_interpolate([10, 11]).is_interpolated is True
 
-    def test_given_no_index_it_is_refused(self):
-        """So a call that returns has always estimated something, and the
-        unconditional True it sets is the rule's, not a carve-out."""
+    def test_an_empty_list_is_refused(self):
+        """By accident of dtype - np.array([]) is float64 - not by rule."""
         with pytest.raises(ValueError, match="Indices must be integers"):
             _clean().set_indices_to_nan_and_interpolate([])
+
+    def test_an_empty_integer_array_estimates_nothing_and_leaves_it_as_found(self):
+        """`np.where(ts.data > 1000)[0]` on a series with no such sample is
+        an empty int64 array: it passes every guard, changes no value, and
+        used to set the flag anyway (review round 2)."""
+        ts = _clean()
+        nothing = np.where(ts.values > 1000)[0]
+        assert nothing.dtype.kind == "i" and len(nothing) == 0
+
+        out = ts.set_indices_to_nan_and_interpolate(nothing)
+
+        np.testing.assert_array_equal(out.values, ts.values)
+        assert out.is_interpolated is False
+
+    def test_an_empty_integer_array_does_not_reset_a_true_flag(self):
+        already = _gappy().interpolate_gaps()
+        assert already.is_interpolated is True
+
+        out = already.set_indices_to_nan_and_interpolate(np.array([], dtype=np.int64))
+
+        assert out.is_interpolated is True
 
 
 # --- the flag is never reset, and it travels -----------------------------------

@@ -3018,5 +3018,10 @@ class baseTs(TimeSeriesData):
             hist_msg=f"Set indices {indices.tolist()} to NaN and interpolated using {interpolation_method}",
             last_process=f"_set_nan_interp_{interpolation_method}",
             inplace=inplace,
-            is_interpolated=True
+            # The flag means "at least one value is an interpolated
+            # estimate" (#90), so it is set only when an index was given:
+            # an empty integer array passes the guards (an empty *list*
+            # is refused only because np.array([]) is float64), estimates
+            # nothing, and must leave the flag as found (review round 2).
+            **({"is_interpolated": True} if len(indices) else {})
         )

@@ -80,10 +80,12 @@ A producer sets it exactly when it wrote at least one such value:
 - `filter_outliers` sets it when it replaced an outlier, or filled an input
   gap under `fill_input_gaps=True`. Clean data, or gaps left as NaN under
   the #36 default, leave it as found.
-- The regridders always set it (every value is re-estimated), as before;
-  `set_indices_to_nan_and_interpolate` always sets it, as before, and
-  refuses an empty index list, so a call that returns has estimated
-  something. Both pinned.
+- The regridders always set it (every value is re-estimated), as before.
+  `set_indices_to_nan_and_interpolate` sets it when it was given an index:
+  it used to set it unconditionally, and an empty *integer array* (what
+  `np.where(ts.data > 1000)[0]` returns when nothing matches) passes its
+  guards and estimates nothing - only an empty list is refused, by the
+  accident of `np.array([])` being float64 (review round 2). Both pinned.
 
 Nothing resets the flag, and `_metadata` carries it, so a series derived
 from interpolated values reports as interpolated; pinned. Reachable in
@@ -106,6 +108,13 @@ set nothing. **The flag is now set where the values are made**: each
 helper sets it on the series it returns, exactly when it filled a gap or
 replaced an outlier, and the wrappers carry the helper's flag rather than
 re-derive it. A direct caller of either helper sees the flag; pinned.
+
+### Review round 2 (quick-review, a different harness)
+
+The entry had said `set_indices_to_nan_and_interpolate` "refuses an empty
+index list, so a call that returns has estimated something". An empty
+integer array is not refused, and the flag was set on it; now set only
+when an index was given, the flag as found otherwise, both pinned.
 
 ## [Unreleased] — a first difference needs two samples, and says so (#89)
 
