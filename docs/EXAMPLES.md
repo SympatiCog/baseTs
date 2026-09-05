@@ -1702,9 +1702,11 @@ def scientific_pandas_integration(ts_data):
     
     # 7. Cross-validation of patterns
     # Split data into training and testing
+    # Split data into training and testing, by position: the index is
+    # float seconds, so a bare `ts_data[:n]` would be a label slice
     split_point = len(ts_data) // 2
-    train_data = ts_data[:split_point]
-    test_data = ts_data[split_point:]
+    train_data = ts_data.iloc[:split_point]
+    test_data = ts_data.iloc[split_point:]
     
     # Compare patterns between halves; a slice keeps the origin, so each
     # half's stamps are its own

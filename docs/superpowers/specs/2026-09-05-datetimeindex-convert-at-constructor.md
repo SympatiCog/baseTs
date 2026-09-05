@@ -210,12 +210,16 @@ The open choices above, as pinned by
    proxy read of the flag after the fact would have been a rule stated as
    its symptom. Every keyword combination's outcome was measured on `main`
    first and is pinned on both the array and the conversion path.
-6. **Precision rule for `datetimes`**: origin rebuilt at the microsecond,
-   seconds split whole/fraction before scaling to nanoseconds. Exact for
-   any stamp at microsecond resolution or coarser; a nanosecond origin is
-   within 0.5 µs. `pd.to_datetime(origin + seconds, unit='s')` was
-   inexact on 7 of 14 census cases. `Timedelta.total_seconds()` rounds to
-   the microsecond, so `time_slice` places bounds as `.value / 1e9`.
+6. **Precision rule for `datetimes`**: origin rebuilt at the microsecond;
+   seconds split whole/fraction before scaling to nanoseconds, rounded to
+   the microsecond beyond 2**22 s (48.5 days) from the origin, where a
+   float64 second stops holding nanoseconds. Exact for any stamp at
+   microsecond resolution or coarser at any span, and for nanosecond
+   stamps within 48.5 days; a nanosecond origin is within 0.5 µs.
+   `pd.to_datetime(origin + seconds, unit='s')` was inexact on 7 of the
+   first 14 census cases, and always-nanosecond rounding put a microsecond
+   stamp 200 days out 2 ns off. `Timedelta.total_seconds()` rounds to the
+   microsecond, so `time_slice` places bounds as `.value / 1e9`.
 7. **`resample` bins from the origin**, per point 5 above; calendar-anchored
    rules (`'W'`, `'ME'`) are refused by pandas on the seconds index and
    documented as pandas' resample over `datetimes`.

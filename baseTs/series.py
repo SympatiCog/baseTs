@@ -740,6 +740,12 @@ def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[
     return None
 
 
+#: Below this many seconds a float64 second still resolves nanoseconds
+#: (its ulp is under 1e-9); at or above it, microseconds are what the
+#: float can vouch for. 2**22 s is 48.5 days.
+_NANOSECOND_EXACT_BELOW = 2.0 ** 22
+
+
 def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
     """The origin `ts_offset` names, rebuilt at microsecond resolution.
 
@@ -748,20 +754,29 @@ def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
     to the microsecond recovers exactly any origin that lies on one, which
     is every `date_range` start and every stamp at microsecond resolution
     or coarser. A nanosecond origin comes back within half a microsecond.
+    The rounding is sound while the float's ulp is under 1e-6, i.e. for
+    any origin before 2**33 s - the year 2242.
     """
     return pd.Timestamp(int(round(float(ts_offset) * 1_000_000)), unit='us')
 
 
 def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
-    """origin + seconds, as a DatetimeIndex, exact to the nanosecond.
+    """origin + seconds, as a DatetimeIndex, at the precision the float holds.
 
-    Split each second into its whole and fractional parts before scaling:
-    `round(seconds * 1e9)` loses nanoseconds once `seconds * 1e9` passes
-    2**53 (about 104 days), while the fraction alone is below 1 and scales
-    exactly. The whole part is an exact integer already. So every stamp
-    whose distance from the origin is a float64 second to the nanosecond
-    is rebuilt exactly - which is every stamp at microsecond resolution or
-    coarser for decades, and nanosecond stamps within ~52 days.
+    A float64 second resolves nanoseconds only below 2**22 s from the
+    origin (48.5 days; its ulp passes 1e-9 there) and microseconds below
+    2**33 s (272 years). Each second is therefore rebuilt at the finer of
+    those its magnitude allows: split into whole and fraction (the whole
+    part is an exact integer; the fraction is below 1 and scales to
+    nanoseconds exactly - `round(seconds * 1e9)` on the whole value loses
+    nanoseconds past 2**53), then the nanoseconds are rounded to the
+    microsecond beyond 2**22 s. The rule, measured over a census in
+    test_datetime_index_converts_at_the_constructor.py: every stamp at
+    microsecond resolution or coarser round-trips exactly at any span, and
+    a nanosecond stamp does so within 48.5 days of the origin and comes
+    back rounded to the microsecond beyond that. (Rounding always to the
+    nanosecond, an earlier cut, put a microsecond stamp 200 days out 2 ns
+    off; the digits were not in the float.)
 
     A NaN or infinite second becomes NaT, as the datetime64 NaT sentinel
     (int64 min) in the view below.
@@ -769,9 +784,12 @@ def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex
     secs = np.asarray(seconds, dtype=float)
     ns = np.full(secs.shape, np.iinfo(np.int64).min, dtype=np.int64)
     finite = np.isfinite(secs)
-    whole = np.floor(secs[finite])
-    ns[finite] = (whole.astype(np.int64) * _NS_PER_SECOND
-                  + np.round((secs[finite] - whole) * _NS_PER_SECOND).astype(np.int64))
+    kept = secs[finite]
+    whole = np.floor(kept)
+    frac_ns = np.round((kept - whole) * _NS_PER_SECOND)
+    beyond = np.abs(kept) >= _NANOSECOND_EXACT_BELOW
+    frac_ns[beyond] = np.round(frac_ns[beyond] / 1000.0) * 1000.0
+    ns[finite] = whole.astype(np.int64) * _NS_PER_SECOND + frac_ns.astype(np.int64)
     return origin + pd.TimedeltaIndex(ns.view('timedelta64[ns]'))
 
 

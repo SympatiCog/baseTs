@@ -218,22 +218,28 @@ class TestTheDatetimesAccessor:
         pd.DatetimeIndex(['2023-01-01 00:00:00.5', '2023-01-01 00:00:01.25',
                           '2023-01-02 03:04:05.000001']),
         pd.DatetimeIndex(['2023-01-02', '2023-01-01', '2023-01-03']),
+        pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2023-07-20 12:34:56.789012']),
+        pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2199-07-20 12:34:56.789012']),
+        pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=48),
+        pd.DatetimeIndex(['2023-01-01', 'NaT', '2023-01-03']),
     ], ids=['daily', '10ms', 'ms', 'us', 'ms_start', 'us_start', '1900', 'pre_1970',
-            '2200', 'irregular', 'unsorted'])
+            '2200', 'irregular', 'unsorted', 'us_stamp_200_days_out',
+            'us_stamp_176_years_out', 'ns_stamps_48_days_out', 'interior_nat'])
     def test_it_round_trips_the_original_index_exactly(self, index):
         """Exact whenever the first stamp lies on a microsecond and each
-        later stamp's distance from it is a float64 second to the
-        nanosecond - which is every stamp at microsecond resolution or
-        coarser, and nanosecond stamps within ~52 days of the origin. The
-        origin is rebuilt at the microsecond because a float64 epoch in the
-        2020s resolves to ~2.4e-7 s, and the nanosecond digits of a finer
-        origin are not in the float to begin with.
+        later stamp is at microsecond resolution or coarser - at any span -
+        or at nanosecond resolution within 2**22 s (48.5 days) of the
+        origin. Those are the precisions a float64 second holds at those
+        magnitudes; the origin is rebuilt at the microsecond because a
+        float64 epoch in the 2020s resolves to ~2.4e-7 s, and the
+        nanosecond digits of a finer origin are not in the float to begin
+        with. A NaT comes back as NaT.
         """
         ts = baseTs(np.arange(len(index), dtype=float), times=index)
         out = ts.datetimes
         assert isinstance(out, pd.DatetimeIndex)
-        assert (out == index).all()
         assert out.equals(index)
+        assert out.isna().tolist() == index.isna().tolist()
 
     def test_a_nanosecond_origin_comes_back_to_within_a_microsecond(self):
         index = pd.date_range('2023-01-01 00:00:00.123456789', periods=10, freq='ms')
@@ -241,6 +247,13 @@ class TestTheDatetimesAccessor:
         err = np.abs((ts.datetimes - index).total_seconds())
         assert err.max() < 5e-7
         assert err.max() > 0     # the pin is honest: this case is inexact
+
+    def test_a_nanosecond_stamp_beyond_48_days_comes_back_at_the_microsecond(self):
+        """Past 2**22 s a float64 second's ulp exceeds a nanosecond, so the
+        nanosecond digits are rounded away rather than reported as noise."""
+        index = pd.DatetimeIndex(['2023-01-01', '2023-04-11 00:00:00.000000501'])
+        ts = baseTs(np.arange(2.0), times=index)
+        assert ts.datetimes[1] == pd.Timestamp('2023-04-11 00:00:00.000001')
 
     def test_it_raises_on_a_series_with_no_origin(self):
         ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
@@ -421,6 +434,22 @@ class TestTimeSliceTakesCalendarBounds:
     def test_numeric_bounds_are_still_seconds_on_the_index(self):
         ts = stamped()
         assert len(ts.time_slice(start_time=0.0, end_time=0.03)) == 4
+
+    @pytest.mark.parametrize("bound", [np.int64(30 * 86400), np.float32(30 * 86400),
+                                       np.float64(30 * 86400), 30 * 86400],
+                             ids=['np_int64', 'np_float32', 'np_float64', 'int'])
+    def test_a_numpy_number_is_seconds_not_a_stamp(self, daily, bound):
+        """`pd.Timestamp(2592000)` is 2.592 ms into 1970; the rule is
+        `numbers.Real`, which every numpy number registers under."""
+        assert len(daily.time_slice(end_time=bound)) == 31
+
+    def test_a_sub_microsecond_bound_is_placed_to_the_nanosecond(self):
+        """`Timedelta.total_seconds()` rounds to the microsecond; the bound
+        is placed as integer nanoseconds so a 500 ns stamp is its own bound."""
+        index = pd.DatetimeIndex(['2023-01-01', '2023-01-01 00:00:00.0000005',
+                                  '2023-01-01 00:00:00.000001'])
+        ts = baseTs(np.arange(3.0), times=index)
+        assert len(ts.time_slice(end_time='2023-01-01 00:00:00.0000005')) == 2
 
     def test_a_calendar_bound_on_a_series_with_no_origin_is_refused(self):
         ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
