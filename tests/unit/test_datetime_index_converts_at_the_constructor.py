@@ -821,3 +821,12 @@ class TestRoundOneBoundsAndLimits:
             ts = baseTs(np.arange(10.0), np.arange(10) / 10.0, ts_offset=2.5,
                         has_timestamp_offset=True)
         assert (ts.ts_offset, ts.has_timestamp_offset) == (2.5, True)
+
+    def test_an_object_index_with_no_datetime_in_it_is_not_stamped(self):
+        """Mutation: a rule that counted missing values alone as a stamped
+        index would send `[None, None]` through `pd.to_datetime` to a NaT
+        first stamp and refuse it. Such an index is left as it is."""
+        ts = baseTs(np.arange(2.0), times=np.array([None, None], dtype=object))
+        assert ts.index.dtype == object
+        assert ts.index.tolist() == [None, None]
+        assert ts.has_timestamp_offset is False
