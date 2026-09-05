@@ -127,9 +127,10 @@ seconds; it now processes a hundred thousand the same way.
 
 `USER_GUIDE.md`: `sg_filter(window=, order=)` -> `window_length=`/
 `polyorder=`; `other_ts` is now built before it is aligned and correlated;
-the memory-optimisation example imported `psutil`, which is not a
-dependency and not installed in CI, and measures with the standard
-library's `tracemalloc` instead.
+the memory-optimisation example imported `psutil`, which is a dev extra
+in `setup.py`, not a dependency of the package - a reader who installed
+baseTs would not have it (CI does, via `requirements.txt`) - and
+measures with the standard library's `tracemalloc` instead.
 
 ### Review round 1 (consensus panel, codex + agy)
 
@@ -163,6 +164,19 @@ different series; the example's is 1427 of 1440. Setup blocks that
 declared `freq=100.0` over `np.linspace(0, 10, 1000)` (99.9 Hz) now use
 `np.arange(n) / rate`, since the spectral axis is built from the
 declared rate; all six such grids in the docs, not only the new ones.
+
+### Review round 2 (quick-review, a different harness)
+
+Two soundness gaps in the stub checker, neither exploited by a shipped
+stub, both now pinned by mutation: a default written as `None` was
+skipped, because `None` doubled as the "not a literal" sentinel (a stub
+saying `hp_hz=None` against the real 0.01 passed) - a dedicated sentinel
+now; and keyword-only defaults (`set_outlier_filter`'s `it`,
+`delta_frac`, `fill_input_gaps`) were never compared, only their names
+and order - `kw_defaults` is read now. The fence census paired fences by
+character only; it pairs by character and length now, so a ```python
+line inside a longer ```` block is content, not an opening. The psutil
+sentence above was corrected: CI does install it.
 
 ### Filed, not folded in — #100
 

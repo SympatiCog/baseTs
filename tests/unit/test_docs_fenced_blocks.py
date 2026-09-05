@@ -143,10 +143,13 @@ def python_fences(file):
     for m in ANY_FENCE.finditer(text):
         indent, fence, info = m.groups()
         if open_fence is None:
-            open_fence = fence[0]
+            open_fence = fence
             if info.split(":")[0].lower() in PYTHONISH:
                 openings.append((text[:m.start()].count("\n") + 1, indent, fence, info))
-        elif fence[0] == open_fence:
+        elif fence[0] == open_fence[0] and len(fence) >= len(open_fence):
+            # CommonMark: a closing fence is the same character, at least as
+            # long. A ```python line inside an open ```` block is content,
+            # not an opening (review).
             open_fence = None
     return openings
 
@@ -168,12 +171,17 @@ def _stubs(block):
             if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AnnAssign))]
 
 
+NOT_A_LITERAL = object()
+
+
 def _literal_default(node):
-    """A default's value when it is a literal (np.nan counts); else None."""
+    """A default's value when it is a literal (np.nan counts); else
+    NOT_A_LITERAL. A real `None` default is a value to compare, not a
+    "could not tell" (review: `hp_hz=None` against a real 0.01 passed)."""
     try:
         return ast.literal_eval(node)
     except ValueError:
-        return np.nan if ast.unparse(node) == "np.nan" else None
+        return np.nan if ast.unparse(node) == "np.nan" else NOT_A_LITERAL
 
 
 NO_RUN = [b for b in ALL if b.no_run]
@@ -219,9 +227,12 @@ def test_a_no_run_stub_describes_the_class(block):
         positional = [a.arg for a in node.args.args]
         with_default = positional[-len(node.args.defaults):] if node.args.defaults else []
         defaults = dict(zip(with_default, node.args.defaults))
+        # Keyword-only defaults live in kw_defaults, None where absent (review).
+        defaults.update({a.arg: d for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                         if d is not None})
         for pname, dnode in defaults.items():
             got = _literal_default(dnode)
-            if got is None:
+            if got is NOT_A_LITERAL:
                 continue
             real_default = real.parameters[pname].default
             same = (got is real_default) or (got == real_default) or (
