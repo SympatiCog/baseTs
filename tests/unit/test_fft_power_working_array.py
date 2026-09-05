@@ -104,11 +104,14 @@ class TestTheWorkingArrayIsFloat64:
     def test_constancy_is_judged_in_float64_for_a_float32_series(self):
         """The review of #93 built a float32 series the two precisions
         disagree on: alternating between two adjacent float32 values near
-        2.9e-8, its float64 std is 8.9e-16 (constant: the DC branch, power
-        `mean**2`) and its float32 std is 1.3e-15 (the FFT branch, whose DC
-        bin is `n * mean**2` - 600x larger). `relative_band_power` has
-        always judged in float64; this pins compute_fft_power to the same
-        verdict, which is the float64 series' verdict."""
+        2.9e-8, its float64 std is 8.9e-16 (constant: the DC branch) and its
+        float32 std is 1.3e-15 (the FFT branch). Until #98 the two branches
+        reported DC bins a factor of n apart (`mean**2` vs `n * mean**2`),
+        which is how the verdict was visible; they agree now, so this pins
+        the verdict by result equality with the float64 series alone.
+        `relative_band_power` has always judged in float64; this pins
+        compute_fft_power to the same verdict, which is the float64 series'
+        verdict."""
         f32 = np.where(np.arange(N) % 2 == 0, np.float32(2.8994840e-08),
                        np.float32(2.8994842e-08)).astype(np.float32)
         assert np.std(f32.astype(np.float64)) < 1e-15 < np.std(f32)
@@ -117,7 +120,7 @@ class TestTheWorkingArrayIsFloat64:
         got = _ts(f32).compute_fft_power(demean=False, scale_power=False)
 
         _assert_same_spectrum(got, expected)
-        assert got[1][0] == pytest.approx(np.mean(f32.astype(np.float64)) ** 2)
+        assert got[1][0] == pytest.approx(N * np.mean(f32.astype(np.float64)) ** 2, abs=0)
 
     @pytest.mark.parametrize("dtype", [np.float32, np.float16], ids=["float32", "float16"])
     @pytest.mark.parametrize("kw", SETTINGS, ids=SETTING_IDS)

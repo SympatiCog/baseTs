@@ -54,6 +54,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
+
+`compute_fft_power` has two branches. Data whose std is below 1e-15 took
+a short path that wrote `power[0] = mean**2`; anything else took the FFT,
+`np.abs(fft)**2 / n`, whose DC bin is `|n * mean|**2 / n = n * mean**2`.
+So with `scale_power=False` a constant series and one nudged just past the
+threshold (600 samples of 3.0, every other one raised by 1e-13) reported
+DC powers `n` apart: 9.0 and 5400. Under the default `scale_power=True`
+the DC bin is the only non-zero one on either branch and normalises to
+1.0, which is why the factor was invisible; it was the "600x" that #93's
+and #96's entries attribute to a float32 series, and was this factor, not
+precision.
+
+### Changed — the constant branch reports `n * mean**2`
+
+What its own FFT branch computes for the same array, pinned against
+`np.abs(np.fft.fft(data))**2 / n` directly and against the nudged series
+across the threshold. `demean=True` still gives all zeros;
+`scale_power=True` still gives 1.0 at DC. **Reachable in normal use, so
+stated:** `compute_fft_power(demean=False, scale_power=False)` on a
+constant series now returns a DC bin `n` times larger. The #96 pin that
+asserted the old formula for the float32 verdict now pins the new one.
+
+### Observed, not changed — three scalings, not two
+
+The issue said `get_frequency_content` "already reports `n * mean**2`".
+Measured, it reports `(n * mean)**2` - `np.abs(fft)**2`, not divided by
+`n` - so the package has two documented "power" spectra with different
+scalings, and this change makes `compute_fft_power` consistent with
+itself, not with `get_frequency_content`. Whether the two should share
+one scaling is a wider question, recorded on #98 with the measured
+table; pinned here so a change to either is deliberate.
+
 ## [Unreleased] — `is_interpolated` means one thing, and every producer follows it (#90)
 
 The flag's docstring said "whether the data has been interpolated". The
