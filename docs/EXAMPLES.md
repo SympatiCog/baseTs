@@ -1662,7 +1662,7 @@ def scientific_pandas_integration(ts_data):
         'mean_1h': ts_data.rolling('1h').mean(),
         'std_6h': ts_data.rolling('6h').std(),
         'quantile_95_1d': ts_data.rolling('1D').quantile(0.95),
-        'autocorr_1h': ts_data.rolling('1h').apply(lambda x: x.autocorr(lag=1))
+        'autocorr_1h': ts_data.rolling('1h', min_periods=3).apply(lambda x: x.autocorr(lag=1))
     }
     
     # 4. Trend analysis

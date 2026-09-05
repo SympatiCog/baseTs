@@ -118,8 +118,8 @@ cannot take that index (#100, below), resamples through the frame.
 example passed a `DatetimeIndex` to a pipeline ending in `get_statistics()`
 and now passes seconds, saying why (#100); its SNR line subtracted a
 `rolling_mean` result from its input as arrays, and `rolling_mean` trims
-the window's edges (987 of 1000), so it subtracts as series, aligned on
-the index; the long-term example's `resample()` calls drop to pandas' on
+the window's edges (a 14-sample window leaves 1427 of 1440), so it
+subtracts as series, aligned on the index; the long-term example's `resample()` calls drop to pandas' on
 a plain Series (#100), `rolling('1H')` -> `'1h'`, and it printed a
 `weekly_std` key it never computed. The chunked large-dataset example
 processed a million points through LOWESS and took 42 of the harness's 43
@@ -130,6 +130,39 @@ seconds; it now processes a hundred thousand the same way.
 the memory-optimisation example imported `psutil`, which is not a
 dependency and not installed in CI, and measures with the standard
 library's `tracemalloc` instead.
+
+### Review round 1 (consensus panel, codex + agy)
+
+No rewritten example was wrong, and every "#100" comment reproduces.
+Three gaps in the harness, all now pinned by mutation: the fence regex
+read only an unindented ```python, so a ```py, ```python3, ~~~python or
+indented fence was invisible to the census - a fence census now scans
+every fence and fails on any Python-ish spelling but that one; blocks
+ran with warnings suppressed, so an example that returned NaN with a
+`RuntimeWarning` passed - blocks now run with warnings as errors (the
+one filtered message is the Agg backend's own `plt.show()` notice), which
+caught `np.where(x > 0, np.sqrt(x), ...)` evaluating `sqrt` of the
+negatives and a `rolling('1h').apply(autocorr)` on one-sample windows
+(now `min_periods=3`); and a `no-run` stub only had to compile, so it
+could rot without limit - each stub is now checked against the class,
+which found `copy(self)` against `copy(self, deep=True)`, `@property`
+stubs for `history` and `is_filtered` (instance attributes), a `plot`
+stub for what is a property, and a legacy block whose four signatures
+were all stale (`bandpass_at`, `set_outlier_filter`, `filter_outliers`,
+`plot_fft_power`). Prose the block harness cannot see: the four
+`rolling_*` parameter lists still said `center` defaults to False (and
+the 7-day example now passes `center=False` so the contrast with the
+centered 30-day one holds); `normalize_range`'s parameter list and
+`Raises` still said `new_min`/`new_max`, and a `target_min` above
+`target_max` is not rejected; `time_slice`'s `Raises` claimed a
+datetime-only restriction the code does not have, next to an example
+slicing seconds; `get_statistics`' `frequency` is `ts.freq` while
+`sample_rate` is derived from the time base, and the entry said both
+held the same number. The CHANGELOG figure "987 of 1000" was from a
+different series; the example's is 1427 of 1440. Setup blocks that
+declared `freq=100.0` over `np.linspace(0, 10, 1000)` (99.9 Hz) now use
+`np.arange(n) / rate`, since the spectral axis is built from the
+declared rate; all six such grids in the docs, not only the new ones.
 
 ### Filed, not folded in — #100
 

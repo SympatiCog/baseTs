@@ -67,8 +67,8 @@ import pandas as pd
 from baseTs import baseTs
 
 # Create time series with numeric times
-data = np.sin(np.linspace(0, 4*np.pi, 1000))
-times = np.linspace(0, 10, 1000)
+times = np.arange(1000) / 100.0          # 10 s at exactly 100 Hz
+data = np.sin(2 * np.pi * 0.2 * times)
 ts = baseTs(data=data, times=times)
 
 # Create time series with datetime index
@@ -187,16 +187,12 @@ non-numeric index such as a `DatetimeIndex`.
 
 #### `is_filtered`
 ```python no-run
-@property
-def is_filtered(self) -> bool:
-    """Whether the signal has been filtered."""
+is_filtered: bool   # an instance attribute, not a property
 ```
 
 #### `history`
 ```python no-run
-@property
-def history(self) -> List[str]:
-    """Processing history list."""
+history: List[str]   # an instance attribute, not a property
 ```
 
 #### `last_process`
@@ -222,8 +218,8 @@ print(f"History: {filtered.history}")
 
 ### `copy()`
 ```python no-run
-def copy(self) -> 'baseTs':
-    """Create a deep copy of the baseTs object."""
+def copy(self, deep: bool = True) -> 'baseTs':
+    """Create a copy of the baseTs object (deep by default, as pandas')."""
 ```
 
 **Returns:**
@@ -422,14 +418,16 @@ print(f"Std: {np.std(normalized.data):.6f}")    # ~1.0
 Range normalization to specified bounds.
 
 **Parameters:**
-- `new_min` (float, optional): New minimum value. Default: 0
-- `new_max` (float, optional): New maximum value. Default: 1
+- `target_min` (float, optional): New minimum value. Default: 0.0
+- `target_max` (float, optional): New maximum value. Default: 1.0
+- `inplace` (bool, optional): If True, modifies the existing object. Default: False
 
 **Returns:**
 - `baseTs`: New normalized baseTs object
 
 **Raises:**
-- `ValueError`: If new_min >= new_max or if data range is zero
+- `ValueError`: If the data range is zero (constant data). A `target_min` above
+  `target_max` is not rejected; it maps the data onto the reversed range.
 
 **Example:**
 ```python
@@ -464,7 +462,7 @@ log_transformed = ts.apply_function(lambda x: np.log(np.abs(x) + 1e-10))
 
 # Custom function
 def custom_transform(x):
-    return np.where(x > 0, np.sqrt(x), -np.sqrt(np.abs(x)))
+    return np.sign(x) * np.sqrt(np.abs(x))
 
 transformed = ts.apply_function(custom_transform)
 ```
@@ -686,7 +684,7 @@ Calculate rolling mean.
 
 **Parameters:**
 - `window` (int): Window size in number of periods
-- `center` (bool, optional): Whether to center the window. Default: False
+- `center` (bool, optional): Whether to center the window. Default: True
 
 **Returns:**
 - `baseTs`: New baseTs object with rolling mean
@@ -696,8 +694,8 @@ Calculate rolling mean.
 # A daily series (dates is the 365-day range from the constructor example)
 daily = baseTs(data=np.random.randn(365), times=dates)
 
-# 7-day rolling average
-weekly_avg = daily.rolling_mean(window=7)
+# 7-day trailing rolling average (windows are centered by default)
+weekly_avg = daily.rolling_mean(window=7, center=False)
 
 # Centered 30-day rolling average
 monthly_avg = daily.rolling_mean(window=30, center=True)
@@ -709,7 +707,7 @@ Calculate rolling standard deviation.
 
 **Parameters:**
 - `window` (int): Window size in number of periods
-- `center` (bool, optional): Whether to center the window. Default: False
+- `center` (bool, optional): Whether to center the window. Default: True
 
 **Returns:**
 - `baseTs`: New baseTs object with rolling standard deviation
@@ -726,7 +724,7 @@ Calculate rolling maximum.
 
 **Parameters:**
 - `window` (int): Window size in number of periods
-- `center` (bool, optional): Whether to center the window. Default: False
+- `center` (bool, optional): Whether to center the window. Default: True
 
 **Returns:**
 - `baseTs`: New baseTs object with rolling maximum
@@ -737,7 +735,7 @@ Calculate rolling minimum.
 
 **Parameters:**
 - `window` (int): Window size in number of periods  
-- `center` (bool, optional): Whether to center the window. Default: False
+- `center` (bool, optional): Whether to center the window. Default: True
 
 **Returns:**
 - `baseTs`: New baseTs object with rolling minimum
@@ -755,14 +753,18 @@ rolling_range = rolling_max - rolling_min  # Custom calculation
 Extract time series slice by time/date range.
 
 **Parameters:**
-- `start` (str or datetime-like, optional): Start time/date
-- `end` (str or datetime-like, optional): End time/date
+- `start_time` (optional): Start bound, compared against the index as given:
+  a date string or datetime-like on a DatetimeIndex, seconds on a numeric one
+- `end_time` (optional): End bound, same rule
+- `inplace` (bool, optional): If True, modifies the existing object. Default: False
 
 **Returns:**
 - `baseTs`: New baseTs object with sliced data
 
 **Raises:**
-- `ValueError`: If start >= end or if times are not datetime-indexed
+- `TypeError`: If a bound cannot be compared with the index (a date string
+  against a numeric index). A `start_time` after `end_time` is not rejected;
+  it returns an empty series.
 
 **Example:**
 ```python
@@ -796,7 +798,9 @@ Get comprehensive statistical summary.
 - `q25`, `q75`: First and third quartiles
 - `count`: Number of observations
 - `duration`: Span of the time base, in seconds
-- `frequency`, `sample_rate`: The sampling rate in Hz (both keys hold it)
+- `frequency`: `ts.freq`, the declared rate if one is declared, else the derived one
+- `sample_rate`: The rate derived from the time base, `(n - 1) / duration`; it differs from
+  `frequency` when a declared rate does not match the index's spacing
 
 **Example:**
 ```python
@@ -1007,7 +1011,7 @@ detrended upstream.
 ```python
 # The band's lower edge, 0.01 Hz, is one cycle per 100 s, so the record has
 # to be long: 200 s at 10 Hz here, with a 0.05 Hz oscillation in noise
-t = np.linspace(0, 200, 2000)
+t = np.arange(2000) / 10.0
 slow = baseTs(np.sin(2 * np.pi * 0.05 * t) + 0.3 * np.random.randn(2000), t, freq=10.0)
 
 # Fraction of variance in the default 0.01-0.1 Hz band
@@ -1145,28 +1149,28 @@ These methods are maintained for backward compatibility.
 
 ```python no-run
 # Legacy bandpass method
-def bandpass_at(self, hp_hz, lp_hz, sampling_rate=None):
-    """Legacy bandpass filter method."""
-    
-# Legacy outlier filtering
-def set_outlier_filter(self, frac=0.075, z_threshold=7, it=0, delta_frac=0.0):
-    """Set up LOWESS outlier filter.
+def bandpass_at(self, hp_hz=0.01, lp_hz=0.1, inplace=False, reset_mean=True):
+    """Butterworth band-pass between hp_hz and lp_hz, in Hz."""
 
-    frac is the LOWESS bandwidth (fraction of points per local window),
-    not the fraction of points expected to be outliers.
-    """
+# Legacy outlier filtering. Every parameter is optional; an omitted one keeps
+# the current filter's value. frac is the LOWESS bandwidth (fraction of points
+# per local window), not the fraction of points expected to be outliers.
+def set_outlier_filter(self, params=None, z_threshold=None, frac=None, max_iterations=None,
+                       interpolation_method=None, order=None, use_median=None, tails=None,
+                       num_fits=None, *, it=None, delta_frac=None, fill_input_gaps=None):
+    """Configure the LOWESS outlier filter."""
 
-def filter_outliers(self):
+def filter_outliers(self, inplace=False, qcplot=False, show_plot=False, ax=None):
     """Apply LOWESS outlier filtering."""
 ```
 
 ### Plotting (Legacy)
 
-```python no-run
-def plot(self, show=True, ax=None, **kwargs):
-    """Plot the time series."""
+`plot` is a property returning a callable accessor (see [`plot`](#plot--line-plot-or-the-pandas-plotting-accessor) above), not a method.
 
-def plot_fft_power(self, max_rate=np.nan, show=False, ax=None):
+```python no-run
+def plot_fft_power(self, max_rate=np.nan, min_rate=0.0, window=None, ax=None, title=None,
+                   xlabel=None, ylabel=None, show=False, scale_power=False, highlight_band=None):
     """Plot FFT power spectrum."""
 ```
 

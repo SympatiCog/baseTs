@@ -29,8 +29,8 @@ import numpy as np
 from baseTs import baseTs
 
 # Create a simple time series
-data = np.sin(np.linspace(0, 4*np.pi, 1000)) + 0.1*np.random.randn(1000)
-times = np.linspace(0, 10, 1000)
+times = np.arange(1000) / 100.0          # 10 s at exactly 100 Hz
+data = np.sin(2 * np.pi * 0.2 * times) + 0.1*np.random.randn(1000)
 
 ts = baseTs(data=data, times=times, freq=100.0, signal_name="example")
 print(f"Time series length: {len(ts)}")
@@ -370,7 +370,7 @@ def benchmark_enhanced_operations():
     
     # Create test data
     data = np.random.randn(10000)
-    times = np.linspace(0, 100, 10000)
+    times = np.arange(10000) / 100.0      # 100 s at exactly 100 Hz
     ts = baseTs(data=data, times=times, freq=100.0)
     
     operations = {

@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from baseTs import baseTs
 
-times = np.linspace(0, 10, 1000)
+times = np.arange(1000) / 100.0          # 10 s at exactly 100 Hz
 data = np.sin(2 * np.pi * 0.5 * times) + 0.1 * np.random.randn(1000)
 ts = baseTs(data, times, freq=100.0, signal_name="sensor")
 ts1 = ts
@@ -316,8 +316,8 @@ import numpy as np
 from baseTs import baseTs
 
 # Create time series
-data = np.sin(2*np.pi*0.5*np.linspace(0, 100, 10000)) + 0.1*np.random.randn(10000)
-times = np.linspace(0, 100, 10000)
+times = np.arange(10000) / 100.0         # 100 s at exactly 100 Hz
+data = np.sin(2*np.pi*0.5*times) + 0.1*np.random.randn(10000)
 ts = baseTs(data, times, freq=100.0, signal_name="example")
 
 # Apply traditional processing
