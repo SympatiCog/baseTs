@@ -70,7 +70,8 @@ def seeded() -> baseTs:
     ts.attrs['unit'] = 'mV'
     ts.flags.allows_duplicate_labels = False
     # Last: a declaration expires when the index changes (#38), and
-    # set_timestamp_offset above shifts it.
+    # set_timestamp_offset above used to shift it (it only records the
+    # origin since #100; the order is kept as the rule).
     ts.freq = DECLARED_RATE
     return ts
 

@@ -26,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 from decimal import Decimal  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -285,10 +286,22 @@ class TestAnIntegerSeriesCanBeShifted:
 
 
 class TestATimestampArrayIsBlankedWithNaT:
-    """A datetime index derives no rate, so these need a declared one to
+    """A datetime index derived no rate, so these needed a declared one to
     reach the shift at all - and then died on `Could not convert object to
     NumPy datetime`. `astype(float)` is not the remedy here: it reinterprets
-    the int64 storage, which the issue warns about explicitly."""
+    the int64 storage, which the issue warns about explicitly.
+
+    Since #100 a baseTs converts a DatetimeIndex to seconds at the
+    constructor, so no baseTs can hand `shift_timeseries` a datetime64
+    array any more. The function takes any object with `data`, `times` and
+    `freq`, and the NaT arm is pinned through one of those; the baseTs case
+    below shows the same series now reaching the float arm instead."""
+
+    @staticmethod
+    def _stamped_source():
+        return SimpleNamespace(data=np.arange(5.0),
+                               times=pd.date_range("2024", periods=5, freq="10ms").values,
+                               freq=100.0)
 
     def _stamped(self):
         return baseTs(np.arange(5.0),
@@ -296,31 +309,41 @@ class TestATimestampArrayIsBlankedWithNaT:
                       freq=100.0)
 
     def test_the_head_becomes_nat_and_the_dtype_survives(self):
-        res = shift_timeseries(self._stamped(), 2, "index", drop_nan=False)
+        src = self._stamped_source()
+        res = shift_timeseries(src, 2, "index", drop_nan=False)
         times = res["lagged_timeseries"]
 
         assert times.dtype.kind == "M"
         assert np.isnat(times[:2]).all()
         assert not np.isnat(times[2:]).any()
-        np.testing.assert_array_equal(times[2:], self._stamped().times[:3])
+        np.testing.assert_array_equal(times[2:], src.times[:3])
 
     def test_dropping_the_head_keeps_the_timestamps(self):
-        res = shift_timeseries(self._stamped(), 2, "index")
+        src = self._stamped_source()
+        res = shift_timeseries(src, 2, "index")
 
         assert res["lagged_timeseries"].dtype.kind == "M"
-        np.testing.assert_array_equal(res["lagged_timeseries"],
-                                      self._stamped().times[:3])
+        np.testing.assert_array_equal(res["lagged_timeseries"], src.times[:3])
 
-    def test_a_timedelta_index_is_blanked_the_same_way(self):
-        ts = baseTs(np.arange(5.0),
-                    pd.timedelta_range(0, periods=5, freq="10ms"),
-                    freq=100.0)
-        res = shift_timeseries(ts, 2, "index", drop_nan=False)
+    def test_a_timedelta_array_is_blanked_the_same_way(self):
+        src = SimpleNamespace(data=np.arange(5.0),
+                              times=pd.timedelta_range(0, periods=5, freq="10ms").values,
+                              freq=100.0)
+        res = shift_timeseries(src, 2, "index", drop_nan=False)
         times = res["lagged_timeseries"]
 
         assert times.dtype.kind == "m"
         assert np.isnat(times[:2]).all()
-        np.testing.assert_array_equal(times[2:], ts.times[:3])
+        np.testing.assert_array_equal(times[2:], src.times[:3])
+
+    def test_a_basets_built_from_stamps_is_blanked_with_nan(self):
+        """Its times are seconds since the first stamp now (#100)."""
+        res = shift_timeseries(self._stamped(), 2, "index", drop_nan=False)
+        times = res["lagged_timeseries"]
+
+        assert times.dtype.kind == "f"
+        assert np.isnan(times[:2]).all()
+        np.testing.assert_array_equal(times[2:], [0.0, 0.01, 0.02])
 
     def test_a_stamped_series_can_be_lag_plotted(self):
         ax = _closed(lag_plot, self._stamped(), 2, "index")

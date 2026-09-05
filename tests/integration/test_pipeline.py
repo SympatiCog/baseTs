@@ -3,6 +3,7 @@ Integration tests for baseTs processing pipeline.
 """
 import pytest
 import numpy as np
+import pandas as pd
 from baseTs import baseTs
 
 
@@ -103,12 +104,14 @@ def test_dataframe_conversions():
     assert np.array_equal(df['times'].values, t)
     assert np.array_equal(df['data'].values, signal)
     
-    # Test with timestamp offset
+    # Test with timestamp offset. The offset is the origin the seconds are
+    # counted from (#100); declaring it does not move the times.
     ts.set_timestamp_offset(1000.0)
     df_with_offset = ts.to_dataframe()
-    
-    # Check timestamps are correctly offset
-    assert np.array_equal(df_with_offset['times'].values, t + 1000.0)
+
+    assert np.array_equal(df_with_offset['times'].values, t)
+    assert ts.ts_offset == 1000.0
+    assert ts.datetimes[0] == pd.Timestamp('1970-01-01 00:16:40')
     
     # Test DataFrame with index
     df_indexed = ts.to_dataframe(set_index=True)

@@ -869,13 +869,15 @@ class TestButterpassAt:
         inputs did not span the axis the test was named for.
 
         Census of TimeSeriesData._metadata, measured rather than asserted:
-        nine fields are seeded off their constructor default and survive
-        this call intact, and the other five change - `is_filtered`,
+        ten fields are seeded off their constructor default and survive
+        this call intact (`_origin_index`, the index the offset describes,
+        joined them with #100: the call keeps the index, so the re-stamp
+        equals the seed's), and the other five change - `is_filtered`,
         `last_process` and `history` because changing them is the operation's
         own effect, and `_lowess_fit` and `_outlier_indices` because the call
         changes the values and a slot stamped against the old values is
         released on derivation (#40; before that, eleven and three).
-        `_name` is among the nine, added when the registry stopped replacing
+        `_name` is among the ten, added when the registry stopped replacing
         pandas' own and started extending it (#35/#39). It has to be seeded
         here like any other field: left at its `None` default it would compare
         equal on both sides whatever the implementation did with it, which is
@@ -896,10 +898,13 @@ class TestButterpassAt:
         ts.is_outlier_filtered = True
         ts.lowess_fit = np.arange(len(ts), dtype=float)
         ts.outlier_indices = np.array([3, 7, 11])
-        # Declared last, on purpose: set_timestamp_offset shifts the index and
-        # would expire a declaration made before it (#38), leaving a stale
-        # token that says nothing about propagation. Declared here the token
-        # is live, and filtering preserves the index, so it must still be live
+        # Declared last, on purpose: set_timestamp_offset used to shift the
+        # index and would have expired a declaration made before it (#38),
+        # leaving a stale token that says nothing about propagation. It only
+        # records the origin since #100, but the order stays: anything that
+        # could change the index goes before anything declared against it.
+        # Declared here the token is live, and filtering preserves the index,
+        # so it must still be live
         # on the far side. The value deliberately disagrees with the 30 Hz the
         # index derives, as at test_explicit_freq_still_honoured - a rate that
         # matched would be indistinguishable from re-derivation.
@@ -942,7 +947,7 @@ class TestButterpassAt:
     PRESERVED_BY_OP = frozenset({
         '_name',
         '_freq_declaration', 'signal_name', 'is_interpolated', 'is_uniform_grid',
-        'ts_offset', 'has_timestamp_offset',
+        'ts_offset', 'has_timestamp_offset', '_origin_index',
         'is_outlier_filtered', 'outlier_filter',
     })
     # The two positional slots moved here with #40: the call changes the
@@ -963,7 +968,7 @@ class TestButterpassAt:
         return source, preserved, changed
 
     def test_metadata_census_is_exactly_what_the_docs_claim(self):
-        """The 9-preserved / 5-changed split is asserted, not just described.
+        """The 10-preserved / 5-changed split is asserted, not just described.
 
         Three places quote this census in prose - _seeded's docstring,
         test_metadata_matches_bandpass_at's, and the CHANGELOG entry. Prose
@@ -983,7 +988,7 @@ class TestButterpassAt:
         ), "a field was added to or removed from _metadata; classify it here"
         assert preserved == self.PRESERVED_BY_OP
         assert changed == self.CHANGED_BY_OP
-        assert (len(preserved), len(changed)) == (9, 5)  # the quoted numbers
+        assert (len(preserved), len(changed)) == (10, 5)  # the quoted numbers
 
     def test_seeding_leaves_no_metadata_field_vacuous(self):
         """No field may sit at its default and stay there across the call.

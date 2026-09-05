@@ -6,6 +6,7 @@ Created on Oct 19 2024
 
 from __future__ import annotations
 import math
+import numbers
 import warnings
 
 import numpy as np
@@ -32,7 +33,8 @@ from .series import (TimeSeriesData, _detach_shared_metadata,
                      _UNSET, _UnsetType,
                      _carries_metadata, _carry_identity,
                      _apply_duplicate_label_declaration,
-                     _refuse_undeclarable_index)
+                     _refuse_undeclarable_index, _origin_timestamp,
+                     _origin_problem)
 # from .plotting import qc_plot, hist, plot
 
 if TYPE_CHECKING:
@@ -49,11 +51,14 @@ def from_df(df: pd.DataFrame,
 
     Args:
         df: Input DataFrame containing time series data
-        time_col: Name of the column containing time values
+        time_col: Name of the column containing time values: seconds, or a
+            datetime or timedelta column
         data_col: Name of the column containing data values
         signal_name: Name of the signal (defaults to data_col if None)
         freq: Sampling frequency in Hz (optional)
-        ts_offset: Timestamp offset in seconds (optional)
+        ts_offset: The origin the time column's seconds are counted from,
+            in epoch seconds (optional; refused alongside a datetime column,
+            which carries its own)
 
     Returns:
         baseTs: A new baseTs object initialized with the DataFrame data
@@ -71,9 +76,20 @@ def from_df(df: pd.DataFrame,
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
     
-    # Validate data types
-    if not np.issubdtype(df[time_col].dtype, np.number):
-        raise ValueError(f"Time column '{time_col}' must be numeric")
+    # Validate data types. A datetime or timedelta column is accepted since
+    # #100: the constructor converts it to seconds (a datetime column sets
+    # the origin, so `ts_offset` alongside one is refused there). The
+    # pandas tests go first because a timezone-aware column's dtype is not
+    # a numpy dtype and np.issubdtype raises on it.
+    # The numpy test is guarded the same way: a pandas extension dtype (a
+    # string column on pandas 3) made np.issubdtype raise TypeError where
+    # the ValueError below was documented.
+    time_dtype = df[time_col].dtype
+    stamped = (pd.api.types.is_datetime64_any_dtype(time_dtype)
+               or pd.api.types.is_timedelta64_dtype(time_dtype))
+    numeric = isinstance(time_dtype, np.dtype) and np.issubdtype(time_dtype, np.number)
+    if not stamped and not numeric:
+        raise ValueError(f"Time column '{time_col}' must be numeric, datetime or timedelta")
     if not np.issubdtype(df[data_col].dtype, np.number):
         raise ValueError(f"Data column '{data_col}' must be numeric")
     
@@ -215,11 +231,18 @@ class baseTs(TimeSeriesData):
                 raise ValueError("You must provide either a times array or a frequency")
         
         # Initialize as TimeSeriesData (pandas Series subclass)
+        # The offset pair rides through too, translated from this class's
+        # public NaN/None sentinel to the superclass's. TimeSeriesData owns
+        # the pair since #100, because that is where a DatetimeIndex is
+        # converted to seconds and where an explicit `ts_offset` alongside
+        # one has to be refused.
         super().__init__(
             data=data,
             index=times,
             freq=None if _is_unset(freq) else freq,
             signal_name=signal_name,   # the sentinel rides through
+            ts_offset=_UNSET if _is_unset(ts_offset) else ts_offset,
+            has_timestamp_offset=has_timestamp_offset,
             **pandas_kwargs
         )
         
@@ -241,7 +264,6 @@ class baseTs(TimeSeriesData):
                               ('is_interpolated', is_interpolated),
                               ('is_uniform_grid', is_uniform_grid),
                               ('is_outlier_filtered', is_outlier_filtered),
-                              ('has_timestamp_offset', has_timestamp_offset),
                               ('outlier_indices', outlier_indices),
                               ('lowess_fit', lowess_fit)):
             if not isinstance(_value, _UnsetType):
@@ -257,32 +279,12 @@ class baseTs(TimeSeriesData):
         if not isinstance(last_process, _UnsetType):
             self.last_process = last_process
 
-        # Handle timestamp offset. The `else` used to zero both names
-        # unconditionally, which is how a converted series lost an offset it
-        # was carrying: not supplying an offset is not the same as declaring
-        # there is none. Untouched now unless one is given - and the array
-        # path still gets its zero from _initialize_default_metadata.
-        if not _is_unset(ts_offset):
-            self.ts_offset = ts_offset
-            self.has_timestamp_offset = True
-        elif (not isinstance(has_timestamp_offset, _UnsetType)
-              and not has_timestamp_offset):
-            # Explicitly cleared, with no offset named. Truthiness, not
-            # `is False`: np.False_ is what `arr.any()` and any comparison
-            # result give, and it is not the False singleton, so an identity
-            # test let through exactly the pair this exists to prevent.
-            #
-            # One direction only. The reverse - asserting the flag without an
-            # offset - is a caller's own assertion, and rejecting it would
-            # break a call that works today.
-            #
-            # The `else` this
-            # replaces zeroed the pair unconditionally, which is how a
-            # conversion lost an offset it was carrying - but it also kept the
-            # two coherent, and "no offset applied, offset 1.5" is a state
-            # nothing downstream expects. __finalize__ copies the pair onward,
-            # so an incoherent one would ride into every derived object.
-            self.ts_offset = 0
+        # The timestamp offset pair (`ts_offset`, `has_timestamp_offset`) is
+        # handled by TimeSeriesData.__init__ now - see the super() call
+        # above. The block that lived here kept the same rules: untouched
+        # unless given (that is what stopped a conversion losing an offset
+        # it was carrying), an explicit offset sets the flag, and clearing
+        # the flag without an offset zeroes the offset, one direction only.
 
         # Initialize history. Only when the caller named one, or when nothing
         # was carried across - a conversion keeps the source's history
@@ -354,8 +356,24 @@ class baseTs(TimeSeriesData):
     
     @times.setter
     def times(self, value: np.ndarray):
-        """Set the time values (backward compatibility)."""
+        """Set the time values (backward compatibility).
+
+        The assignment reaches TimeSeriesData._set_axis, the one door every
+        index arrives by (#100): a DatetimeIndex becomes seconds since its
+        first stamp and sets the origin, a TimedeltaIndex becomes seconds
+        and leaves the origin alone, and seconds are taken as given - the
+        same rule as the constructor, `ts.index = ...` and `set_axis`.
+
+        One difference from pandas' `ts.index = ...`: seconds assigned here
+        are declared to be seconds in this series' time base, so the
+        origin, if there is one, describes the new index. pandas' door
+        makes no such declaration - `reset_index(inplace=True)` uses it to
+        install positions - so seconds arriving there must still be drawn
+        from the ones the origin was declared against.
+        """
         self.index = pd.Index(value)
+        if self.has_timestamp_offset and self.__dict__.get('_origin_from_index') is None:
+            self._origin_index = self.index
         # No freq recalculation. The property derives from the index, so a new
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
@@ -416,6 +434,14 @@ class baseTs(TimeSeriesData):
 
         for attr, value in preserved.items():
             setattr(self, attr, value)
+        # The re-initialisation went through _set_axis; if the new index
+        # arrived stamped its origin holds over the preserved pair (#100).
+        # No package path hands a stamped index here - every caller derives
+        # it from the numeric one - so this is pinned directly.
+        if not self._restore_origin_from_index() and self.has_timestamp_offset:
+            # Re-initialised in this series' own time base: the preserved
+            # pair describes the index just installed, not the old one.
+            self._origin_index = self.index
 
         if attrs:
             self.attrs = attrs
@@ -497,7 +523,9 @@ class baseTs(TimeSeriesData):
         elif no_span or n_new == 0:
             # A shrink of a no-span index keeps labels it already has; an
             # empty result places nothing. Sliced rather than rebuilt so the
-            # index keeps its dtype (a DatetimeIndex used to fail in numpy).
+            # index keeps its dtype (a DatetimeIndex used to fail in numpy
+            # here; since #100 none reaches this, but an object index still
+            # would).
             new_index = self.index[:n_new]
         else:
             new_index = np.linspace(self.index[0], self.index[-1], n_new)
@@ -557,9 +585,27 @@ class baseTs(TimeSeriesData):
         if preserve_metadata:
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
-                            'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
+                            'is_outlier_filtered',
                             '_outlier_indices', '_lowess_fit', 'last_process',
                             'outlier_filter']
+
+            # The offset pair is copied only when the new index brought no
+            # origin of its own. An index carries its origin (#100): handed
+            # a DatetimeIndex as `new_times`, the constructor above recorded
+            # its first stamp, and copying the parent's pair over it
+            # relabelled 2024 dates as 2023 (review round 1, both
+            # panelists). Same shape as the _freq_declaration rule below: a
+            # value the new object derived from its own arguments is not
+            # overwritten by the parent's.
+            if new_obj.__dict__.get('_origin_from_index') is None:
+                metadata_attrs += ['has_timestamp_offset', 'ts_offset']
+                # And the pair then describes the new index, whatever grid
+                # it is: every caller builds `new_times` in this series'
+                # time base (a slice, a resampled grid, the same index).
+                # Not `_origin_index` from the parent - a copied stamp would
+                # refuse the grid resample just built.
+                if self.has_timestamp_offset:
+                    new_obj._origin_index = new_obj.index
 
             # Not iterating self._metadata: this list is deliberately curated
             # and excludes signal_name and history, which are handled above
@@ -870,8 +916,10 @@ class baseTs(TimeSeriesData):
         degenerate span defeats it.
 
         `duration()` is `float(index[-1] - index[0])`, which raises
-        TypeError on a non-numeric index (a DatetimeIndex yields a
-        Timedelta). Caught so both methods keep the ValueError contract
+        TypeError on a non-numeric index (a DatetimeIndex used to reach it
+        and yield a Timedelta; since #100 the constructor converts one to
+        seconds, and an object index of strings is what remains). Caught so
+        both methods keep the ValueError contract
         their docstrings promise rather than leaking a conversion error
         from two frames down.
         """
@@ -1828,27 +1876,80 @@ class baseTs(TimeSeriesData):
             )
             return new_obj
         
-    def time_slice(self, start_time: float = None, end_time: float = None, 
-                  inplace: bool = False) -> "baseTs":
+    def _bound_in_seconds(self, bound, which: str):
+        """A time_slice bound as seconds on the index.
+
+        A number is seconds on the index, as it always was - `numbers.Number`,
+        not `numbers.Real`: `Decimal` registers under the former only, and
+        the first cut's `Real` test sent a `Decimal` bound that `main`
+        compared fine down the calendar branch, to a "no timestamp origin"
+        error (review round 1, codex; the #30 lesson again). Anything else
+        is a calendar bound - a date string, a datetime, a date, a
+        numpy datetime64, a Timestamp - parsed by `pd.Timestamp`, and placed
+        against the origin the way the index's own seconds were: as integer
+        nanoseconds divided by 1e9, so a bound that names a sample lands on
+        that sample exactly. Two conversions have to agree for that: the
+        index's seconds come from the *vectorised*
+        `TimedeltaIndex.total_seconds()`, which is nanosecond-exact, while
+        the scalar `Timedelta.total_seconds()` a bound would naturally use
+        rounds to the microsecond (`Timedelta('500ns').total_seconds()` is
+        0.0 on pandas 2.2.3, 2.3.3 and 3.0.1). They give the same float for
+        the same stamp on all three legs, pinned across a 10 ms, a
+        microsecond and a nanosecond grid. An aware bound is an instant,
+        like an aware index.
+
+        Raises:
+            TypeError: a calendar bound on a series that cannot place one -
+                no origin, or an index the recorded origin no longer
+                describes. The message is `_origin_problem`'s.
+            ValueError: a string `pd.Timestamp` cannot parse.
         """
-        Slice the time series between start and end times.
-        
+        if bound is None or isinstance(bound, numbers.Number):
+            return bound
+        # Before parsing: on a series with no origin the mistake is the kind
+        # of bound, whatever the string says, and that is the message owed.
+        # The same helper `datetimes` reads decides whether the origin
+        # applies to the index the series holds now.
+        problem = _origin_problem(self)
+        if problem is not None:
+            raise TypeError(
+                f"time_slice got a calendar bound for {which} ({bound!r}), but "
+                f"{problem} Pass seconds instead.")
+        stamp = pd.Timestamp(bound)
+        if stamp.tz is not None:
+            stamp = stamp.tz_convert(None)
+        return (stamp - _origin_timestamp(self.ts_offset)).value / 1e9
+
+    def time_slice(self, start_time=None, end_time=None,
+                   inplace: bool = False) -> "baseTs":
+        """
+        Slice the time series between start and end times, inclusive.
+
         Args:
-            start_time: Start time (if None, uses beginning)
-            end_time: End time (if None, uses end)
+            start_time: Start bound: seconds on the index, or - on a series
+                with a timestamp origin - a date string or datetime-like,
+                converted through the origin. None means the beginning.
+            end_time: End bound, same rule. None means the end.
             inplace: If True, modifies existing object. Otherwise returns new object.
-            
+
         Returns:
             Time-sliced baseTs object
+
+        Raises:
+            TypeError: a date string or datetime-like bound on a series with
+                no timestamp origin (one built from seconds and never given
+                one). A `start_time` after `end_time` is not rejected; it
+                returns an empty series.
         """
-        # Use pandas time-based indexing directly
-        if start_time is None:
-            start_time = self.index[0]
-        if end_time is None:
-            end_time = self.index[-1]
-        
+        start_secs = self._bound_in_seconds(start_time, "start_time")
+        end_secs = self._bound_in_seconds(end_time, "end_time")
+        if start_secs is None:
+            start_secs = self.index[0]
+        if end_secs is None:
+            end_secs = self.index[-1]
+
         # Use pandas boolean indexing for time range
-        mask = (self.index >= start_time) & (self.index <= end_time)
+        mask = (self.index >= start_secs) & (self.index <= end_secs)
         sliced_series = self[mask]
         new_data = sliced_series.values
         new_times = sliced_series.index.values
@@ -2808,14 +2909,23 @@ class baseTs(TimeSeriesData):
             
     def set_timestamp_offset(self, ts_offset: float):
         """
-        Set or updates the timestamp offset.
+        Declare the origin the index's seconds are counted from.
+
+        `ts_offset` is the origin in epoch seconds; `datetimes` then reads
+        the index as origin + seconds. The index itself does not move. It
+        used to: this method both shifted the index by the offset and
+        recorded it, which under "seconds since the origin" counted the
+        offset twice (#100). A second call replaces the origin.
+
+        Args:
+            ts_offset: The origin, in seconds since the Unix epoch
         """
         self.ts_offset = ts_offset
-        self.times = self.times + ts_offset
         self._update_history_and_process(
             f"Set timestamp offset to {ts_offset}", "_tso" + str(ts_offset)
         )
         self.has_timestamp_offset = True
+        self._origin_index = self.index          # the origin describes this index
 
     def to_dataframe(self, set_index: bool = False) -> pd.DataFrame:
         """

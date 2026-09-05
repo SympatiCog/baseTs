@@ -6,11 +6,16 @@ Created for baseTs pandas migration.
 """
 
 from __future__ import annotations
-from typing import Optional, Union, Any, Dict, List
+import datetime
+from typing import Optional, Union, Any, Dict, List, Tuple
 import copy as copy_module
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+# pandas' own index normaliser, so _set_axis sees exactly the Index pandas
+# would build (a list of tuples stays an object Index there, where
+# pd.Index() would make a MultiIndex). Present on pandas 2.2.3 and 3.0.1.
+from pandas.core.indexes.base import ensure_index
 
 from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
@@ -694,6 +699,294 @@ def normalise_label(value: Any) -> str:
     return str(value)
 
 
+#: Nanoseconds per second, as the int64 the stamp arithmetic below works in.
+_NS_PER_SECOND = 1_000_000_000
+
+
+def _holds_calendar_datetimes(index: pd.Index) -> bool:
+    """True if every element of an object index is a calendar datetime.
+
+    The rule is by element type, not by parsing: `datetime.date` and its
+    subclasses (`datetime`, `Timestamp`, and NaT, which is typed missing)
+    and `numpy.datetime64` count; an untyped missing value (None, NaN) is
+    allowed among them but does not make an index a stamped one on its
+    own; a string is not a datetime however it reads, so a text index
+    stays text. So `[NaT]` is a stamped index and is refused for its NaT
+    first stamp as a DatetimeIndex of NaT is (review round 2, agy), while
+    `[None, None]` is left as it is.
+    """
+    seen_stamp = False
+    for element in index:
+        if isinstance(element, (datetime.date, np.datetime64)):
+            seen_stamp = True
+        elif element is None or (isinstance(element, float) and np.isnan(element)):
+            continue
+        else:
+            return False
+    return seen_stamp
+
+
+def _stamp_declared_origin(obj) -> None:
+    """Stamp a just-declared origin with the index it was declared against.
+
+    Only where that index is known: the constructor, where an explicit
+    `ts_offset=` describes the index the same call built. A pair that
+    arrives without a stamp from anywhere else - a pickle written before
+    the stamp existed, a duck-typed source - describes an index nobody
+    recorded, and `_origin_problem` refuses to read it rather than
+    blessing whatever index the object happens to carry now. An earlier
+    cut stamped those too, and a genuinely corrupted legacy object came
+    back certified: its positions were stamped as the seconds they were
+    read as, destroying the evidence that anything was wrong (review
+    round 3, both panelists). Nothing is lost by refusing - no version
+    that could produce such a pickle had a calendar accessor to break.
+    """
+    if obj.__dict__.get('has_timestamp_offset') and obj.__dict__.get('_origin_index') is None:
+        object.__setattr__(obj, '_origin_index', obj.index)
+
+
+def _drawn_from(index: pd.Index, stamp: pd.Index) -> bool:
+    """True if every label of `index` is one of `stamp`'s seconds.
+
+    `Index.isin` raises rather than answering when the two cannot be
+    compared - a MultiIndex from a two-key groupby against float seconds
+    gave "Buffer dtype mismatch" (round 3, the EXAMPLES.md harness). An
+    index that cannot even be compared with the seconds is not drawn from
+    them.
+    """
+    if stamp.equals(index):
+        return True
+    try:
+        return bool(index.isin(stamp).all())
+    except (TypeError, ValueError):
+        return False
+
+
+def _tighten_origin_stamp(obj) -> None:
+    """Narrow the stamp to the index the object holds, when it is drawn
+    from the stamped seconds.
+
+    The stamp is only ever narrowed here, never widened, so nothing this
+    accepts would have been refused before it; what it does is shrink the
+    room for coincidence. With the stamp left at the parent's seconds, a
+    1 Hz series sliced to seconds 3..5 and then `reset_index`ed carried
+    positions 0..2 - members of the parent's 0..9 - and read them as the
+    first three seconds (review round 3, quick-review). Narrowed at the
+    slice to {3, 4, 5}, the positions are not among them and are refused.
+
+    There is deliberately no way to widen it with a second operand's
+    seconds: pandas hands `__finalize__` the left operand only, so two
+    series of one origin on interleaved grids align onto a union this
+    cannot vouch for and the read refuses it (review round 3; nothing at
+    that call site distinguishes the union from the foreign-grid
+    `reindex` round 2 exists to refuse, so it fails safe and the message
+    names the re-declaration). A parameter for it was written and then
+    removed as dead - no caller could supply one.
+
+    What values cannot tell apart remains: an index that is exactly the
+    positions 0..n-1 of a series whose own seconds are those same values.
+    That reading is right - positions and seconds coincide - unless the
+    series was reordered first, the one case stated in the docs as
+    unreachable by any check on the index alone.
+    """
+    if not obj.__dict__.get('has_timestamp_offset'):
+        return
+    stamp = obj.__dict__.get('_origin_index')
+    index = obj.index
+    if stamp is None or stamp.equals(index):
+        return
+    if _drawn_from(index, stamp):
+        object.__setattr__(obj, '_origin_index', index)
+
+
+def _origin_problem(obj) -> Optional[str]:
+    """Why the recorded origin cannot be read against the current index.
+
+    None when it can. The pair `ts_offset`/`has_timestamp_offset` says an
+    origin was declared; `_origin_index` is the index it was declared
+    against, and the index the object holds now must be drawn from those
+    seconds - equal to them, or a subset (a slice, a mask, a sort, a
+    dropna, an alignment onto the same grid). A pandas operation that
+    replaces the index with something that is not those seconds -
+    `reset_index` (positions), `groupby` (keys), `value_counts` (the
+    values), `reindex` onto a new grid, arithmetic aligned onto a
+    different grid - leaves the pair in place with an index it no longer
+    describes, and on `main` at 0cbffcb-era code the accessor read
+    positions 0..3 of an hourly series as the first four *seconds* after
+    midnight (review round 2, both panelists). The package's own grid
+    changers (`resample`, `interpto_hz`, the `data` setter) re-stamp the
+    grid they build, because they build it in this series' time base.
+
+    Same mechanism as the positional slots (#20): the value carries the
+    index it describes, and the read checks. The subset test is the
+    difference - a subset of seconds is still seconds from the origin,
+    where a subset of a fit is not the fit.
+    """
+    if not obj.__dict__.get('has_timestamp_offset'):
+        return ("this series has no timestamp origin: its index is seconds "
+                "with no calendar attached. Build it from a DatetimeIndex, "
+                "or declare the origin with set_timestamp_offset(epoch_seconds).")
+    stamp = obj.__dict__.get('_origin_index')
+    if stamp is None:
+        return ("this series carries a timestamp origin that was declared "
+                "without recording the index it describes - it was restored "
+                "from a pickle written before origins carried one, or copied "
+                "from an object that could not say. Its `ts_offset` is not "
+                "the value to reuse: on such an object the offset had been "
+                "added to the times as well, so reading a calendar from it "
+                "would count it twice. Declare the origin the index it holds "
+                "now is counted from - the epoch second of its first sample - "
+                "with set_timestamp_offset(...).")
+    if _drawn_from(obj.index, stamp):
+        return None
+    return ("the recorded timestamp origin no longer describes this index: "
+            f"it was declared against {len(stamp)} seconds, and the index now "
+            "holds values that are not among them - a pandas operation such as "
+            "reset_index or groupby has replaced the seconds with positions or "
+            "keys, or the series was aligned onto another grid. Take the "
+            "calendar from `datetimes` before such an operation. Only if the "
+            "index really is seconds in this series' time base (a grid you "
+            "built) declare the origin again with "
+            "set_timestamp_offset(ts.ts_offset); on positions or keys that "
+            "would read them as seconds.")
+
+
+def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[float]]]:
+    """Turn a stamped index into the seconds the package reads (#100).
+
+    The package keeps one time base - a float index of seconds - and this is
+    where a calendar index joins it. A `DatetimeIndex` becomes seconds since
+    its *first* stamp (not its earliest: the numeric path keeps an unsorted
+    index as given, and so does this one), and that stamp is the origin,
+    returned as epoch seconds. A `TimedeltaIndex` is already durations and
+    becomes its own seconds, with no origin. Anything else returns None and
+    is left alone, which is what keeps the numeric path untouched.
+
+    A timezone-aware index is an instant, and epoch seconds identify an
+    instant exactly, so it converts like a naive one read as UTC; the zone
+    name is kept nowhere. `datetimes` gives naive UTC back.
+
+    An empty index has no first stamp and therefore no origin. A NaT
+    *first* stamp is refused: every second would be NaN and the origin NaN
+    with it, a pair nothing downstream can read. An interior NaT becomes a
+    NaN second, which is what the numeric index admits already.
+
+    An object index whose elements are all calendar datetimes - `Timestamp`
+    or `datetime` objects pandas could not unify into one DatetimeIndex
+    because they carry different zones, or plain `datetime.date` objects -
+    is a stamped index too, and goes through `pd.to_datetime(utc=True)`,
+    which reads each element as the instant it names (a naive one as UTC,
+    a date as its midnight) and lands in the DatetimeIndex arm. Left alone,
+    such an index sat as raw objects in a float slot, `times` returned
+    Timestamps and nothing raised (review round 1, both panelists).
+
+    Returns:
+        `(seconds, origin)` - a float64 Index and the origin in epoch
+        seconds, None when the index carries no origin - or None when the
+        index is not a stamped one.
+    """
+    if index.dtype == object and _holds_calendar_datetimes(index):
+        index = pd.to_datetime(index, utc=True)
+    if isinstance(index, pd.DatetimeIndex):
+        if len(index) == 0:
+            return pd.Index(np.array([], dtype=float), name=index.name), None
+        first = index[0]
+        if pd.isna(first):
+            raise ValueError(
+                "cannot convert this DatetimeIndex to seconds: its first "
+                "stamp is NaT, and the first stamp is the origin the seconds "
+                "are counted from. Drop or fill it first.")
+        seconds = np.asarray((index - first).total_seconds(), dtype=float)
+        return pd.Index(seconds, name=index.name), first.value / _NS_PER_SECOND
+    if isinstance(index, pd.TimedeltaIndex):
+        seconds = np.asarray(index.total_seconds(), dtype=float)
+        return pd.Index(seconds, name=index.name), None
+    return None
+
+
+#: Below this many seconds a float64 second still resolves nanoseconds:
+#: its ulp is under 1e-9, so the stored value is within half a nanosecond
+#: of the true one and rounds back to it. At 2**23 s the ulp becomes
+#: 1.86e-9 and microseconds are what the float can vouch for. 2**23 s is
+#: 97 days. (A first cut said 2**22, where the ulp merely passes half a
+#: nanosecond - one octave early; the glm review round caught the
+#: arithmetic and a 1000-consecutive-nanosecond sweep per octave
+#: confirmed it: 0 mismatches at 97 days, 463 at 97.1.)
+_NANOSECOND_EXACT_BELOW = 2.0 ** 23
+
+#: Seconds whose nanosecond count no longer fits int64: pandas stamps are
+#: int64 nanoseconds, so nothing this far from the origin is a stamp.
+_STAMP_RANGE_SECONDS = 2.0 ** 63 / 1_000_000_000
+
+
+def _origin_timestamp(ts_offset: float) -> pd.Timestamp:
+    """The origin `ts_offset` names, rebuilt at microsecond resolution.
+
+    A float64 epoch in the 2020s resolves to about 2.4e-7 s, so the
+    nanosecond digits of a finer origin were never in the float; rounding
+    to the microsecond recovers exactly any origin that lies on one, which
+    is every `date_range` start and every stamp at microsecond resolution
+    or coarser. A nanosecond origin comes back within half a microsecond.
+    The rounding is sound while the float's ulp is under 1e-6, i.e. for
+    any origin before 2**33 s - the year 2242.
+    """
+    return pd.Timestamp(int(round(float(ts_offset) * 1_000_000)), unit='us')
+
+
+def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
+    """origin + seconds, as a DatetimeIndex, at the precision the float holds.
+
+    A float64 second resolves nanoseconds only below 2**23 s from the
+    origin (97 days; its ulp passes 1e-9 there) and microseconds below
+    2**33 s (272 years). Each second is therefore rebuilt at the finer of
+    those its magnitude allows: split into whole and fraction (the whole
+    part is an exact integer; the fraction is below 1 and its product with
+    1e9 is within 1.2e-7 ns of exact, which the rounding absorbs -
+    `round(seconds * 1e9)` on the whole value loses nanoseconds past
+    2**53), then the nanoseconds are rounded to the microsecond beyond
+    2**23 s. The rule, measured over a census in
+    test_datetime_index_converts_at_the_constructor.py: every stamp at
+    microsecond resolution or coarser round-trips exactly at any span, and
+    a nanosecond stamp does so within 97 days of the origin and comes
+    back rounded to the microsecond beyond that. (Rounding always to the
+    nanosecond, an earlier cut, put a microsecond stamp 200 days out 2 ns
+    off; the digits were not in the float.)
+
+    A second more than 2**63 ns (292 years) from the origin is refused
+    with OverflowError rather than wrapped: the int64 product wrapped
+    silently and 9.5e9 s came back as a date in 1686. pandas raises the
+    same OverflowError itself when origin + seconds leaves its 1677-2262
+    stamp range, so both limits surface the same way.
+
+    The split is `trunc`, not `floor`: for a negative second `x - trunc(x)`
+    is exact (Sterbenz - the two are within a factor of two, or trunc is
+    zero), while `x - floor(x)` subtracts a value up to twice x and can
+    round. Measured: a second of -1.0000000005, whose exact nanosecond
+    count is -1000000000.50000004, came back -1000000001 through trunc and
+    -1000000000 through floor. Only a numeric index can hold such a second
+    (a stamp is already whole nanoseconds), and the pin uses one.
+
+    A NaN or infinite second becomes NaT, as the datetime64 NaT sentinel
+    (int64 min) in the view below.
+    """
+    secs = np.asarray(seconds, dtype=float)
+    ns = np.full(secs.shape, np.iinfo(np.int64).min, dtype=np.int64)
+    finite = np.isfinite(secs)
+    kept = secs[finite]
+    if np.any(np.abs(kept) >= _STAMP_RANGE_SECONDS):
+        worst = kept[np.argmax(np.abs(kept))]
+        raise OverflowError(
+            f"cannot place a second {worst!r} from the origin on the calendar: "
+            "pandas stamps are int64 nanoseconds, which span 292 years either "
+            "side of the origin.")
+    whole = np.trunc(kept)
+    frac_ns = np.round((kept - whole) * _NS_PER_SECOND)
+    beyond = np.abs(kept) >= _NANOSECOND_EXACT_BELOW
+    frac_ns[beyond] = np.round(frac_ns[beyond] / 1000.0) * 1000.0
+    ns[finite] = whole.astype(np.int64) * _NS_PER_SECOND + frac_ns.astype(np.int64)
+    return origin + pd.TimedeltaIndex(ns.view('timedelta64[ns]'))
+
+
 def _freq_token(index: Any) -> tuple:
     """Fingerprint an index for the purpose of sampling-rate derivation.
 
@@ -818,7 +1111,7 @@ class TimeSeriesData(pd.Series):
     _metadata = pd.Series._metadata + [
         '_freq_declaration', 'signal_name', 'history', 'is_filtered',
         'is_interpolated', 'is_uniform_grid', 'ts_offset',
-        'has_timestamp_offset', '_outlier_indices', '_lowess_fit',
+        'has_timestamp_offset', '_origin_index', '_outlier_indices', '_lowess_fit',
         'last_process', 'is_outlier_filtered', 'outlier_filter',
     ]
 
@@ -887,15 +1180,28 @@ class TimeSeriesData(pd.Series):
         "Positions of the samples filter_outliers rejected.")
 
     def __init__(self, data=None, index=None, freq: Optional[float] = None,
-                 signal_name: Union[str, _UnsetType] = _UNSET, **kwargs):
+                 signal_name: Union[str, _UnsetType] = _UNSET,
+                 ts_offset: Union[float, _UnsetType] = _UNSET,
+                 has_timestamp_offset: Union[bool, _UnsetType] = _UNSET,
+                 **kwargs):
         """
         Initialize TimeSeriesData object.
-        
+
+        A `DatetimeIndex` or `TimedeltaIndex` - however spelled: an Index, a
+        datetime64 array, a list of Timestamps, or the index of a Series
+        passed as `data` - is converted here to the float seconds every
+        method reads (#100). See _seconds_since_origin for the rule.
+
         Args:
             data: Array-like data or baseTs object
             index: Time index values (if data is array-like)
             freq: Sampling frequency in Hz
             signal_name: Name of the signal
+            ts_offset: The origin the index's seconds are counted from, in
+                epoch seconds. A DatetimeIndex carries its own origin (its
+                first stamp) and refuses a second one.
+            has_timestamp_offset: Whether an origin applies. False alongside
+                a DatetimeIndex keeps the seconds and drops the origin.
             **kwargs: Additional Series initialization parameters
         """
         # Handle different input formats
@@ -936,7 +1242,54 @@ class TimeSeriesData(pd.Series):
             # Standard pandas Series initialization
             super().__init__(data, index=index, **kwargs)
             self._initialize_default_metadata()
-            
+
+        # The index was converted on its way in, by _set_axis - the one door
+        # pandas routes every index through, including the ones above. What
+        # is left to do here is give the origin it found back to the pair:
+        # _initialize_default_metadata and _copy_metadata_from_basetseries
+        # both just wrote the pair (defaults, or the source's) over the one
+        # _set_axis had set, and an index carries its origin, so the index
+        # wins. Before the rate declaration below, whose token reads the
+        # index as installed.
+        origin_from_index = self._restore_origin_from_index()
+
+        # The offset pair is owned here, where the index is built, so that a
+        # DatetimeIndex and an explicit `ts_offset` meet in one place. The
+        # order - flag first, then the offset, then the one-way coherence
+        # rule - is the order baseTs.__init__ applied before the pair moved
+        # here, and the outcomes for every combination of the two keywords
+        # are pinned on both the array and the conversion path.
+        if not isinstance(has_timestamp_offset, _UnsetType):
+            self.has_timestamp_offset = has_timestamp_offset
+        if not isinstance(ts_offset, _UnsetType):
+            if origin_from_index:
+                raise ValueError(
+                    "ts_offset was given alongside a DatetimeIndex, which "
+                    "carries its own origin (its first stamp). One origin "
+                    "or the other: pass seconds or a TimedeltaIndex with "
+                    "ts_offset, or the DatetimeIndex alone.")
+            self.ts_offset = ts_offset
+            self.has_timestamp_offset = True
+        elif (not isinstance(has_timestamp_offset, _UnsetType)
+              and not has_timestamp_offset):
+            # Explicitly cleared, with no offset named. Truthiness, not
+            # `is False`: np.False_ is what `arr.any()` and any comparison
+            # result give, and it is not the False singleton, so an identity
+            # test let through exactly the pair this exists to prevent.
+            #
+            # One direction only. The reverse - asserting the flag without an
+            # offset - is a caller's own assertion, and rejecting it would
+            # break a call that works today.
+            #
+            # "no offset applied, offset 1.5" is a state nothing downstream
+            # expects, and __finalize__ copies the pair onward, so an
+            # incoherent one would ride into every derived object.
+            self.ts_offset = 0
+            self._origin_index = None
+        # A pair declared here by keyword describes the index as built;
+        # one converted from the index was stamped by _set_axis already.
+        _stamp_declared_origin(self)
+
         # Declare the rate only when one was supplied. With no declaration the
         # `freq` property derives from the index on read, so there is nothing
         # to store - the `else` branch that used to derive into an attribute
@@ -963,6 +1316,123 @@ class TimeSeriesData(pd.Series):
         if not hasattr(self, 'history') or self.history is None:
             self.history = [f"Created TimeSeriesData with {len(self)} samples"]
 
+    def _set_axis(self, axis, labels, *args, **kwargs) -> None:
+        """Install an index, converting a stamped one to seconds (#100).
+
+        This is the one door. pandas routes every index through here -
+        `Series.__init__` on every spelling of the constructor, the `index`
+        property setter, `set_axis`, the constructor `reindex` calls, the
+        re-initialisation `_adopt_data_inplace` performs - measured on
+        pandas 2.2.3 and 3.0.1, with the same signature on both (`*args,
+        **kwargs` ride through in case a later pandas adds one). The first
+        cut converted in `__init__` and the `times` setter instead, and
+        review round 1 (both panelists) found `ts.index = dates` and
+        `set_axis(dates)` leaving a raw DatetimeIndex on the object with a
+        stale offset pair, so `datetimes` refused it as having no origin.
+
+        A DatetimeIndex becomes seconds and its first stamp is recorded as
+        the origin; a TimedeltaIndex becomes seconds and the pair is left
+        alone (durations say nothing about an origin); anything else is
+        installed as given. `_origin_from_index` always describes the index
+        currently installed: the origin it brought, or None. It is not in
+        `_metadata`, so it is neither propagated nor pickled - it is a fact
+        about this object's own index, and every copier consults it to
+        apply the one rule: an index carries its origin, and a copied pair
+        does not overwrite it. See _restore_origin_from_index.
+
+        The pair is set here as well, directly, for the post-construction
+        doors. During construction the metadata initialisers overwrite it a
+        moment later and `__init__` restores it from `_origin_from_index`.
+        """
+        index = labels if isinstance(labels, pd.Index) else ensure_index(labels)
+        converted = _seconds_since_origin(index)
+        origin = None
+        if converted is not None:
+            index, origin = converted
+        super()._set_axis(axis, index, *args, **kwargs)
+        object.__setattr__(self, '_origin_from_index', origin)
+        if origin is not None:
+            object.__setattr__(self, 'ts_offset', origin)
+            object.__setattr__(self, 'has_timestamp_offset', True)
+            object.__setattr__(self, '_origin_index', index)
+        # A numeric index installed here is NOT re-stamped as seconds in
+        # this series' base, deliberately: pandas' own doors come through
+        # here too, and `reset_index(drop=True, inplace=True)` installs
+        # positions 0..n-1 through this very call. Re-stamping made that
+        # read as seconds after the origin - the round-2 finding, one
+        # level up. Only the package's doors, which know they are handing
+        # over seconds in the base (`times`, `data`, the resamplers),
+        # re-stamp; a numeric index that arrives any other way must still
+        # be drawn from the seconds the origin describes, or `datetimes`
+        # refuses it. Nor is the stamp narrowed here, though an earlier
+        # cut did: mutation testing showed the only index this door ever
+        # narrowed against was a same-length permutation of the seconds
+        # already stamped, which is the same set - and both the equality
+        # and the membership test are blind to order, so the narrowing
+        # changed no answer. Every case that does narrow reaches
+        # __finalize__ or _update_inplace, which do it (round 3).
+
+    def _update_inplace(self, result, *args, **kwargs) -> None:
+        """pandas' in-place door: swap the manager, then narrow the stamp.
+
+        `dropna(inplace=True)`, `sort_values(inplace=True)` and their
+        kind replace `_mgr` here without `__finalize__` or `_set_axis`
+        (#20 met the same door), so the survivors' index arrived with the
+        stamp still at the full series and a later in-place `reset_index`
+        had the whole range to coincide with (round 3). `*args, **kwargs`
+        ride through because the signature differs between pandas majors
+        (`verify_is_copy` on 2.x).
+        """
+        super()._update_inplace(result, *args, **kwargs)
+        _tighten_origin_stamp(self)
+
+    def _restore_origin_from_index(self) -> bool:
+        """Give the pair the origin the installed index brought, if any.
+
+        The rule every copier applies: an index carries its origin. A
+        derivation that keeps its parent's seconds inherits the parent's
+        pair (the index brought no origin, so the copy stands); one whose
+        index arrived stamped - `reindex(dates)`, `_create_new_with_data(x,
+        dates)`, `TimeSeriesData(duck_with_dates)` - keeps the origin those
+        stamps carry, and the parent's or source's pair, copied a moment
+        earlier, is put back. Read from `__dict__`, not getattr: an object
+        pandas built without `__init__` has no such slot and must read as
+        "no origin", not recurse.
+
+        Returns:
+            True when the index brought an origin.
+        """
+        origin = self.__dict__.get('_origin_from_index')
+        if origin is None:
+            return False
+        object.__setattr__(self, 'ts_offset', origin)
+        object.__setattr__(self, 'has_timestamp_offset', True)
+        object.__setattr__(self, '_origin_index', self.index)
+        return True
+
+    @property
+    def datetimes(self) -> pd.DatetimeIndex:
+        """The index as calendar stamps: the origin plus each second.
+
+        The index itself is seconds (#100), so this is the one way back to
+        the stamps a series was built from, and what pandas' calendar
+        conveniences read - `ts.groupby(ts.datetimes.month)`,
+        `pd.Series(ts.values, index=ts.datetimes).rolling('1h')`. The stamps
+        are naive UTC; an aware index was recorded as its UTC instant.
+
+        Exact for any series built from stamps at microsecond resolution or
+        coarser - see _origin_timestamp and _stamps_from_seconds for the two
+        limits.
+
+        Raises:
+            ValueError: when the series has no origin - built from seconds or
+                durations and never given one.
+        """
+        problem = _origin_problem(self)
+        if problem is not None:
+            raise ValueError(problem)
+        return _stamps_from_seconds(_origin_timestamp(self.ts_offset), self.index)
+
     def _initialize_default_metadata(self):
         """Initialize default metadata values."""
         self.is_filtered = False
@@ -970,6 +1440,7 @@ class TimeSeriesData(pd.Series):
         self.is_uniform_grid = False
         self.ts_offset = 0
         self.has_timestamp_offset = False
+        self._origin_index = None
         self._outlier_indices = None
         self._lowess_fit = None
         self.last_process = ""
@@ -1040,8 +1511,10 @@ class TimeSeriesData(pd.Series):
         a raw TypeError escaping from here would name the subtraction
         instead, some distance from the mistake.
 
-        The TypeError arm specifically covers a DatetimeIndex, where
-        index[-1] - index[0] is a Timedelta and float() refuses it.
+        The TypeError arm covers a non-numeric index - strings, say. A
+        DatetimeIndex used to be the case that reached it (its span is a
+        Timedelta, which float() refuses); since #100 the constructor
+        converts one to seconds before anything derives from it.
 
         Returns:
             Samples per unit time, or NaN when the index cannot support a rate
@@ -1156,6 +1629,29 @@ class TimeSeriesData(pd.Series):
                     for name in self._metadata:
                         if hasattr(source, name):
                             object.__setattr__(self, name, getattr(source, name))
+                elif nonempty and all(getattr(obj, 'has_timestamp_offset', False)
+                                      and getattr(obj, 'ts_offset', None) == nonempty[0].ts_offset
+                                      and _origin_problem(obj) is None
+                                      for obj in nonempty):
+                    # A genuine concat of pieces that share one origin is
+                    # still seconds from that origin (review round 2,
+                    # codex): the two halves of a stamped series glued back
+                    # together came out with no origin at all. Pieces with
+                    # different origins get none - their seconds do not
+                    # share a base - and so do pieces one of which is
+                    # itself stale, which the offsets alone could not see:
+                    # concatenating a reset-indexed piece re-stamped its
+                    # positions and read them as seconds (round 3).
+                    object.__setattr__(self, 'ts_offset', nonempty[0].ts_offset)
+                    object.__setattr__(self, 'has_timestamp_offset', True)
+                    object.__setattr__(self, '_origin_index', self.index)
+        # The pair was just copied from `other`; if this object's own index
+        # arrived stamped (reindex(dates) builds through the constructor
+        # and lands here), that index's origin is the one that holds (#100,
+        # review round 1). Otherwise, if this index is drawn from the
+        # stamped seconds, the stamp narrows to it (round 3).
+        if not self._restore_origin_from_index():
+            _tighten_origin_stamp(self)
         return _detach_shared_metadata(self)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:
