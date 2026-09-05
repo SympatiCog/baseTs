@@ -242,6 +242,16 @@ class TestTheTwoStepRouteStillWorks:
             ts.diff_ts()
         assert ts.data.tolist() == before
 
+    def test_time_slice_inplace_shrinks_a_one_sample_series_to_empty(self):
+        """The shrink-to-empty leg of the route, which the diff_ts pin used
+        to carry (#89 review): time_slice(inplace=True) assigns data then
+        times, and a window holding no sample takes it to zero length."""
+        ts = one_sample()
+        out = ts.time_slice(start_time=99.0, inplace=True)
+        assert out is ts
+        assert len(ts) == 0
+        assert ts.times.tolist() == []
+
     def test_remove_outliers_on_one_sample(self):
         out = one_sample().remove_outliers()
         assert len(out) == 1

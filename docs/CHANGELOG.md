@@ -870,8 +870,10 @@ job, as before.
   both on the object it builds. The helper returns arrays-in-a-baseTs and
   the wrapper records the step, as before.
 - `utils.diff(ts, zeropad=True)` on a series of fewer than two samples
-  raises `IndexError` from `d[0]` on an empty difference, as it did before;
-  `zeropad=False` returns an empty series. Pre-existing.
+  raised `IndexError` from `d[0]` on an empty difference, as it did before,
+  and `zeropad=False` returned an empty series. Pre-existing; filed as #89
+  and fixed there (both branches now raise `ValidationError`, the entry
+  above).
 - `interpolate_missing()` does not set `is_interpolated` on either branch;
   it did not on the branch that worked before, and the inplace branch now
   matches it. Whether it should is a separate question.
