@@ -128,9 +128,10 @@ what #96 asks for.
 
 `compute_fft_power`'s constant-signal branch writes `power[0] = mean**2`
 while the FFT branch's DC bin is `n * mean**2` under its `|fft|**2 / n`
-scaling, so a constant series and one that differs from constant by one
-ulp report DC powers `n` apart with `scale_power=False` (9.0 vs 5400 for
-600 samples of 3.0). Pre-existing on `main`, invisible under the default
+scaling, so a constant series and one nudged just past the `1e-15` std
+threshold (every other sample of 3.0 raised by 1e-13, a few dozen ulps)
+report DC powers `n` apart with `scale_power=False` (9.0 vs 5400 for 600
+samples of 3.0). Pre-existing on `main`, invisible under the default
 `scale_power=True`; surfaced while writing this fix's tests.
 
 ## [Unreleased] — the spectral family and `gauss_filter` compute with the array the guard returns (#93)
@@ -201,15 +202,15 @@ floats, and always did.
 
 ### Not folded in
 
-`compute_fft_power(demean=True)` on an **integer or bool** series fails in
-the in-place demeaning (`Cannot cast ufunc 'subtract' output from
-dtype('float64') to dtype('int64')`), on `main` as here. Surfaced while
-verifying that the guard returns numeric arrays untouched; filed as #96.
-Its sibling, found by review round two: `compute_fft_power`'s own
-constancy check (`np.std(data) < 1e-15`) is taken in the input's native
-precision, so the float32 series above reports a DC power 600x the float64
-series' - on `main` as here, and the one `astype(float)` that would settle
-it is the change #96 asks for. Noted on #96 rather than folded in.
+`compute_fft_power(demean=True)` on an **integer or bool** series failed
+in the in-place demeaning (`Cannot cast ufunc 'subtract' output from
+dtype('float64') to dtype('int64')`), on `main` as it was here. Surfaced
+while verifying that the guard returns numeric arrays untouched; filed as
+#96 and fixed there (the entry above). Its sibling, found by review round
+two: `compute_fft_power`'s own constancy check (`np.std(data) < 1e-15`)
+was taken in the input's native precision, so the float32 series above
+reported a DC power 600x the float64 series' - and the one `astype(float)`
+that settles it is #96's change. Noted on #96 rather than folded in.
 
 `gauss_filter` on a **float16** series still dies in scipy (`array type
 dtype('float16') not supported`): the coercer passes every numeric dtype
