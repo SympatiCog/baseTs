@@ -21,7 +21,7 @@
 
 The main class for time series data analysis built on pandas Series foundation.
 
-```python
+```python no-run
 class baseTs(TimeSeriesData):
     """
     Time series data container with signal processing capabilities.
@@ -80,13 +80,15 @@ ts_named = baseTs(data=data, times=times,
                   signal_name="Test Signal", freq=100.0)
 ```
 
-### `from_df(df, time_col='time', data_col='value', **kwargs)`
+### `from_df(df, time_col='time', data_col='value', signal_name=None, freq=None, ts_offset=None)`
 
-Create baseTs object from pandas DataFrame.
+Create a baseTs object from a pandas DataFrame. A module-level function
+(`from baseTs import from_df`), not a classmethod.
 
 **Parameters:**
 - `df` (pd.DataFrame): Input DataFrame
-- `time_col` (str): Column name for time values. Default: 'time'
+- `time_col` (str): Column name for time values, which must be numeric
+  (seconds); a datetime column is rejected with `ValueError`. Default: 'time'
 - `data_col` (str): Column name for data values. Default: 'value'
 - `signal_name` (str, optional): Signal name
 - `freq` (float, optional): Sampling frequency. Passed through to the
@@ -99,11 +101,13 @@ Create baseTs object from pandas DataFrame.
 
 **Example:**
 ```python
+from baseTs import from_df
+
 df = pd.DataFrame({
-    'timestamp': pd.date_range('2023-01-01', periods=100, freq='H'),
+    'seconds': np.arange(100) / 10.0,
     'sensor_value': np.random.randn(100)
 })
-ts = baseTs.from_df(df, time_col='timestamp', data_col='sensor_value')
+ts_from_frame = from_df(df, time_col='seconds', data_col='sensor_value', freq=10.0)
 ```
 
 ---
@@ -113,7 +117,7 @@ ts = baseTs.from_df(df, time_col='timestamp', data_col='sensor_value')
 ### Core Properties
 
 #### `data`
-```python
+```python no-run
 @property
 def data(self) -> np.ndarray:
     """Access the underlying data array."""
@@ -132,14 +136,14 @@ To change both values and timestamps on a series with a span, assign
 mismatch, and on a series without a span the only route is a new object.
 
 #### `times`
-```python
+```python no-run
 @property  
 def times(self) -> np.ndarray:
     """Access the underlying time array."""
 ```
 
 #### `len()`
-```python
+```python no-run
 def len(self) -> int:
     """Get the length of the time series."""
 ```
@@ -147,7 +151,7 @@ def len(self) -> int:
 ### Metadata Properties
 
 #### `signal_name`
-```python
+```python no-run
 @property
 def signal_name(self) -> Optional[str]:
     """Signal name identifier."""
@@ -167,7 +171,7 @@ label to `""`. Every plot title, axis label and legend entry is built from the
 two, so there is no value they can hold that a plot cannot render.
 
 #### `freq`
-```python
+```python no-run
 @property
 def freq(self) -> float:
     """Sampling rate in Hz."""
@@ -182,21 +186,21 @@ support a rate — fewer than two samples, a zero or negative span, or a
 non-numeric index such as a `DatetimeIndex`.
 
 #### `is_filtered`
-```python
+```python no-run
 @property
 def is_filtered(self) -> bool:
     """Whether the signal has been filtered."""
 ```
 
 #### `history`
-```python
+```python no-run
 @property
 def history(self) -> List[str]:
     """Processing history list."""
 ```
 
 #### `last_process`
-```python
+```python no-run
 @property
 def last_process(self) -> Optional[str]:
     """Most recent processing operation."""
@@ -217,7 +221,7 @@ print(f"History: {filtered.history}")
 ## Core Methods
 
 ### `copy()`
-```python
+```python no-run
 def copy(self) -> 'baseTs':
     """Create a deep copy of the baseTs object."""
 ```
@@ -278,7 +282,7 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   `bandpass_filter`'s `order` argument is accepted and unused, as its own entry says. Parameter
   and data rejections raise `InvalidParameterError`, which is also a `ValueError`.
 
-### `lowpass_filter(cutoff, order=4)`
+### `lowpass_filter(cutoff, order=5, inplace=False)`
 
 Apply low-pass Butterworth filter. Alias for `lowpass_at()`.
 
@@ -302,7 +306,7 @@ filtered = ts.lowpass_filter(cutoff=0.3)
 heavily_filtered = ts.lowpass_filter(cutoff=0.1, order=6)
 ```
 
-### `highpass_filter(cutoff, order=4)`
+### `highpass_filter(cutoff, order=4, inplace=False)`
 
 Apply high-pass Butterworth filter. Alias for `highpass_at()`.
 
@@ -319,7 +323,7 @@ Apply high-pass Butterworth filter. Alias for `highpass_at()`.
 detrended = ts.highpass_filter(cutoff=0.05)
 ```
 
-### `bandpass_filter(low_cutoff, high_cutoff, order=4)`
+### `bandpass_filter(low_cutoff, high_cutoff, order=4, inplace=False)`
 
 Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 
@@ -364,7 +368,7 @@ banded = ts.butterpass_at(hp_freq=1.0, lp_freq=10.0)
 **Note:** Prior to the #27 fix this method raised `TypeError` on every call, so
 it has no legacy behavior to preserve. History records the `bandpass_at` entry.
 
-### `notch_filter(freq, order=4)`
+### `notch_filter(freq, order=4, inplace=False)`
 
 Apply notch filter to remove specific frequency. Alias for `notch_at()`.
 
@@ -387,8 +391,9 @@ Apply notch filter to remove specific frequency. Alias for `notch_at()`.
 
 **Example:**
 ```python
-# Remove 60 Hz power line noise
-denoised = ts.notch_filter(freq=60)
+# Remove 20 Hz interference. (The example series is sampled at 100 Hz; a
+# 60 Hz mains notch needs a rate above 120 Hz.)
+denoised = ts.notch_filter(freq=20)
 ```
 
 ---
@@ -412,7 +417,7 @@ print(f"Mean: {np.mean(normalized.data):.6f}")  # ~0.0
 print(f"Std: {np.std(normalized.data):.6f}")    # ~1.0
 ```
 
-### `normalize_range(new_min=0, new_max=1)`
+### `normalize_range(target_min=0.0, target_max=1.0, inplace=False)`
 
 Range normalization to specified bounds.
 
@@ -432,10 +437,10 @@ Range normalization to specified bounds.
 norm_01 = ts.normalize_range()
 
 # Normalize to [-1, 1] 
-norm_11 = ts.normalize_range(new_min=-1, new_max=1)
+norm_11 = ts.normalize_range(target_min=-1, target_max=1)
 
 # Custom range
-custom = ts.normalize_range(new_min=10, new_max=20)
+custom = ts.normalize_range(target_min=10, target_max=20)
 ```
 
 ### `apply_function(func)`
@@ -675,7 +680,7 @@ ts_200hz = ts.interpto_hz(200)   # a 10.0 s series returns 2001 samples, not 200
 
 These methods leverage the pandas Series foundation for optimal performance.
 
-### `rolling_mean(window, center=False)`
+### `rolling_mean(window, center=True, inplace=False)`
 
 Calculate rolling mean.
 
@@ -688,16 +693,17 @@ Calculate rolling mean.
 
 **Example:**
 ```python
-ts = baseTs(data=data, times=dates)
+# A daily series (dates is the 365-day range from the constructor example)
+daily = baseTs(data=np.random.randn(365), times=dates)
 
 # 7-day rolling average
-weekly_avg = ts.rolling_mean(window=7)
+weekly_avg = daily.rolling_mean(window=7)
 
-# Centered 30-day rolling average  
-monthly_avg = ts.rolling_mean(window=30, center=True)
+# Centered 30-day rolling average
+monthly_avg = daily.rolling_mean(window=30, center=True)
 ```
 
-### `rolling_std(window, center=False)`
+### `rolling_std(window, center=True, inplace=False)`
 
 Calculate rolling standard deviation.
 
@@ -711,10 +717,10 @@ Calculate rolling standard deviation.
 **Example:**
 ```python
 # 7-day rolling volatility
-volatility = ts.rolling_std(window=7)
+volatility = daily.rolling_std(window=7)
 ```
 
-### `rolling_max(window, center=False)`
+### `rolling_max(window, center=True, inplace=False)`
 
 Calculate rolling maximum.
 
@@ -725,7 +731,7 @@ Calculate rolling maximum.
 **Returns:**
 - `baseTs`: New baseTs object with rolling maximum
 
-### `rolling_min(window, center=False)`
+### `rolling_min(window, center=True, inplace=False)`
 
 Calculate rolling minimum.
 
@@ -739,12 +745,12 @@ Calculate rolling minimum.
 **Example:**
 ```python
 # Rolling statistics
-rolling_max = ts.rolling_max(window=30)
-rolling_min = ts.rolling_min(window=30)
+rolling_max = daily.rolling_max(window=30)
+rolling_min = daily.rolling_min(window=30)
 rolling_range = rolling_max - rolling_min  # Custom calculation
 ```
 
-### `time_slice(start=None, end=None)`
+### `time_slice(start_time=None, end_time=None, inplace=False)`
 
 Extract time series slice by time/date range.
 
@@ -761,14 +767,17 @@ Extract time series slice by time/date range.
 **Example:**
 ```python
 # Date strings (automatically parsed)
-january = ts.time_slice(start='2023-01-01', end='2023-01-31')
+january = daily.time_slice(start_time='2023-01-01', end_time='2023-01-31')
 
 # Specific time ranges
-morning = ts.time_slice(start='2023-01-01 06:00', end='2023-01-01 12:00')
+morning = daily.time_slice(start_time='2023-01-01 06:00', end_time='2023-01-01 12:00')
 
 # Open-ended slices
-recent = ts.time_slice(start='2023-06-01')  # From June onwards
-early = ts.time_slice(end='2023-03-31')     # Until March
+recent = daily.time_slice(start_time='2023-06-01')  # From June onwards
+early = daily.time_slice(end_time='2023-03-31')     # Until March
+
+# Numeric time base: seconds
+first_two_seconds = ts.time_slice(end_time=2.0)
 ```
 
 ### `get_statistics()`
@@ -784,9 +793,10 @@ Get comprehensive statistical summary.
 - `min`: Minimum value
 - `max`: Maximum value
 - `median`: Median value
-- `skew`: Skewness
-- `kurtosis`: Kurtosis
+- `q25`, `q75`: First and third quartiles
 - `count`: Number of observations
+- `duration`: Span of the time base, in seconds
+- `frequency`, `sample_rate`: The sampling rate in Hz (both keys hold it)
 
 **Example:**
 ```python
@@ -794,40 +804,52 @@ stats = ts.get_statistics()
 
 print(f"Mean: {stats['mean']:.4f}")
 print(f"Std Dev: {stats['std']:.4f}")
-print(f"Skewness: {stats['skew']:.4f}")
-print(f"Kurtosis: {stats['kurtosis']:.4f}")
+print(f"Median: {stats['median']:.4f} (IQR {stats['q25']:.4f} to {stats['q75']:.4f})")
 print(f"Range: {stats['min']:.4f} to {stats['max']:.4f}")
+print(f"Duration: {stats['duration']:.1f} s at {stats['sample_rate']:.1f} Hz")
 ```
 
 ---
 
 ## Utility Functions
 
-### `diff()`
+### `diff_ts(zeropad=False, inplace=False)`
 
-Calculate first differences.
+Sample-to-sample first differences of the data (`np.diff(data)`, not
+divided by the time step). The result is one sample shorter than the input
+and starts at the input's second timestamp; `zeropad=True` repeats the
+first difference at the front so it keeps the input's length and index.
+
+Not `ts.diff()`: that name resolves to pandas' `Series.diff`, which keeps
+the input's length and puts NaN first. Both run without error and return
+arrays of different lengths (#91).
 
 **Returns:**
 - `baseTs`: New baseTs object with first differences
 
 **Example:**
 ```python
-# Calculate first differences (useful for returns, velocities, etc.)
-differences = ts.diff()
+# Rate of change (useful for returns, velocities, etc.)
+differences = ts.diff_ts()
 print(f"Original length: {ts.len()}, Diff length: {differences.len()}")
+
+# Same length as the input
+padded = ts.diff_ts(zeropad=True)
 ```
 
-### `dediff()`
+### `dediff_ts(inplace=False)`
 
-Reverse first differences (cumulative sum).
+Cumulative sum. Undoes `diff_ts(zeropad=True)` up to the level the
+difference discarded: the result is the input shifted by a constant, on
+the input's index.
 
 **Returns:**
 - `baseTs`: New baseTs object with cumulative sum
 
 **Example:**
 ```python
-# Calculate cumulative sum (reverse of diff)
-cumulative = ts.dediff()
+# Cumulative sum (reverse of diff_ts, up to a constant offset)
+cumulative = ts.diff_ts(zeropad=True).dediff_ts()
 ```
 
 ---
@@ -983,18 +1005,23 @@ detrended upstream.
 
 **Example:**
 ```python
+# The band's lower edge, 0.01 Hz, is one cycle per 100 s, so the record has
+# to be long: 200 s at 10 Hz here, with a 0.05 Hz oscillation in noise
+t = np.linspace(0, 200, 2000)
+slow = baseTs(np.sin(2 * np.pi * 0.05 * t) + 0.3 * np.random.randn(2000), t, freq=10.0)
+
 # Fraction of variance in the default 0.01-0.1 Hz band
-ratio = ts.detrend('linear').relative_band_power()  # Returns: 0.717
+ratio = slow.detrend('linear').relative_band_power()
 
 # A different band, here the HRV low-frequency band
-ratio = ts.relative_band_power(0.04, 0.15)
+ratio = slow.relative_band_power(0.04, 0.15)
 
 # Classic fALFF convention (or use falff(), which defaults to it)
-falff = ts.relative_band_power(ratio='amplitude')  # Returns: 0.147
+falff = slow.relative_band_power(ratio='amplitude')
 
 # Full breakdown, including the white-noise null
-res = ts.relative_band_power(details=True)
-print(res.ratio, res.bin_fraction)  # 0.717 0.092  -> well above the null
+res = slow.relative_band_power(details=True)
+print(res.ratio, res.bin_fraction)  # well above the null for this signal
 ```
 
 ### `falff(low_freq=0.01, high_freq=0.1, ratio='amplitude', window=None, details=False)`
@@ -1020,11 +1047,11 @@ What differs is the convention, and the split is deliberate: `relative_band_powe
 
 **Example:**
 ```python
-# Classic fALFF on a detrended signal
-value = ts.detrend('linear').falff()  # Returns: 0.147
+# Classic fALFF on a detrended signal (slow is the 200 s series above)
+value = slow.detrend('linear').falff()
 
 # The band Zou et al. (2008) used
-value = ts.falff(0.01, 0.08)
+value = slow.falff(0.01, 0.08)
 ```
 ### `plot` — line plot, or the pandas plotting accessor
 
@@ -1037,9 +1064,12 @@ Aliasing `plot` to a plain method used to shadow it, making `ts.plot.line()`,
 `.bar()`, `.hist()` and the other pandas plot kinds unreachable.
 
 ```python
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+
 # Calling it: unchanged baseTs behaviour
 ts.plot()
-ts.plot(lowess=True, title="Signal", ax=ax)
+ts.filter_outliers().plot(lowess=True, title="Signal", ax=ax)  # lowess needs a fit
 
 # Attribute access: the pandas plot kinds
 ts.plot.bar()
@@ -1113,7 +1143,7 @@ These methods are maintained for backward compatibility.
 
 ### Signal Processing (Legacy)
 
-```python
+```python no-run
 # Legacy bandpass method
 def bandpass_at(self, hp_hz, lp_hz, sampling_rate=None):
     """Legacy bandpass filter method."""
@@ -1132,7 +1162,7 @@ def filter_outliers(self):
 
 ### Plotting (Legacy)
 
-```python
+```python no-run
 def plot(self, show=True, ax=None, **kwargs):
     """Plot the time series."""
 
@@ -1159,8 +1189,8 @@ def plot_fft_power(self, max_rate=np.nan, show=False, ax=None):
 
 ```python
 try:
-    # This might fail if cutoff is invalid
-    filtered = ts.lowpass_filter(cutoff=1.5)  # Invalid: > 1.0
+    # Cutoffs are in Hz and must lie below Nyquist (50 Hz for this 100 Hz series)
+    filtered = ts.lowpass_filter(cutoff=60)  # Invalid: above Nyquist
 except ValueError as e:
     print(f"Filter error: {e}")
     # Use a valid cutoff

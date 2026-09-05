@@ -89,7 +89,7 @@ band_filtered = ts.bandpass_at(hp_hz=0.5, lp_hz=5.0)
 smoothed = ts.gauss_filter(sigma=2.0)
 
 # Savitzky-Golay filtering
-sg_filtered = ts.sg_filter(window=51, order=3)
+sg_filtered = ts.sg_filter(window_length=51, polyorder=3)
 ```
 
 ### Normalization (Unchanged API)
@@ -331,27 +331,27 @@ print(f"DataFrame shape: {df.shape}")
 The new pandas-based architecture provides automatic memory optimization:
 
 ```python
-# Memory efficiency improvements
-import psutil
+# Memory efficiency improvements, measured with the standard library's tracemalloc
+import tracemalloc
 
 def memory_efficient_processing(large_data, large_times):
     """Process large datasets efficiently with pandas Series foundation."""
-    
-    initial_memory = psutil.Process().memory_info().rss / 1024**2
-    print(f"Initial memory: {initial_memory:.1f} MB")
-    
+
+    tracemalloc.start()
+
     # Create baseTs object (now automatically optimized)
     ts = baseTs(data=large_data, times=large_times, freq=100.0)
-    
-    after_creation = psutil.Process().memory_info().rss / 1024**2
-    print(f"After creation: {after_creation:.1f} MB")
-    
+
+    after_creation, _ = tracemalloc.get_traced_memory()
+    print(f"Allocated after creation: {after_creation / 1024**2:.1f} MB")
+
     # Process with enhanced operations
     processed = ts.rolling_mean(window=100).resample('1s', method='mean')
-    
-    final_memory = psutil.Process().memory_info().rss / 1024**2
-    print(f"After processing: {final_memory:.1f} MB")
-    
+
+    final_memory, peak_memory = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(f"Allocated after processing: {final_memory / 1024**2:.1f} MB (peak {peak_memory / 1024**2:.1f} MB)")
+
     return processed
 
 # Test with large dataset
@@ -731,8 +731,9 @@ ts.rolling(10).mean()            # Native pandas rolling
 # Enhanced baseTs methods (new)
 ts.resample('1s', method='mean')       # Intelligent resampling
 ts.interpolate_gaps(method='spline', order=3)   # Gap filling
+other_ts = ts.lowpass_at(cutoff=1.0)   # any second series on the same time base
 ts.align_with(other_ts)                # Time series alignment
-ts.correlation_with(other_ts)          # Cross-correlation
+ts.correlation_with(other_ts)          # Correlation coefficient
 ```
 
 This user guide showcases the enhanced capabilities of baseTs while emphasizing that all existing code continues to work unchanged, now with better performance and additional functionality through the pandas Series foundation.

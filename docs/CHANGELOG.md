@@ -54,6 +54,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend Parameters**: No longer need to specify `backend='series'`
 - **Backend Management**: Eliminated BackendManager and conversion utilities
 
+## [Unreleased] — every fenced Python block in docs/ runs, and a test says so (#69, #91)
+
+Suggested in #44 and measured in #69: executing each ```python block in
+`docs/USER_GUIDE.md`, `EXAMPLES.md`, `API.md` and `API_SERIES.md` in
+order, one shared namespace per file, 44 of 108 failed. Two kinds:
+fragments with no setup (signature stubs, examples using a `ts` no block
+built) and real rot, where the document described an API that no longer
+exists or a call that cannot succeed.
+
+### Added — `tests/unit/test_docs_fenced_blocks.py`
+
+Runs every block, in document order, in a namespace shared across the
+file, with `MPLBACKEND=Agg`, stdout captured and `np.random.seed(0)`
+before each block; one test id per block (`API.md:64`). A signature or
+declaration fragment carries the fence info string ```python no-run```
+and is compiled but not executed; the count of such blocks per file is
+pinned (`API.md`: 12, the others 0), so marking a block no-run is a
+visible change, and any other info string fails. `docs/CHANGELOG.md` is
+excluded by name: its snippets illustrate what a change did, often in the
+API as it was. The docs directory listing is pinned too, so a new file
+has to be added to the census or excluded with a reason.
+
+### Fixed — the rot, by document
+
+`API.md`: the twelve `@property` / `def` stubs are `no-run` - executed,
+they bound `data`, `times`, `freq`, `len` and `copy` to property and
+function objects in the shared namespace, and every later example built
+from them broke (seven "property object" failures, three `DataError`s
+and five "Invalid sampling frequency: nan" - fifteen of the file's 25 -
+were this one cascade).
+`from_df` is a module-level function, not `baseTs.from_df`, and its time
+column must be numeric - the example passed a datetime column.
+`freq='H'` -> `'h'` (pandas 3 rejects the upper-case alias).
+`normalize_range(new_min=, new_max=)` -> `target_min=`/`target_max=`;
+`time_slice(start=, end=)` -> `start_time=`/`end_time=`; the section
+headings for `lowpass_filter` (order=5), the four `rolling_*` methods
+(`center=True`) and the filters (`inplace=`) now match the signatures.
+`get_statistics()` has no `skew`/`kurtosis` keys; the key list and the
+example now name the eleven it returns. **`diff()`/`dediff()` -> `diff_ts()`/
+`dediff_ts()` (#91)**: `ts.diff()` runs, as pandas' `Series.diff`, and
+returns an array of a different length with a leading NaN - a quiet wrong
+answer, not a failure - and `ts.dediff()` raised `AttributeError`. The
+section now documents the real methods, says what `ts.diff()` is, and
+that `dediff_ts` undoes `diff_ts(zeropad=True)` up to a constant. The
+rolling and `time_slice` examples build their own daily series
+(`daily`) rather than rebinding `ts`, so the 100 Hz example series
+reaches the spectral sections. The 60 Hz notch example ran on that 100 Hz
+series (Nyquist 50 Hz); it notches 20 Hz and says why. The band-power
+examples build a 200 s series: the default band's 0.01 Hz edge needs a
+long record, and the 10 s example series had no bin in Zou et al.'s
+0.01-0.08 Hz band. `plot(lowess=True)` needs a fit and an `ax`; the
+error-handling example's "cutoff=1.5, invalid: > 1.0" was a valid 1.5 Hz
+on a 100 Hz series and now uses 60 Hz, above Nyquist.
+
+`API_SERIES.md`: a setup block at the top builds `ts`, `ts1` and `ts2`
+(twelve examples used them and nothing defined them); `'1S'`/`'5S'` ->
+`'1s'`/`'5s'`; the pandas-integration example needs a `DatetimeIndex` for
+`.index.month`, so it builds a daily series and, since `baseTs.resample()`
+cannot take that index (#100, below), resamples through the frame.
+
+`EXAMPLES.md`: `time_slice(start=, end=)`; the environmental-monitoring
+example passed a `DatetimeIndex` to a pipeline ending in `get_statistics()`
+and now passes seconds, saying why (#100); its SNR line subtracted a
+`rolling_mean` result from its input as arrays, and `rolling_mean` trims
+the window's edges (987 of 1000), so it subtracts as series, aligned on
+the index; the long-term example's `resample()` calls drop to pandas' on
+a plain Series (#100), `rolling('1H')` -> `'1h'`, and it printed a
+`weekly_std` key it never computed. The chunked large-dataset example
+processed a million points through LOWESS and took 42 of the harness's 43
+seconds; it now processes a hundred thousand the same way.
+
+`USER_GUIDE.md`: `sg_filter(window=, order=)` -> `window_length=`/
+`polyorder=`; `other_ts` is now built before it is aligned and correlated;
+the memory-optimisation example imported `psutil`, which is not a
+dependency and not installed in CI, and measures with the standard
+library's `tracemalloc` instead.
+
+### Filed, not folded in — #100
+
+A `DatetimeIndex` series derives `freq` as NaN, and `duration()`,
+`get_statistics()`, `resample()` and `diff_ts()` raise on it, while the
+constructor accepts one and API.md shows the form. Three doc examples
+used to hit this and now say so instead. Whether to support that index or
+refuse it at the constructor is a design decision; filed with the four
+sites.
+
 ## [Unreleased] — `compute_fft_power` computes on a float64 copy of the data (#96)
 
 Filed from #93's verification and its review. The shared data guard,
