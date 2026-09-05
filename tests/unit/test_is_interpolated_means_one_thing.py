@@ -79,6 +79,19 @@ class TestGapFillersSetTheFlagWhenTheyFillAGap:
         out = run(_clean(), inplace)
         assert out.is_interpolated is False
 
+    @pytest.mark.parametrize("inplace", [False, True], ids=["copy", "inplace"])
+    def test_an_all_nan_series_cannot_be_filled_and_is_left_as_found(self, inplace):
+        """interpolate_missing's ffill().bfill() fallback has nothing to
+        propagate from, so every value stays NaN: nothing was estimated.
+        Counted, not assumed from the input having a gap (review round 1,
+        both harnesses)."""
+        ts = baseTs(np.full(N, np.nan), np.arange(N) / FS, freq=FS)
+
+        out = ts.interpolate_missing(inplace=inplace)
+
+        assert np.isnan(out.values).all()
+        assert out.is_interpolated is False
+
     def test_a_gap_the_call_did_not_fill_does_not_count(self):
         """interpolate_gaps(limit=1) on a two-sample gap fills one sample
         of it, and that one is an estimate; a call that fills nothing at
@@ -131,6 +144,59 @@ class TestTheOutlierFilterSetsTheFlagWhenItReplacesASample:
         out = _clean().set_outlier_filter(z_threshold=3.0).filter_outliers()
         assert len(out.outlier_indices) == 0
         assert out.is_interpolated is False
+
+
+# --- the helpers the wrappers call are producers too ---------------------------
+
+class TestTheHelpersSetItWhereTheValuesAreMade:
+    """filters.interpolate_missing_values and LowessOutlierFilter.filter are
+    public and callable without their wrappers (review round 1). The flag
+    is set on the producer, so a direct caller sees it too, and the
+    wrappers carry it rather than re-derive it."""
+
+    def test_interpolate_missing_values_sets_it_on_its_result(self):
+        from baseTs.filters import interpolate_missing_values
+
+        out = interpolate_missing_values(_gappy(), inplace=False)
+
+        assert out.is_interpolated is True
+
+    def test_interpolate_missing_values_sets_it_in_place(self):
+        from baseTs.filters import interpolate_missing_values
+
+        ts = _gappy()
+        assert interpolate_missing_values(ts, inplace=True) is None
+        assert ts.is_interpolated is True
+
+    def test_interpolate_missing_values_on_clean_data_leaves_it_as_found(self):
+        from baseTs.filters import interpolate_missing_values
+
+        assert interpolate_missing_values(_clean(), inplace=False).is_interpolated is False
+
+    def test_the_lowess_filter_sets_it_when_it_replaced_an_outlier(self):
+        from baseTs.LowessOutlierFilter import FilterConfig, LowessOutlierFilter
+
+        filt, idx, _ = LowessOutlierFilter(FilterConfig(z_threshold=3.0)).filter(_spiky())
+
+        assert len(idx) > 0
+        assert filt.is_interpolated is True
+
+    def test_the_lowess_filter_sets_it_when_it_filled_an_input_gap(self):
+        from baseTs.LowessOutlierFilter import FilterConfig, LowessOutlierFilter
+
+        filt, idx, _ = LowessOutlierFilter(
+            FilterConfig(z_threshold=3.0, fill_input_gaps=True)).filter(_gappy())
+
+        assert len(idx) == 0
+        assert filt.is_interpolated is True
+
+    def test_the_lowess_filter_on_clean_data_leaves_it_as_found(self):
+        from baseTs.LowessOutlierFilter import FilterConfig, LowessOutlierFilter
+
+        filt, idx, _ = LowessOutlierFilter(FilterConfig(z_threshold=3.0)).filter(_clean())
+
+        assert len(idx) == 0
+        assert filt.is_interpolated is False
 
 
 # --- the producers that already set it, pinned under the same rule -----------

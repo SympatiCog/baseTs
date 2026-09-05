@@ -87,10 +87,25 @@ A producer sets it exactly when it wrote at least one such value:
 
 Nothing resets the flag, and `_metadata` carries it, so a series derived
 from interpolated values reports as interpolated; pinned. Reachable in
-normal use, so stated: `filter_outliers().is_interpolated` and
-`interpolate_gaps().is_interpolated` are now True where they were False.
-The docstring, `API.md`'s `interpolate_gaps` entry and `API_SERIES.md`'s
-`_metadata` comment say the rule.
+normal use, so stated: `interpolate_missing().is_interpolated`,
+`interpolate_gaps().is_interpolated` and `filter_outliers().is_interpolated`
+are now True where they were False. The docstring, `API.md`'s
+`interpolate_gaps` entry and `API_SERIES.md`'s `_metadata` comment say
+the rule.
+
+### Review round 1 (consensus panel, codex + agy)
+
+Both found the first cut setting `interpolate_missing`'s flag on "the
+input had a gap" rather than "a gap was filled": an all-NaN series has
+nothing for the `ffill().bfill()` fallback to propagate from, comes back
+all NaN, and was marked interpolated. Counted now, before against after,
+as `interpolate_gaps` already did; pinned. One harness then found the
+two helpers the wrappers call - `filters.interpolate_missing_values` and
+`LowessOutlierFilter.filter` - are public and callable without them, and
+set nothing. **The flag is now set where the values are made**: each
+helper sets it on the series it returns, exactly when it filled a gap or
+replaced an outlier, and the wrappers carry the helper's flag rather than
+re-derive it. A direct caller of either helper sees the flag; pinned.
 
 ## [Unreleased] — a first difference needs two samples, and says so (#89)
 
@@ -912,7 +927,8 @@ job, as before.
   and `zeropad=False` returned an empty series. Pre-existing; filed as #89
   and fixed there (both branches now raise `ValidationError`, the entry
   above).
-- `interpolate_missing()` does not set `is_interpolated` on either branch;
+- (Answered by #90, above: it does now, when it filled a gap.)
+  `interpolate_missing()` does not set `is_interpolated` on either branch;
   it did not on the branch that worked before, and the inplace branch now
   matches it. Whether it should is a separate question.
 - `docs/API.md` documents `diff()` and `dediff()` under "Utility Functions"

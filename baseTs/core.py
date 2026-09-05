@@ -1535,11 +1535,11 @@ class baseTs(TimeSeriesData):
             newTs.outlier_indices = idx
             result = newTs
 
-        # is_interpolated means "at least one value is an interpolated
-        # estimate" (#90). The filter replaces each outlier by interpolation
-        # and, with fill_input_gaps, the input's gaps too; if it did either,
-        # the result holds estimates. Clean data left as found says nothing.
-        if len(idx) > 0 or (n_gaps and self.outlier_filter.config.fill_input_gaps):
+        # is_interpolated is set by the filter on the series it returns,
+        # exactly when it replaced an outlier or filled an input gap (#90).
+        # This wrapper borrows only the arrays from `filt`, so the flag is
+        # carried over here rather than re-derived.
+        if filt.is_interpolated:
             result.is_interpolated = True
 
         if qcplot:
@@ -1594,10 +1594,8 @@ class baseTs(TimeSeriesData):
         # inplace branch raised on every call from the day it was written
         # (#64). The helper's contract is kept; the branch that knows the
         # answer is None does not ask for it.
-        # The flag means "at least one value is an interpolated estimate"
-        # (#90), so it is set exactly when there was a gap to fill; a call
-        # on gap-free data estimated nothing and leaves it as found.
-        had_gap = bool(pd.isna(self.values).any())
+        # is_interpolated is set by the helper, on the producer, exactly when
+        # it filled a gap (#90); this wrapper adds only the history line.
         if inplace:
             interpolate_missing_values(self, inplace=True)
             processed = self
@@ -1607,8 +1605,6 @@ class baseTs(TimeSeriesData):
             hist_msg="Interpolated missing values in timeseries",
             last_process="_interp"
         )
-        if had_gap:
-            processed.is_interpolated = True
         return processed
     
     def diff_ts(self, zeropad: bool = False, inplace: bool = False) -> "baseTs":
