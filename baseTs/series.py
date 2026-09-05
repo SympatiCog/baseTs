@@ -1364,11 +1364,13 @@ class TimeSeriesData(pd.Series):
         # over seconds in the base (`times`, `data`, the resamplers),
         # re-stamp; a numeric index that arrives any other way must still
         # be drawn from the seconds the origin describes, or `datetimes`
-        # refuses it. When it is so drawn (dropna(inplace=True) installs
-        # the survivors here), the stamp narrows to it, so a later
-        # replacement has less room to coincide with (round 3).
-        else:
-            _tighten_origin_stamp(self)
+        # refuses it. Nor is the stamp narrowed here, though an earlier
+        # cut did: mutation testing showed the only index this door ever
+        # narrowed against was a same-length permutation of the seconds
+        # already stamped, which is the same set - and both the equality
+        # and the membership test are blind to order, so the narrowing
+        # changed no answer. Every case that does narrow reaches
+        # __finalize__ or _update_inplace, which do it (round 3).
 
     def _update_inplace(self, result, *args, **kwargs) -> None:
         """pandas' in-place door: swap the manager, then narrow the stamp.

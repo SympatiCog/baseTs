@@ -1120,3 +1120,11 @@ class TestTheStampNarrowsToEachDerivation:
         assert isinstance(out.index, pd.MultiIndex)
         with pytest.raises(ValueError, match="no longer describes this index"):
             out.datetimes
+
+    def test_a_permutation_of_the_same_seconds_still_reads(self):
+        """The one index `_set_axis` could narrow against is a same-length
+        permutation, which is the same set - both tests are order-blind, so
+        the narrowing there changed no answer and is gone (mutation)."""
+        ts = self._one_hz()
+        ts.index = pd.Index(ts.index.values[::-1])
+        assert ts.datetimes[0] == self.D0 + pd.Timedelta(seconds=9)
