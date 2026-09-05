@@ -77,6 +77,18 @@ stated:** `compute_fft_power(demean=False, scale_power=False)` on a
 constant series now returns a DC bin `n` times larger. The #96 pin that
 asserted the old formula for the float32 verdict now pins the new one.
 
+### Review round 1 (consensus panel, codex + agy)
+
+One finding, single-source, verified: "the same DC bin" overclaimed.
+`n * mean**2` reimplements the FFT branch's value rather than computing
+it, so the two agree to a few ulps (well inside the tests' rel 1e-12),
+and part company where `np.abs(fft)**2` overflows before its division -
+above roughly 1e152 for 600 samples the FFT branch reports inf and the
+constant branch a finite number. Not a regression (`main`'s `mean**2`
+diverged there too, by a different factor) and no realistic amplitude;
+the docstring says "to floating-point precision" now and the overflow
+corner is pinned as observed.
+
 ### Observed, not changed — three scalings, not two
 
 The issue said `get_frequency_content` "already reports `n * mean**2`".

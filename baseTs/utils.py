@@ -621,7 +621,11 @@ def compute_fft_power(
         of its float64 cast (#96); the caller's series is never modified.
         With `scale_power=False` the power is `np.abs(fft)**2 / n`; a
         constant series (std below 1e-15) takes a short path that reports
-        the same DC bin, `n * mean**2`, and zeros elsewhere (#98).
+        the DC bin as `n * mean**2` and zeros elsewhere (#98). That agrees
+        with the FFT branch to floating-point precision (a few ulps), not
+        bit for bit, and diverges where `np.abs(fft)**2` overflows before
+        the division - above roughly 1e152 for 600 samples - where the FFT
+        branch returns inf and this one a finite number.
 
     Raises:
         ValueError: If the time series is empty or has fewer than two samples
@@ -673,7 +677,9 @@ def compute_fft_power(
             # pairwise one in the last ulp. The FFT branch's DC bin is
             # |n * mean|**2 / n = n * mean**2; this wrote mean**2 (#98),
             # so the two branches disagreed by a factor of n at the
-            # threshold. One scaling now.
+            # threshold. One scaling now, to floating-point precision:
+            # the FFT's value differs by a few ulps, and overflows to inf
+            # before its division above ~1e152 (review round 1).
             power[0] = n * np.mean(data)**2  # the FFT branch's DC bin
     else:
         # Normal FFT computation

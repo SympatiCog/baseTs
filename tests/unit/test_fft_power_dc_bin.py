@@ -83,6 +83,25 @@ class TestWhatDoesNotChange:
         assert power[0] == 1.0
         assert not power[1:].any()
 
+    def test_the_agreement_is_to_precision_and_ends_at_overflow(self):
+        """Review round 1: `n * mean**2` reimplements the FFT branch's DC
+        bin rather than computing it, so the two agree to a few ulps (the
+        rel=1e-12 above), and part company where `np.abs(fft)**2` overflows
+        before its division. Observed and pinned, not a defect this change
+        makes: a constant of 1e152 stays finite on the constant branch
+        while a series of that magnitude with enough spread to take the
+        FFT branch reports inf at DC."""
+        _, constant = _ts(np.full(N, 1e152)).compute_fft_power(demean=False, scale_power=False)
+        spread = np.full(N, 1e152)
+        spread[::2] += 1e137
+        assert np.std(spread) > 1e-15
+        with pytest.warns(RuntimeWarning, match="overflow"):
+            _, fft_branch = _ts(spread).compute_fft_power(demean=False, scale_power=False)
+
+        assert np.isfinite(constant[0])
+        assert constant[0] == pytest.approx(N * 1e304, rel=1e-12, abs=0)
+        assert np.isinf(fft_branch[0])
+
     def test_get_frequency_content_keeps_its_own_scaling(self):
         """Observed and not changed: a different function, not divided by n."""
         _, power = _ts(np.full(N, 3.0)).get_frequency_content()
