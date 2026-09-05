@@ -248,11 +248,14 @@ class TestTheDatetimesAccessor:
         assert out.isna().tolist() == index.isna().tolist()
 
     def test_a_nanosecond_origin_comes_back_to_within_a_microsecond(self):
+        """2.11e-7 s, the number the CHANGELOG quotes, asserted rather than
+        bounded: the origin's nanosecond digits are rounded to the nearest
+        microsecond (.123456789 -> .123457), and every stamp inherits that
+        one shift. A loose `< 5e-7` let the quoted number drift."""
         index = pd.date_range('2023-01-01 00:00:00.123456789', periods=10, freq='ms')
         ts = baseTs(np.arange(10.0), times=index)
         err = np.abs((ts.datetimes - index).total_seconds())
-        assert err.max() < 5e-7
-        assert err.max() > 0     # the pin is honest: this case is inexact
+        assert err.min() == err.max() == pytest.approx(2.11e-7, abs=0.005e-7)
 
     def test_a_negative_sub_nanosecond_second_rounds_to_the_nearest_nanosecond(self):
         """Mutation found `floor` and `trunc` splits agree on every stamp
@@ -466,6 +469,23 @@ class TestTimeSliceTakesCalendarBounds:
         """`pd.Timestamp(2592000)` is 2.592 ms into 1970; the rule is
         `numbers.Real`, which every numpy number registers under."""
         assert len(daily.time_slice(end_time=bound)) == 31
+
+    @pytest.mark.parametrize("index", [
+        pd.date_range('2023-01-01 12:00', periods=5, freq='10ms'),
+        pd.date_range('2023-01-01', periods=5, freq='us'),
+        pd.DatetimeIndex(['2023-01-01']).append(
+            pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=97)),
+    ], ids=['10ms', 'us', 'ns_97_days_out'])
+    def test_a_bound_naming_a_sample_lands_on_its_second_exactly(self, index):
+        """The load-bearing agreement between the two conversions: the index
+        comes from the vectorised `TimedeltaIndex.total_seconds()`, the bound
+        from integer nanoseconds over 1e9, and they must give the same float
+        for the same stamp. Measured equal on pandas 2.2.3, 2.3.3 and 3.0.1;
+        pinned here so a pandas change is a test failure and not a bound that
+        misses its own sample (final harness)."""
+        ts = baseTs(np.arange(len(index), dtype=float), times=index)
+        for position, stamp in enumerate(index):
+            assert len(ts.time_slice(end_time=stamp)) == position + 1
 
     def test_a_sub_microsecond_bound_is_placed_to_the_nanosecond(self):
         """`Timedelta.total_seconds()` rounds to the microsecond; the bound
@@ -995,6 +1015,15 @@ class TestTheOriginDescribesTheIndexItWasRecordedAgainst:
         legacy.set_timestamp_offset(epoch_seconds(self.HOURLY[0]))
         assert legacy.datetimes.equals(self.HOURLY)
 
+    def test_the_legacy_message_warns_against_reusing_the_stored_offset(self):
+        """The remedy names a value, and on a pre-#100 object the stored one
+        is the wrong value - the offset was added to the times as well, so
+        reusing it counts twice. The message says so (final harness)."""
+        legacy = self._legacy(self._hourly())
+        with pytest.raises(ValueError) as info:
+            legacy.datetimes
+        assert "is not the value to reuse" in str(info.value)
+
     def test_a_duck_typed_source_carrying_a_pair_refuses_too(self):
         """It cannot say which index its offset described."""
         duck = SimpleNamespace(data=np.arange(3.0), times=np.array([0.0, 1.0, 2.0]),
@@ -1072,9 +1101,13 @@ class TestTheStampNarrowsToEachDerivation:
             sub.reset_index(drop=True).datetimes
 
     def test_positions_after_an_inplace_chain_are_refused(self):
-        """`dropna(inplace=True)` installs the survivors through `_set_axis`,
-        where the stamp narrows too; the in-place reset then has nothing to
-        coincide with."""
+        """`dropna(inplace=True)` swaps the manager through
+        `_update_inplace`, which narrows there; the in-place reset then has
+        nothing to coincide with. (The docstring first credited `_set_axis`,
+        which pandas does also call here - the final harness caught the two
+        explanations contradicting each other, and `_set_axis`'s narrowing
+        has since been deleted as order-only, so `_update_inplace` is the
+        one that does it.)"""
         ts = self._one_hz()
         ts.iloc[:3] = np.nan
         ts.dropna(inplace=True)

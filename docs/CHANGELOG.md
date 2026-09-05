@@ -152,10 +152,17 @@ things read it:
 - **`time_slice`** takes a calendar bound - a date string, `datetime`,
   `date`, `np.datetime64`, `pd.Timestamp` - on a series with an origin,
   placed as integer nanoseconds from the origin divided by 1e9, the
-  arithmetic that produced the index's own seconds, so a bound that names
-  a sample lands on it (`Timedelta.total_seconds()` rounds to the
-  microsecond on pandas 2.2.3, 2.3.3 and 3.0.1, and is not used). A
-  number is seconds on the index, as before - `numbers.Number`, so a
+  so a bound that names a sample lands on it. Two conversions meet there
+  and have to agree: the index's seconds come from the vectorised
+  `TimedeltaIndex.total_seconds()`, which is nanosecond-exact, while the
+  scalar `Timedelta.total_seconds()` a bound would use rounds to the
+  microsecond (`Timedelta('500ns').total_seconds()` is 0.0 on pandas
+  2.2.3, 2.3.3 and 3.0.1), which is why the bound is placed as integer
+  nanoseconds instead. That the two give the same float for the same
+  stamp is measured on all three legs and pinned across a 10 ms, a
+  microsecond and a nanosecond grid, rather than left as a claim (the
+  final harness read the sentence that had called them one arithmetic).
+  A number is seconds on the index, as before - `numbers.Number`, so a
   `Decimal` bound, which `main` compared against the index, still is. A calendar bound on a series with no origin raises `TypeError`
   naming the remedy, before parsing - whatever the string says, the kind
   of bound is the mistake; an unparseable string on a series with an
@@ -418,6 +425,30 @@ was named for, and is `ts.iloc[[0, 2]]` now. Its fourth, the refused
 same-origin union, is answered above as a deliberate fail-safe rather
 than a fix; the quick-review harness had reached the opposite verdict on
 the same behaviour, which is why it is stated rather than silently kept.
+
+### Review round 4 (glm-5.3 over the ollama API, the merge gate)
+
+Sent the whole diff and told to read the entry sentence by sentence,
+which is the pass the other two harnesses structurally do not make. Four
+things. The entry called the bound's arithmetic "the arithmetic that
+produced the index's own seconds" - two different conversions, in fact,
+and the sentence hid a real dependency: the index's seconds come from
+the *vectorised* `TimedeltaIndex.total_seconds()` while the scalar one a
+bound would use rounds to the microsecond. That they agree is measured
+on all three legs and pinned now across a 10 ms, a microsecond and a
+nanosecond grid, so a pandas change that broke it would fail a test
+rather than move a bound off its own sample. Second, two docstrings
+contradicted each other about which door `dropna(inplace=True)` uses, so
+one test passed for a reason other than the one it gave. Third, the
+legacy refusal named a remedy whose value a reader would naturally take
+from `ts_offset` - the one value that is wrong there, since the offset
+had been added to the times as well; the message says so. Fourth, the
+quoted 2.11e-7 s origin error was bounded by a test at `< 5e-7`, loose
+enough for the number to drift; it is asserted now (the error is the
+same for every stamp - the origin's nanosecond digits round once and
+every stamp inherits the shift). It also worked the ulp arithmetic and
+confirmed the 2**23 and 2**33 limits, and a dead parameter it spotted on
+`_tighten_origin_stamp` is gone.
 
 ## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
 

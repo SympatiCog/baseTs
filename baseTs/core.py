@@ -1888,13 +1888,20 @@ class baseTs(TimeSeriesData):
         numpy datetime64, a Timestamp - parsed by `pd.Timestamp`, and placed
         against the origin the way the index's own seconds were: as integer
         nanoseconds divided by 1e9, so a bound that names a sample lands on
-        that sample exactly. (`Timedelta.total_seconds()` rounds to the
-        microsecond - `Timedelta('500ns').total_seconds()` is 0.0 on pandas
-        2.2.3, 2.3.3 and 3.0.1 - which is why it is not used.) An aware
-        bound is an instant, like an aware index.
+        that sample exactly. Two conversions have to agree for that: the
+        index's seconds come from the *vectorised*
+        `TimedeltaIndex.total_seconds()`, which is nanosecond-exact, while
+        the scalar `Timedelta.total_seconds()` a bound would naturally use
+        rounds to the microsecond (`Timedelta('500ns').total_seconds()` is
+        0.0 on pandas 2.2.3, 2.3.3 and 3.0.1). They give the same float for
+        the same stamp on all three legs, pinned across a 10 ms, a
+        microsecond and a nanosecond grid. An aware bound is an instant,
+        like an aware index.
 
         Raises:
-            TypeError: a calendar bound on a series with no origin.
+            TypeError: a calendar bound on a series that cannot place one -
+                no origin, or an index the recorded origin no longer
+                describes. The message is `_origin_problem`'s.
             ValueError: a string `pd.Timestamp` cannot parse.
         """
         if bound is None or isinstance(bound, numbers.Number):

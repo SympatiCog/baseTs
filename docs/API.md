@@ -831,9 +831,10 @@ Extract time series slice by time/date range.
 - `baseTs`: New baseTs object with sliced data
 
 **Raises:**
-- `TypeError`: A calendar bound on a series with no origin (built from
-  seconds and never given one). A `start_time` after `end_time` is not
-  rejected; it returns an empty series.
+- `TypeError`: A calendar bound on a series that cannot place one — built
+  from seconds and never given an origin, or holding an index the recorded
+  origin no longer describes (see [`datetimes`](#datetimes)). A `start_time`
+  after `end_time` is not rejected; it returns an empty series.
 - `ValueError`: A string `pd.Timestamp` cannot parse.
 
 **Example:**

@@ -762,9 +762,9 @@ def _drawn_from(index: pd.Index, stamp: pd.Index) -> bool:
         return False
 
 
-def _tighten_origin_stamp(obj, also: Optional[pd.Index] = None) -> None:
+def _tighten_origin_stamp(obj) -> None:
     """Narrow the stamp to the index the object holds, when it is drawn
-    from the stamped seconds (or from `also`, a second operand's stamp).
+    from the stamped seconds.
 
     The stamp is only ever narrowed here, never widened, so nothing this
     accepts would have been refused before it; what it does is shrink the
@@ -774,14 +774,14 @@ def _tighten_origin_stamp(obj, also: Optional[pd.Index] = None) -> None:
     first three seconds (review round 3, quick-review). Narrowed at the
     slice to {3, 4, 5}, the positions are not among them and are refused.
 
-    `also` carries a second operand's known-good seconds into the test
-    where a caller has them. Arithmetic is not such a caller: pandas
-    hands `__finalize__` the left operand only, so two series of one
-    origin on interleaved grids align onto a union this cannot vouch for
-    and the read refuses it (review round 3; nothing at that call site
-    distinguishes the union from the foreign-grid `reindex` round 2
-    exists to refuse, so it fails safe and the message names the
-    re-declaration).
+    There is deliberately no way to widen it with a second operand's
+    seconds: pandas hands `__finalize__` the left operand only, so two
+    series of one origin on interleaved grids align onto a union this
+    cannot vouch for and the read refuses it (review round 3; nothing at
+    that call site distinguishes the union from the foreign-grid
+    `reindex` round 2 exists to refuse, so it fails safe and the message
+    names the re-declaration). A parameter for it was written and then
+    removed as dead - no caller could supply one.
 
     What values cannot tell apart remains: an index that is exactly the
     positions 0..n-1 of a series whose own seconds are those same values.
@@ -795,8 +795,7 @@ def _tighten_origin_stamp(obj, also: Optional[pd.Index] = None) -> None:
     index = obj.index
     if stamp is None or stamp.equals(index):
         return
-    known = stamp if also is None else stamp.append(also)
-    if _drawn_from(index, known):
+    if _drawn_from(index, stamp):
         object.__setattr__(obj, '_origin_index', index)
 
 
@@ -832,11 +831,12 @@ def _origin_problem(obj) -> Optional[str]:
         return ("this series carries a timestamp origin that was declared "
                 "without recording the index it describes - it was restored "
                 "from a pickle written before origins carried one, or copied "
-                "from an object that could not say. On such an object the "
-                "offset had been added to the times as well, so reading a "
-                "calendar from it would count it twice. Declare the origin "
-                "again with set_timestamp_offset(epoch_seconds), against the "
-                "index this series holds now.")
+                "from an object that could not say. Its `ts_offset` is not "
+                "the value to reuse: on such an object the offset had been "
+                "added to the times as well, so reading a calendar from it "
+                "would count it twice. Declare the origin the index it holds "
+                "now is counted from - the epoch second of its first sample - "
+                "with set_timestamp_offset(...).")
     if _drawn_from(obj.index, stamp):
         return None
     return ("the recorded timestamp origin no longer describes this index: "
