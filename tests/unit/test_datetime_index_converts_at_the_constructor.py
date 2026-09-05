@@ -220,7 +220,8 @@ class TestTheDatetimesAccessor:
         pd.DatetimeIndex(['2023-01-02', '2023-01-01', '2023-01-03']),
         pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2023-07-20 12:34:56.789012']),
         pd.DatetimeIndex(['2023-01-01 00:00:00.000001', '2199-07-20 12:34:56.789012']),
-        pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=97),
+        pd.DatetimeIndex(['2023-01-01']).append(
+            pd.date_range('2023-01-01', periods=3, freq='ns') + pd.Timedelta(days=97)),
         pd.DatetimeIndex(['2023-01-01', 'NaT', '2023-01-03']),
     ], ids=['daily', '10ms', 'ms', 'us', 'ms_start', 'us_start', '1900', 'pre_1970',
             '2200', 'irregular', 'unsorted', 'us_stamp_200_days_out',
@@ -233,7 +234,9 @@ class TestTheDatetimesAccessor:
         magnitudes; the origin is rebuilt at the microsecond because a
         float64 epoch in the 2020s resolves to ~2.4e-7 s, and the
         nanosecond digits of a finer origin are not in the float to begin
-        with. A NaT comes back as NaT.
+        with. A NaT comes back as NaT. (The 97-day nanosecond case keeps its
+        origin at 2023-01-01 on purpose: built from the far stamps alone,
+        its seconds were 0, 1 and 2 ns and the threshold mutant survived.)
         """
         ts = baseTs(np.arange(len(index), dtype=float), times=index)
         out = ts.datetimes
