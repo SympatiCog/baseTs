@@ -250,3 +250,16 @@ The open choices above, as pinned by
     pickles and duck sources are stamped on load/conversion. A concat of
     pieces sharing one origin keeps it. The same mechanism as #20's
     positional slots, with subset instead of equality.
+11. **The stamp narrows** (review round 3, quick-review): a value subset
+    cannot tell a slice's seconds from positions that happen to be
+    members, so every read-valid derivation narrows the stamp to its own
+    index (`__finalize__`, `_set_axis`, `_update_inplace`). The residual
+    - positions equal to the series' own seconds - is stated in the docs
+    and pinned; the refusal's remedy is scoped to a grid the caller built.
+12. **An unstamped pair is refused, not guessed at** (round 3, panel): a
+    legacy pickle or a duck source declared its origin against an index
+    nobody recorded, and stamping it with whatever arrived certified a
+    corrupted one. The concat arm checks each operand's own readability,
+    not just its offset. The refused same-origin arithmetic union is kept
+    as a fail-safe with the re-declaration named, the two harnesses
+    having split on whether it is a defect.

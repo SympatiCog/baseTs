@@ -187,7 +187,16 @@ index, and a slice, mask, sort, `dropna` or an alignment onto the same grid
 keeps it readable, while `reset_index` (positions), a `groupby` result (keys),
 a `reindex`/`set_axis`/`ts.index =` onto a new grid, or arithmetic aligned
 onto a different grid is refused by name rather than read as seconds. Take
-the calendar before such an operation, or declare the origin again.
+the calendar before such an operation; declare the origin again only for an
+index that really is seconds in this series' base, because on positions or
+keys that reads them as seconds. One case no check on the index can tell
+apart: positions 0..n-1 of a series whose own seconds are exactly those
+values read as those seconds, which is right unless the series was reordered
+first. Arithmetic between two series of one origin on interleaved grids is
+refused too, and re-declaring is the right answer there. An origin restored
+from a pickle written before origins carried their index, or copied from a
+source that could not say which index it described, is refused rather than
+guessed at.
 
 #### `len()`
 ```python no-run

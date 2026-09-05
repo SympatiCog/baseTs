@@ -726,16 +726,78 @@ def _holds_calendar_datetimes(index: pd.Index) -> bool:
     return seen_stamp
 
 
-def _heal_origin_stamp(obj) -> None:
-    """Give a pair that has no stamp the index it is on now.
+def _stamp_declared_origin(obj) -> None:
+    """Stamp a just-declared origin with the index it was declared against.
 
-    The stamp arrived with #100's round 2; a pair from before it - a
-    legacy pickle, a duck-typed source, a keyword declaration - described
-    the index the object had when the pair was set, which is the index it
-    has now. Only fills an absent stamp; never replaces one.
+    Only where that index is known: the constructor, where an explicit
+    `ts_offset=` describes the index the same call built. A pair that
+    arrives without a stamp from anywhere else - a pickle written before
+    the stamp existed, a duck-typed source - describes an index nobody
+    recorded, and `_origin_problem` refuses to read it rather than
+    blessing whatever index the object happens to carry now. An earlier
+    cut stamped those too, and a genuinely corrupted legacy object came
+    back certified: its positions were stamped as the seconds they were
+    read as, destroying the evidence that anything was wrong (review
+    round 3, both panelists). Nothing is lost by refusing - no version
+    that could produce such a pickle had a calendar accessor to break.
     """
     if obj.__dict__.get('has_timestamp_offset') and obj.__dict__.get('_origin_index') is None:
         object.__setattr__(obj, '_origin_index', obj.index)
+
+
+def _drawn_from(index: pd.Index, stamp: pd.Index) -> bool:
+    """True if every label of `index` is one of `stamp`'s seconds.
+
+    `Index.isin` raises rather than answering when the two cannot be
+    compared - a MultiIndex from a two-key groupby against float seconds
+    gave "Buffer dtype mismatch" (round 3, the EXAMPLES.md harness). An
+    index that cannot even be compared with the seconds is not drawn from
+    them.
+    """
+    if stamp.equals(index):
+        return True
+    try:
+        return bool(index.isin(stamp).all())
+    except (TypeError, ValueError):
+        return False
+
+
+def _tighten_origin_stamp(obj, also: Optional[pd.Index] = None) -> None:
+    """Narrow the stamp to the index the object holds, when it is drawn
+    from the stamped seconds (or from `also`, a second operand's stamp).
+
+    The stamp is only ever narrowed here, never widened, so nothing this
+    accepts would have been refused before it; what it does is shrink the
+    room for coincidence. With the stamp left at the parent's seconds, a
+    1 Hz series sliced to seconds 3..5 and then `reset_index`ed carried
+    positions 0..2 - members of the parent's 0..9 - and read them as the
+    first three seconds (review round 3, quick-review). Narrowed at the
+    slice to {3, 4, 5}, the positions are not among them and are refused.
+
+    `also` carries a second operand's known-good seconds into the test
+    where a caller has them. Arithmetic is not such a caller: pandas
+    hands `__finalize__` the left operand only, so two series of one
+    origin on interleaved grids align onto a union this cannot vouch for
+    and the read refuses it (review round 3; nothing at that call site
+    distinguishes the union from the foreign-grid `reindex` round 2
+    exists to refuse, so it fails safe and the message names the
+    re-declaration).
+
+    What values cannot tell apart remains: an index that is exactly the
+    positions 0..n-1 of a series whose own seconds are those same values.
+    That reading is right - positions and seconds coincide - unless the
+    series was reordered first, the one case stated in the docs as
+    unreachable by any check on the index alone.
+    """
+    if not obj.__dict__.get('has_timestamp_offset'):
+        return
+    stamp = obj.__dict__.get('_origin_index')
+    index = obj.index
+    if stamp is None or stamp.equals(index):
+        return
+    known = stamp if also is None else stamp.append(also)
+    if _drawn_from(index, known):
+        object.__setattr__(obj, '_origin_index', index)
 
 
 def _origin_problem(obj) -> Optional[str]:
@@ -766,16 +828,27 @@ def _origin_problem(obj) -> Optional[str]:
                 "with no calendar attached. Build it from a DatetimeIndex, "
                 "or declare the origin with set_timestamp_offset(epoch_seconds).")
     stamp = obj.__dict__.get('_origin_index')
-    index = obj.index
-    if stamp is None or stamp.equals(index) or bool(index.isin(stamp).all()):
+    if stamp is None:
+        return ("this series carries a timestamp origin that was declared "
+                "without recording the index it describes - it was restored "
+                "from a pickle written before origins carried one, or copied "
+                "from an object that could not say. On such an object the "
+                "offset had been added to the times as well, so reading a "
+                "calendar from it would count it twice. Declare the origin "
+                "again with set_timestamp_offset(epoch_seconds), against the "
+                "index this series holds now.")
+    if _drawn_from(obj.index, stamp):
         return None
     return ("the recorded timestamp origin no longer describes this index: "
             f"it was declared against {len(stamp)} seconds, and the index now "
             "holds values that are not among them - a pandas operation such as "
-            "reset_index, groupby or value_counts has replaced the seconds with "
-            "positions or keys, or the series was aligned onto another grid. "
-            "Take the calendar from `datetimes` before such an operation, or "
-            "declare the origin again with set_timestamp_offset(epoch_seconds).")
+            "reset_index or groupby has replaced the seconds with positions or "
+            "keys, or the series was aligned onto another grid. Take the "
+            "calendar from `datetimes` before such an operation. Only if the "
+            "index really is seconds in this series' time base (a grid you "
+            "built) declare the origin again with "
+            "set_timestamp_offset(ts.ts_offset); on positions or keys that "
+            "would read them as seconds.")
 
 
 def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[float]]]:
@@ -1083,9 +1156,6 @@ class TimeSeriesData(pd.Series):
         if not hasattr(self, _IDENTITY_NAME_SLOT):
             object.__setattr__(self, _IDENTITY_NAME_SLOT, None)
         _complete_positional_slots(self)
-        # A blob written before the origin stamp existed carries the pair
-        # and no `_origin_index`; the pair described the pickled index.
-        _heal_origin_stamp(self)
 
     # What propagates is the (value, index, values) triple, not the bare
     # value - so pandas copying it verbatim is correct, because the child
@@ -1218,7 +1288,7 @@ class TimeSeriesData(pd.Series):
             self._origin_index = None
         # A pair declared here by keyword describes the index as built;
         # one converted from the index was stamped by _set_axis already.
-        _heal_origin_stamp(self)
+        _stamp_declared_origin(self)
 
         # Declare the rate only when one was supplied. With no declaration the
         # `freq` property derives from the index on read, so there is nothing
@@ -1294,7 +1364,25 @@ class TimeSeriesData(pd.Series):
         # over seconds in the base (`times`, `data`, the resamplers),
         # re-stamp; a numeric index that arrives any other way must still
         # be drawn from the seconds the origin describes, or `datetimes`
-        # refuses it.
+        # refuses it. When it is so drawn (dropna(inplace=True) installs
+        # the survivors here), the stamp narrows to it, so a later
+        # replacement has less room to coincide with (round 3).
+        else:
+            _tighten_origin_stamp(self)
+
+    def _update_inplace(self, result, *args, **kwargs) -> None:
+        """pandas' in-place door: swap the manager, then narrow the stamp.
+
+        `dropna(inplace=True)`, `sort_values(inplace=True)` and their
+        kind replace `_mgr` here without `__finalize__` or `_set_axis`
+        (#20 met the same door), so the survivors' index arrived with the
+        stamp still at the full series and a later in-place `reset_index`
+        had the whole range to coincide with (round 3). `*args, **kwargs`
+        ride through because the signature differs between pandas majors
+        (`verify_is_copy` on 2.x).
+        """
+        super()._update_inplace(result, *args, **kwargs)
+        _tighten_origin_stamp(self)
 
     def _restore_origin_from_index(self) -> bool:
         """Give the pair the origin the installed index brought, if any.
@@ -1410,9 +1498,6 @@ class TimeSeriesData(pd.Series):
         _carry_identity(self, base_ts)
 
         _detach_shared_metadata(self)
-        # A duck-typed source carries a pair but no stamp; the pair
-        # describes the index this conversion took from it.
-        _heal_origin_stamp(self)
 
     def _calculate_effective_frequency(self) -> float:
         """Derive the sampling frequency from the time index.
@@ -1544,21 +1629,27 @@ class TimeSeriesData(pd.Series):
                             object.__setattr__(self, name, getattr(source, name))
                 elif nonempty and all(getattr(obj, 'has_timestamp_offset', False)
                                       and getattr(obj, 'ts_offset', None) == nonempty[0].ts_offset
+                                      and _origin_problem(obj) is None
                                       for obj in nonempty):
                     # A genuine concat of pieces that share one origin is
                     # still seconds from that origin (review round 2,
                     # codex): the two halves of a stamped series glued back
                     # together came out with no origin at all. Pieces with
                     # different origins get none - their seconds do not
-                    # share a base.
+                    # share a base - and so do pieces one of which is
+                    # itself stale, which the offsets alone could not see:
+                    # concatenating a reset-indexed piece re-stamped its
+                    # positions and read them as seconds (round 3).
                     object.__setattr__(self, 'ts_offset', nonempty[0].ts_offset)
                     object.__setattr__(self, 'has_timestamp_offset', True)
                     object.__setattr__(self, '_origin_index', self.index)
         # The pair was just copied from `other`; if this object's own index
         # arrived stamped (reindex(dates) builds through the constructor
         # and lands here), that index's origin is the one that holds (#100,
-        # review round 1).
-        self._restore_origin_from_index()
+        # review round 1). Otherwise, if this index is drawn from the
+        # stamped seconds, the stamp narrows to it (round 3).
+        if not self._restore_origin_from_index():
+            _tighten_origin_stamp(self)
         return _detach_shared_metadata(self)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:

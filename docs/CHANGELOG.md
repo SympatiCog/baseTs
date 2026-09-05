@@ -199,6 +199,38 @@ converted. A genuine `pd.concat` of pieces that share one origin keeps it
 (the two halves of a stamped series glued back together had none);
 pieces with different origins, or one with none, give none.
 
+The stamp narrows to each derivation's own index whenever that index is
+drawn from the stamped seconds - in `__finalize__`, in `_set_axis`, and
+in `_update_inplace`, the door `dropna(inplace=True)` and its kind swap
+the manager through. Narrowing never widens, so it refuses nothing the
+subset test accepted; it shrinks the room for coincidence. With the
+stamp left at the parent's seconds, a 1 Hz series sliced to seconds
+3..5 and then `reset_index`ed carried positions 0..2, members of the
+parent's 0..9, and read them as the first three seconds (review round
+3). What no check on the index can tell apart remains, and is stated
+rather than hidden: an index that is exactly the positions 0..n-1 of a
+series whose own seconds are those same values reads as those seconds -
+right unless the series was reordered first. A MultiIndex, which cannot
+be compared with seconds at all, is refused rather than crashing the
+comparison. Arithmetic between two series of one origin on interleaved
+grids aligns onto a union that really is seconds from that origin, and
+is refused all the same: pandas hands `__finalize__` the left operand
+only, so nothing there tells that union from the foreign-grid `reindex`
+this exists to refuse. It fails safe, and the message names the
+re-declaration, which is valid in exactly that case.
+
+**A pair that arrives without a stamp is refused, not guessed at.** A
+pickle written before this entry, or a duck-typed source, carries an
+origin declared against an index nobody recorded. An earlier cut stamped
+those with whatever index the object arrived with - and a blob whose
+index had already been replaced came back certified, its positions
+stamped as the seconds they were then read as, with the evidence gone
+(review round 3, both panelists). Nothing is lost by refusing: no
+version that could write such a blob had a calendar accessor, and on
+those versions `set_timestamp_offset` had *added* the offset to the
+times, so reading a calendar from the pair would count it twice. The
+message says so and names the re-declaration.
+
 `resample` works unchanged on the seconds index, and `_create_new_with_data`
 carries the pair, so the result keeps the origin and its `datetimes` are
 the bin starts. Bins are counted from the origin, not the calendar: a
@@ -348,6 +380,41 @@ overflow past the stamp range is an `OverflowError` on the operation the
 code performs). The `ensure_index` import and the `_set_axis` signature
 were measured on pandas 2.2.3 in this session, which the panel's
 environment could not.
+
+### Review round 3 (quick-review, and the consensus panel independently)
+
+Went at the round-2 mechanism itself and found its looseness: the
+subset test is by value, and the panel's own fixture (hourly, stride
+3600 s) is the one stride positions can never coincide with. A 1 Hz
+series sliced to seconds 3..5 and `reset_index`ed carried positions
+0..2 - members of the parent's 0..9 - and `datetimes` read them as the
+first three seconds; the same reached `time_slice`'s calendar bounds.
+The stamp narrows to each derivation now (the paragraph above), and the
+residual - positions equal to the series' own seconds - is pinned as
+the limit it is, right when the order is intact and wrong when the
+series was reordered first. Second, the refusal's remedy offered
+`set_timestamp_offset` unconditionally, and on a `reset_index`ed series
+that re-stamps positions as seconds without a word; the message now
+scopes it to an index that really is seconds in the series' base. Pinning
+the narrowing found two more doors: `dropna(inplace=True)` swaps the
+manager through `_update_inplace` (now overridden to narrow, with the
+signature passed through, as #20 learned to), and a two-key groupby's
+MultiIndex crashed the membership test instead of being refused (the
+EXAMPLES.md harness caught it).
+
+The panel's round 3 reached the same value-subset finding independently,
+with the same repro shape, and added three: the healing of an
+unstamped pair certified a corrupted legacy blob (above); the concat
+arm compared the operands' offsets but never asked whether an operand
+was *itself* stale, so concatenating a reset-indexed piece re-stamped
+its positions and read them as seconds (it checks each operand's own
+readability now); and the parametrised case named `aligned_onto_own_subgrid`
+was `ts + ts.iloc[::2]`, whose union alignment returns the parent's own
+index - it exercised the equality fast path, not the subset branch it
+was named for, and is `ts.iloc[[0, 2]]` now. Its fourth, the refused
+same-origin union, is answered above as a deliberate fail-safe rather
+than a fix; the quick-review harness had reached the opposite verdict on
+the same behaviour, which is why it is stated rather than silently kept.
 
 ## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
 

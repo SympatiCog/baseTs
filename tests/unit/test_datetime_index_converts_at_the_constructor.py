@@ -19,6 +19,7 @@ Measured on `main` at 0cbffcb before this change: such a series derived
 
 import datetime
 import pickle
+from types import SimpleNamespace
 from decimal import Decimal
 from fractions import Fraction
 
@@ -893,7 +894,7 @@ class TestTheOriginDescribesTheIndexItWasRecordedAgainst:
         lambda ts: ts.sort_index(ascending=False),
         lambda ts: ts.dropna(),
         lambda ts: ts * 2.0,
-        lambda ts: ts + ts.iloc[::2],
+        lambda ts: ts.iloc[[0, 2]],
         lambda ts: ts.astype('float32'),
         lambda ts: ts.where(ts > 15.0),
         lambda ts: ts.resample('2h'),
@@ -903,7 +904,7 @@ class TestTheOriginDescribesTheIndexItWasRecordedAgainst:
         lambda ts: ts.copy(),
         lambda ts: pickle.loads(pickle.dumps(ts)),
     ], ids=['iloc', 'mask', 'sort_values', 'sort_index', 'dropna', 'scalar_mul',
-            'aligned_onto_own_subgrid', 'astype', 'where', 'resample', 'interpto_hz',
+            'a_strict_subgrid', 'astype', 'where', 'resample', 'interpto_hz',
             'time_slice', 'diff_ts', 'copy', 'pickle'])
     def test_an_index_drawn_from_those_seconds_still_reads(self, keep):
         out = keep(self._hourly())
@@ -956,22 +957,166 @@ class TestTheOriginDescribesTheIndexItWasRecordedAgainst:
         with pytest.raises(ValueError, match="first stamp is NaT"):
             baseTs([1.0], times=pd.Index([pd.NaT], dtype=object))
 
-    def test_a_pickle_from_before_the_stamp_is_healed_on_load(self):
-        """A blob written before `_origin_index` existed carries the pair,
-        no stamp, and the registry of its day - which is the shape a real
-        one has, not merely a missing attribute."""
-        ts = self._hourly()
-        state = ts.__getstate__()
-        state = dict(state)
+    @staticmethod
+    def _legacy(ts):
+        """A blob written before `_origin_index` existed: the pair, no
+        stamp, and the registry of its day - the shape a real one has,
+        not merely a missing attribute."""
+        state = dict(ts.__getstate__())
         state.pop('_origin_index')
         state['_metadata'] = [n for n in state['_metadata'] if n != '_origin_index']
         legacy = baseTs.__new__(baseTs)
         legacy.__setstate__(state)
-        assert legacy.datetimes.equals(self.HOURLY)
-        assert legacy._origin_index.equals(legacy.index)
+        return legacy
+
+    def test_a_pickle_from_before_the_stamp_refuses_rather_than_guessing(self):
+        """An earlier cut stamped such a blob with whatever index it
+        arrived with. A blob whose index had already been replaced then
+        came back certified, its positions stamped as the seconds they
+        were read as (review round 3, both panelists). Nothing is lost by
+        refusing: no version that could write one had an accessor."""
+        legacy = self._legacy(self._hourly())
+        assert '_origin_index' not in legacy.__dict__
         assert '_origin_index' in legacy._metadata            # the class registry governs
+        with pytest.raises(ValueError, match="without recording the index it describes"):
+            legacy.datetimes
+
+    def test_a_corrupted_legacy_blob_is_not_blessed(self):
+        """The case the healing made permanent: the pair survived an
+        index replacement before the blob was written."""
+        ts = self._hourly()
+        ts.reset_index(drop=True, inplace=True)
+        legacy = self._legacy(ts)
+        with pytest.raises(ValueError, match="without recording the index it describes"):
+            legacy.datetimes
+
+    def test_the_remedy_the_legacy_message_names_works(self):
+        legacy = self._legacy(self._hourly())
+        legacy.set_timestamp_offset(epoch_seconds(self.HOURLY[0]))
+        assert legacy.datetimes.equals(self.HOURLY)
+
+    def test_a_duck_typed_source_carrying_a_pair_refuses_too(self):
+        """It cannot say which index its offset described."""
+        duck = SimpleNamespace(data=np.arange(3.0), times=np.array([0.0, 1.0, 2.0]),
+                               ts_offset=1672531200.0, has_timestamp_offset=True)
+        conv = baseTs(duck.data, duck.times)
+        conv.ts_offset = duck.ts_offset
+        conv.has_timestamp_offset = True
+        with pytest.raises(ValueError, match="without recording the index it describes"):
+            conv.datetimes
+
+    def test_concat_with_a_stale_piece_gives_no_origin(self):
+        """The offsets agreed, so the arm re-stamped the merged index and
+        read the stale piece's positions as seconds (round 3, codex)."""
+        good = self._hourly()
+        stale = self._hourly()
+        stale.reset_index(drop=True, inplace=True)
+        out = pd.concat([stale, good])
+        assert out.has_timestamp_offset is False
+
+    def test_arithmetic_onto_a_union_refuses_and_names_its_remedy(self):
+        """Two series of one origin on interleaved grids align onto their
+        union, which really is seconds from that origin - and is refused,
+        because pandas hands `__finalize__` the left operand only (round
+        3, codex called it a false reject; the quick-review harness called
+        the same behaviour documented). Nothing at that call site can tell
+        this union from the `reindex` onto a foreign grid that round 2
+        exists to refuse, so it fails safe and the remedy re-declares.
+        """
+        origin = epoch_seconds(pd.Timestamp('2020-01-01'))
+        a = baseTs([1.0, 3.0], [0.0, 7200.0], ts_offset=origin)
+        b = baseTs([2.0, 4.0], [3600.0, 10800.0], ts_offset=origin)
+        out = a + b
+        assert out.times.tolist() == [0.0, 3600.0, 7200.0, 10800.0]
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            out.datetimes
+
+        out.set_timestamp_offset(origin)                     # the named remedy
+        assert out.datetimes.equals(pd.date_range('2020-01-01', periods=4, freq='h'))
+
+    def test_arithmetic_onto_the_same_grid_still_reads(self):
+        """The common case: same grid, so the union is the grid itself."""
+        origin = epoch_seconds(pd.Timestamp('2020-01-01'))
+        a = baseTs([1.0, 3.0], [0.0, 3600.0], ts_offset=origin)
+        b = baseTs([2.0, 4.0], [0.0, 3600.0], ts_offset=origin)
+        assert (a + b).datetimes.equals(pd.date_range('2020-01-01', periods=2, freq='h'))
 
     def test_the_stamp_is_in_metadata_and_defaults_to_none(self):
         assert '_origin_index' in TimeSeriesData._metadata
         assert baseTs(np.arange(3.0), [0.0, 1.0, 2.0])._origin_index is None
         assert self._hourly()._origin_index.equals(pd.Index([0.0, 3600.0, 7200.0, 10800.0]))
+
+
+class TestTheStampNarrowsToEachDerivation:
+    """Review round 3 (quick-review, a different harness): the subset test
+    is by value, so a 1 Hz series sliced to seconds 3..5 and then
+    `reset_index`ed carried positions 0..2 - members of the parent's
+    seconds 0..9 - and read them as the first three seconds. The stamp now
+    narrows to each derivation's own index, so those positions are not
+    among {3, 4, 5}. What remains is the one case values cannot tell
+    apart, pinned below as the limit it is."""
+
+    D0 = pd.Timestamp('2024-06-01')
+
+    def _one_hz(self, n=10):
+        stamps = pd.DatetimeIndex([self.D0 + pd.Timedelta(seconds=i) for i in range(n)])
+        return baseTs(np.arange(float(n)), times=stamps)
+
+    def test_a_slice_narrows_the_stamp_to_its_own_seconds(self):
+        sub = self._one_hz().iloc[3:6]
+        assert sub._origin_index.tolist() == [3.0, 4.0, 5.0]
+
+    def test_positions_after_a_slice_are_refused(self):
+        sub = self._one_hz().iloc[3:6]
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            sub.reset_index(drop=True).datetimes
+
+    def test_positions_after_an_inplace_chain_are_refused(self):
+        """`dropna(inplace=True)` installs the survivors through `_set_axis`,
+        where the stamp narrows too; the in-place reset then has nothing to
+        coincide with."""
+        ts = self._one_hz()
+        ts.iloc[:3] = np.nan
+        ts.dropna(inplace=True)
+        assert ts._origin_index.tolist() == list(range(3, 10))
+        ts.reset_index(drop=True, inplace=True)
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            ts.datetimes
+
+    def test_narrowing_never_widens(self):
+        ts = self._one_hz()
+        wide = ts._origin_index
+        ts.index = pd.Index([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 100.0])
+        assert ts._origin_index is wide                      # not a subset: untouched
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            ts.datetimes
+
+    def test_the_one_case_values_cannot_tell_apart(self):
+        """Positions 0..n-1 of a series whose own seconds are exactly those
+        values read as seconds. Right when the order is intact; wrong when
+        the series was reordered first - a limit of any check on the index
+        alone, stated in the docs, and pinned here so it is a known limit
+        rather than a discovered one."""
+        ts = self._one_hz()
+        assert ts.reset_index(drop=True).datetimes.equals(ts.datetimes)
+        reordered = ts.iloc[[2, 0, 1]].reset_index(drop=True)
+        assert reordered.datetimes.tolist() == [self.D0 + pd.Timedelta(seconds=i) for i in range(3)]
+
+    def test_the_message_scopes_its_remedy(self):
+        out = baseTs([1.0, 2.0], times=pd.date_range('2020-01-01', periods=2, freq='h'))
+        out = out.reset_index(drop=True)
+        with pytest.raises(ValueError) as info:
+            out.datetimes
+        assert "Only if the index really is seconds" in str(info.value)
+        assert "read them as seconds" in str(info.value)
+
+    def test_a_multiindex_result_is_refused_not_crashed(self):
+        """A two-key groupby's MultiIndex cannot be compared with seconds;
+        `Index.isin` raised "Buffer dtype mismatch" (the EXAMPLES.md
+        harness, round 3)."""
+        ts = self._one_hz()
+        stamps = ts.datetimes
+        out = ts.groupby([stamps.minute, stamps.second // 5]).mean()
+        assert isinstance(out.index, pd.MultiIndex)
+        with pytest.raises(ValueError, match="no longer describes this index"):
+            out.datetimes
