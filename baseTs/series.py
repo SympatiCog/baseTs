@@ -6,11 +6,16 @@ Created for baseTs pandas migration.
 """
 
 from __future__ import annotations
+import datetime
 from typing import Optional, Union, Any, Dict, List, Tuple
 import copy as copy_module
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+# pandas' own index normaliser, so _set_axis sees exactly the Index pandas
+# would build (a list of tuples stays an object Index there, where
+# pd.Index() would make a MultiIndex). Present on pandas 2.2.3 and 3.0.1.
+from pandas.core.indexes.base import ensure_index
 
 from .LowessOutlierFilter import LowessOutlierFilter
 from .utils import validate_sampling_freq
@@ -698,6 +703,26 @@ def normalise_label(value: Any) -> str:
 _NS_PER_SECOND = 1_000_000_000
 
 
+def _holds_calendar_datetimes(index: pd.Index) -> bool:
+    """True if every element of an object index is a calendar datetime.
+
+    The rule is by element type, not by parsing: `datetime.date` and its
+    subclasses (`datetime`, `Timestamp`, NaT) and `numpy.datetime64`
+    count; a missing value (None, NaN, NaT) is allowed among them; a string
+    is not a datetime however it reads, so a text index stays text. An
+    index with no datetime in it at all is not one either.
+    """
+    seen_stamp = False
+    for element in index:
+        if isinstance(element, (datetime.date, np.datetime64)):
+            seen_stamp = seen_stamp or not pd.isna(element)
+        elif element is None or (isinstance(element, float) and np.isnan(element)):
+            continue
+        else:
+            return False
+    return seen_stamp
+
+
 def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[float]]]:
     """Turn a stamped index into the seconds the package reads (#100).
 
@@ -718,11 +743,22 @@ def _seconds_since_origin(index: pd.Index) -> Optional[Tuple[pd.Index, Optional[
     with it, a pair nothing downstream can read. An interior NaT becomes a
     NaN second, which is what the numeric index admits already.
 
+    An object index whose elements are all calendar datetimes - `Timestamp`
+    or `datetime` objects pandas could not unify into one DatetimeIndex
+    because they carry different zones, or plain `datetime.date` objects -
+    is a stamped index too, and goes through `pd.to_datetime(utc=True)`,
+    which reads each element as the instant it names (a naive one as UTC,
+    a date as its midnight) and lands in the DatetimeIndex arm. Left alone,
+    such an index sat as raw objects in a float slot, `times` returned
+    Timestamps and nothing raised (review round 1, both panelists).
+
     Returns:
         `(seconds, origin)` - a float64 Index and the origin in epoch
         seconds, None when the index carries no origin - or None when the
         index is not a stamped one.
     """
+    if index.dtype == object and _holds_calendar_datetimes(index):
+        index = pd.to_datetime(index, utc=True)
     if isinstance(index, pd.DatetimeIndex):
         if len(index) == 0:
             return pd.Index(np.array([], dtype=float), name=index.name), None
@@ -1079,13 +1115,15 @@ class TimeSeriesData(pd.Series):
             super().__init__(data, index=index, **kwargs)
             self._initialize_default_metadata()
 
-        # After the three branches, on the index pandas has already
-        # normalised - so one check covers every spelling of a stamped
-        # index - and before the rate declaration below, whose token reads
-        # the index this installs. Runs on the conversion branch too: an
-        # index carries its origin, so a stamped one wins over a copied
-        # offset.
-        origin_from_index = self._adopt_stamped_index()
+        # The index was converted on its way in, by _set_axis - the one door
+        # pandas routes every index through, including the ones above. What
+        # is left to do here is give the origin it found back to the pair:
+        # _initialize_default_metadata and _copy_metadata_from_basetseries
+        # both just wrote the pair (defaults, or the source's) over the one
+        # _set_axis had set, and an index carries its origin, so the index
+        # wins. Before the rate declaration below, whose token reads the
+        # index as installed.
+        origin_from_index = self._restore_origin_from_index()
 
         # The offset pair is owned here, where the index is built, so that a
         # DatetimeIndex and an explicit `ts_offset` meet in one place. The
@@ -1146,27 +1184,66 @@ class TimeSeriesData(pd.Series):
         if not hasattr(self, 'history') or self.history is None:
             self.history = [f"Created TimeSeriesData with {len(self)} samples"]
 
-    def _adopt_stamped_index(self) -> bool:
-        """Convert a stamped index already installed on self to seconds.
+    def _set_axis(self, axis, labels, *args, **kwargs) -> None:
+        """Install an index, converting a stamped one to seconds (#100).
 
-        The one door (#100): the constructor calls it on whatever pandas
-        installed, and baseTs' `times` setter after installing the caller's
-        index. A DatetimeIndex sets the origin pair; a TimedeltaIndex leaves
-        the pair alone, since durations say nothing about an origin; a
-        numeric index is not touched at all.
+        This is the one door. pandas routes every index through here -
+        `Series.__init__` on every spelling of the constructor, the `index`
+        property setter, `set_axis`, the constructor `reindex` calls, the
+        re-initialisation `_adopt_data_inplace` performs - measured on
+        pandas 2.2.3 and 3.0.1, with the same signature on both (`*args,
+        **kwargs` ride through in case a later pandas adds one). The first
+        cut converted in `__init__` and the `times` setter instead, and
+        review round 1 (both panelists) found `ts.index = dates` and
+        `set_axis(dates)` leaving a raw DatetimeIndex on the object with a
+        stale offset pair, so `datetimes` refused it as having no origin.
+
+        A DatetimeIndex becomes seconds and its first stamp is recorded as
+        the origin; a TimedeltaIndex becomes seconds and the pair is left
+        alone (durations say nothing about an origin); anything else is
+        installed as given. `_origin_from_index` always describes the index
+        currently installed: the origin it brought, or None. It is not in
+        `_metadata`, so it is neither propagated nor pickled - it is a fact
+        about this object's own index, and every copier consults it to
+        apply the one rule: an index carries its origin, and a copied pair
+        does not overwrite it. See _restore_origin_from_index.
+
+        The pair is set here as well, directly, for the post-construction
+        doors. During construction the metadata initialisers overwrite it a
+        moment later and `__init__` restores it from `_origin_from_index`.
+        """
+        index = labels if isinstance(labels, pd.Index) else ensure_index(labels)
+        converted = _seconds_since_origin(index)
+        origin = None
+        if converted is not None:
+            index, origin = converted
+        super()._set_axis(axis, index, *args, **kwargs)
+        object.__setattr__(self, '_origin_from_index', origin)
+        if origin is not None:
+            object.__setattr__(self, 'ts_offset', origin)
+            object.__setattr__(self, 'has_timestamp_offset', True)
+
+    def _restore_origin_from_index(self) -> bool:
+        """Give the pair the origin the installed index brought, if any.
+
+        The rule every copier applies: an index carries its origin. A
+        derivation that keeps its parent's seconds inherits the parent's
+        pair (the index brought no origin, so the copy stands); one whose
+        index arrived stamped - `reindex(dates)`, `_create_new_with_data(x,
+        dates)`, `TimeSeriesData(duck_with_dates)` - keeps the origin those
+        stamps carry, and the parent's or source's pair, copied a moment
+        earlier, is put back. Read from `__dict__`, not getattr: an object
+        pandas built without `__init__` has no such slot and must read as
+        "no origin", not recurse.
 
         Returns:
-            True when an origin was recorded from the index.
+            True when the index brought an origin.
         """
-        converted = _seconds_since_origin(self.index)
-        if converted is None:
-            return False
-        seconds, origin = converted
-        self.index = seconds
+        origin = self.__dict__.get('_origin_from_index')
         if origin is None:
             return False
-        self.ts_offset = origin
-        self.has_timestamp_offset = True
+        object.__setattr__(self, 'ts_offset', origin)
+        object.__setattr__(self, 'has_timestamp_offset', True)
         return True
 
     @property
@@ -1389,6 +1466,11 @@ class TimeSeriesData(pd.Series):
                     for name in self._metadata:
                         if hasattr(source, name):
                             object.__setattr__(self, name, getattr(source, name))
+        # The pair was just copied from `other`; if this object's own index
+        # arrived stamped (reindex(dates) builds through the constructor
+        # and lands here), that index's origin is the one that holds (#100,
+        # review round 1).
+        self._restore_origin_from_index()
         return _detach_shared_metadata(self)
 
     def _finalizing_window(self, method: str, *args, **kwargs) -> _FinalizingWindow:

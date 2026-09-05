@@ -357,13 +357,13 @@ class baseTs(TimeSeriesData):
     def times(self, value: np.ndarray):
         """Set the time values (backward compatibility).
 
-        The other door an index arrives by (#100): a DatetimeIndex becomes
-        seconds since its first stamp and sets the origin, a TimedeltaIndex
-        becomes seconds and leaves the origin alone, and seconds are taken
-        as given - the same rule as the constructor.
+        The assignment reaches TimeSeriesData._set_axis, the one door every
+        index arrives by (#100): a DatetimeIndex becomes seconds since its
+        first stamp and sets the origin, a TimedeltaIndex becomes seconds
+        and leaves the origin alone, and seconds are taken as given - the
+        same rule as the constructor, `ts.index = ...` and `set_axis`.
         """
         self.index = pd.Index(value)
-        self._adopt_stamped_index()
         # No freq recalculation. The property derives from the index, so a new
         # index re-derives on the next read - and any declaration made against
         # the old index stops matching its token, which is the correct
@@ -424,6 +424,11 @@ class baseTs(TimeSeriesData):
 
         for attr, value in preserved.items():
             setattr(self, attr, value)
+        # The re-initialisation went through _set_axis; if the new index
+        # arrived stamped its origin holds over the preserved pair (#100).
+        # No package path hands a stamped index here - every caller derives
+        # it from the numeric one - so this is pinned directly.
+        self._restore_origin_from_index()
 
         if attrs:
             self.attrs = attrs
@@ -567,9 +572,20 @@ class baseTs(TimeSeriesData):
         if preserve_metadata:
             # Copy metadata
             metadata_attrs = ['is_filtered', 'is_interpolated', 'is_uniform_grid',
-                            'is_outlier_filtered', 'has_timestamp_offset', 'ts_offset',
+                            'is_outlier_filtered',
                             '_outlier_indices', '_lowess_fit', 'last_process',
                             'outlier_filter']
+
+            # The offset pair is copied only when the new index brought no
+            # origin of its own. An index carries its origin (#100): handed
+            # a DatetimeIndex as `new_times`, the constructor above recorded
+            # its first stamp, and copying the parent's pair over it
+            # relabelled 2024 dates as 2023 (review round 1, both
+            # panelists). Same shape as the _freq_declaration rule below: a
+            # value the new object derived from its own arguments is not
+            # overwritten by the parent's.
+            if new_obj.__dict__.get('_origin_from_index') is None:
+                metadata_attrs += ['has_timestamp_offset', 'ts_offset']
 
             # Not iterating self._metadata: this list is deliberately curated
             # and excludes signal_name and history, which are handled above
@@ -1843,8 +1859,12 @@ class baseTs(TimeSeriesData):
     def _bound_in_seconds(self, bound, which: str):
         """A time_slice bound as seconds on the index.
 
-        A real number is seconds on the index, as it always was. Anything
-        else is a calendar bound - a date string, a datetime, a date, a
+        A number is seconds on the index, as it always was - `numbers.Number`,
+        not `numbers.Real`: `Decimal` registers under the former only, and
+        the first cut's `Real` test sent a `Decimal` bound that `main`
+        compared fine down the calendar branch, to a "no timestamp origin"
+        error (review round 1, codex; the #30 lesson again). Anything else
+        is a calendar bound - a date string, a datetime, a date, a
         numpy datetime64, a Timestamp - parsed by `pd.Timestamp`, and placed
         against the origin the way the index's own seconds were: as integer
         nanoseconds divided by 1e9, so a bound that names a sample lands on
@@ -1857,7 +1877,7 @@ class baseTs(TimeSeriesData):
             TypeError: a calendar bound on a series with no origin.
             ValueError: a string `pd.Timestamp` cannot parse.
         """
-        if bound is None or isinstance(bound, numbers.Real):
+        if bound is None or isinstance(bound, numbers.Number):
             return bound
         # Before parsing: on a series with no origin the mistake is the kind
         # of bound, whatever the string says, and that is the message owed.

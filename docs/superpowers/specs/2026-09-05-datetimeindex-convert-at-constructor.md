@@ -223,8 +223,17 @@ The open choices above, as pinned by
 7. **`resample` bins from the origin**, per point 5 above; calendar-anchored
    rules (`'W'`, `'ME'`) are refused by pandas on the seconds index and
    documented as pandas' resample over `datetimes`.
-8. Known limit, documented not pinned: a pandas operation that hands a
-   *new* `DatetimeIndex` to `_constructor` (`reindex(dates)`,
-   `set_axis(dates)`) converts it and records its origin, and
-   `__finalize__` then copies the parent's origin over that. Build a new
-   object instead.
+8. **The door is `_set_axis`** (review round 1, both panelists). The
+   first cut converted in `__init__` and the `times` setter and listed
+   `reindex`/`set_axis` as a known limit; `ts.index = dates` and
+   `set_axis(dates)` in fact left a raw DatetimeIndex with a stale pair.
+   pandas routes every index through `Series._set_axis` (measured on
+   2.2.3 and 3.0.1), so the override there is one door for real, and it
+   notes on the object what origin the installed index brought. Every
+   copier then applies one rule: an index carries its origin, and a
+   copied pair does not overwrite it - so `reindex(dates)` and
+   `_create_new_with_data(x, dates)` keep the dates' origin.
+9. An object index of calendar datetimes (mixed zones, `date` objects) is
+   a stamped index, read through `pd.to_datetime(utc=True)`; a `Decimal`
+   bound is seconds (`numbers.Number`, the #30 lesson); the accessor's
+   span limit is 292 years of the origin, refused not wrapped.

@@ -156,10 +156,12 @@ def times(self) -> np.ndarray:
     """Access the underlying time array."""
 ```
 
-Always seconds. Assigning `ts.times = x` is the other door an index arrives
-by, with the constructor's rule: a `DatetimeIndex` becomes seconds since its
-first stamp and sets the origin, a `TimedeltaIndex` becomes seconds and leaves
-the origin alone, seconds are taken as given.
+Always seconds. However an index arrives - the constructor, `ts.times = x`,
+`ts.index = x`, `set_axis`, `reindex` - it passes one door with one rule: a
+`DatetimeIndex` becomes seconds since its first stamp and sets the origin, a
+`TimedeltaIndex` becomes seconds and leaves the origin alone, seconds are
+taken as given. A derivation keeps its parent's origin unless its own index
+arrived stamped, in which case the stamps' origin holds.
 
 #### `datetimes`
 ```python no-run
@@ -171,7 +173,9 @@ def datetimes(self) -> pd.DatetimeIndex:
 The one way back to the stamps a series was built from, and what pandas'
 calendar conveniences read: `ts.groupby(ts.datetimes.month)`,
 `pd.Series(ts.values, index=ts.datetimes).rolling('1h')`. Naive UTC. Exact
-for stamps at microsecond resolution or coarser. Raises `ValueError` on a
+for stamps at microsecond resolution or coarser, within 292 years of the
+origin (pandas' nanosecond range; beyond it raises `OverflowError`). Raises
+`ValueError` on a
 series with no origin — built from seconds or durations and never given one
 via `set_timestamp_offset(epoch_seconds)`, which declares the origin without
 moving the index.

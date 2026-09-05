@@ -78,10 +78,13 @@ stamped index joins it at the door, rather than every method learning
 two index kinds (the guard-at-consumption pattern this arc keeps paying
 for) or the constructor refusing what pandas can already read.
 
-**The rule**, in `TimeSeriesData.__init__` after pandas has normalised the
-index (so one check covers a `DatetimeIndex`, a datetime64 array, a list
-of Timestamps, the index of a Series passed as `data`, and the `index=`
-alias pandas uses), and in the `times` setter, the other door:
+**The rule**, in `TimeSeriesData._set_axis` - the one method pandas routes
+every index through: `Series.__init__` on every spelling of the
+constructor (a `DatetimeIndex`, a datetime64 array, a list of Timestamps,
+the index of a Series passed as `data`, the `index=` alias pandas uses),
+the `index` property setter and so the `times` setter, `set_axis`, and the
+constructor `reindex` calls; measured on pandas 2.2.3 and 3.0.1, same
+signature on both:
 
 - A `DatetimeIndex` becomes float64 seconds since its **first** stamp
   (not its earliest: an unsorted index goes negative, as the numeric path
@@ -92,6 +95,12 @@ alias pandas uses), and in the `times` setter, the other door:
   `31449600.0`, `resample('D')` returns 365 bins with the origin kept,
   `diff_ts()` 364 samples starting at 86400 s.
 - A `TimedeltaIndex` becomes its own seconds, with no origin.
+- An object index whose elements are all calendar datetimes - Timestamps
+  in different zones, which pandas cannot unify into one `DatetimeIndex`,
+  or `datetime.date` objects - is a stamped index too, read through
+  `pd.to_datetime(utc=True)`: each element as the instant it names, a
+  naive one as UTC, a date as its midnight. Strings are not stamps however
+  they read.
 - A timezone-aware index is an instant, and epoch seconds identify an
   instant exactly, so it converts like a naive one read as UTC; the zone
   name is kept nowhere (`'2023-01-01' US/Eastern` records `1672549200.0`,
@@ -117,10 +126,11 @@ things read it:
   `ts.groupby(ts.datetimes.month)`, `pd.Series(ts.values,
   index=ts.datetimes).rolling('1h')`. Raises `ValueError` naming
   `set_timestamp_offset` on a series with no origin. Precision, measured
-  over a 14-case census (daily, hourly, 10 ms, ms, µs, ns grids; ms, µs
-  and ns fractional starts; 1900, 1960, 2200; an irregular index; an
-  unsorted one; then a microsecond stamp 200 days out, one 176 years
-  out, nanosecond stamps 97 days out, and an interior NaT): the origin is
+  over a 15-case census (daily, hourly, 10 ms, ms and µs grids; ms and
+  µs fractional starts; 1900, 1960, 2200; an irregular index; an unsorted
+  one; a microsecond stamp 200 days out, one 176 years out, nanosecond
+  stamps 97 days out, and an interior NaT; a nanosecond fractional start
+  is pinned separately as the inexact case): the origin is
   rebuilt at the microsecond, because a float64 epoch in the 2020s
   resolves to ~2.4e-7 s and the nanosecond digits of a finer origin were
   never in the float; each second is split into whole and fraction before
@@ -128,7 +138,10 @@ things read it:
   past 2**53), and the nanoseconds are rounded to the microsecond beyond
   2**23 s (97 days) from the origin, where a float64 second's ulp
   passes 1e-9. The rule that follows: every stamp at microsecond
-  resolution or coarser round-trips exactly at any span; a nanosecond
+  resolution or coarser round-trips exactly at any span within 292 years
+  of the origin (int64 nanoseconds; beyond that the accessor refuses with
+  `OverflowError`, where the first cut wrapped 9.5e9 s to a date in
+  1686); a nanosecond
   stamp does so within 97 days of the origin and comes back rounded to
   the microsecond beyond; a nanosecond origin comes back 2.11e-7 s off.
   (`pd.to_datetime(origin + seconds, unit='s')`, the obvious spelling,
@@ -141,13 +154,24 @@ things read it:
   placed as integer nanoseconds from the origin divided by 1e9, the
   arithmetic that produced the index's own seconds, so a bound that names
   a sample lands on it (`Timedelta.total_seconds()` rounds to the
-  microsecond and is not used). A number is seconds on the index, as
-  before. A calendar bound on a series with no origin raises `TypeError`
+  microsecond on pandas 2.2.3, 2.3.3 and 3.0.1, and is not used). A
+  number is seconds on the index, as before - `numbers.Number`, so a
+  `Decimal` bound, which `main` compared against the index, still is. A calendar bound on a series with no origin raises `TypeError`
   naming the remedy, before parsing - whatever the string says, the kind
   of bound is the mistake; an unparseable string on a series with an
   origin raises pandas' `ValueError`.
 - **`set_timestamp_offset(x)`** declares the origin. See the breaking
   change below.
+
+**An index carries its origin.** `_set_axis` notes, on the object, what
+origin the index it installed brought (`_origin_from_index`, not in
+`_metadata`, so neither propagated nor pickled), and every copier - the
+constructor's metadata initialisers, `__finalize__`,
+`_create_new_with_data`'s hardcoded list, `_adopt_data_inplace`'s restore
+- puts that origin back over a copied pair. So a derivation that keeps its
+parent's seconds inherits the parent's origin, and one whose index arrived
+stamped (`reindex(dates)`, `_create_new_with_data(x, dates)`) keeps the
+stamps' own.
 
 `resample` works unchanged on the seconds index, and `_create_new_with_data`
 carries the pair, so the result keeps the origin and its `datetimes` are
@@ -213,6 +237,54 @@ seconds to a `DatetimeIndex` and drop to a plain Series for every
 calendar operation, declares an origin and keys on `datetimes`). Every
 block runs under the harness; API.md's no-run count is 13 (was 12, the
 `datetimes` stub).
+
+### Review round 1 (consensus panel, codex + agy; and glm-5.3 over the ollama API, a different harness)
+
+Both panelists ran and agreed on three findings, all reproduced. The
+first cut converted in `__init__` and the `times` setter, so pandas' own
+doors - `ts.index = dates`, `set_axis(dates)` - installed a raw
+`DatetimeIndex` on an object whose pair said "no origin", and
+`datetimes` refused it. The door is `_set_axis` now, which every route
+passes through (measured: constructor on every spelling, the `index`
+setter, `set_axis`, `reindex`, the in-place re-initialisation; pandas
+2.2.3 and 3.0.1). Second, `_create_new_with_data`'s hardcoded copy list
+and `__finalize__` wrote the parent's pair over the origin a freshly
+converted index had just recorded, so `reindex(dates)` and
+`_create_new_with_data(x, dates)` relabelled 2024 dates as 2023 - the
+spec's own "check this" item, which the first cut had documented as a
+known limit instead of checking. One rule now, applied by every copier:
+an index carries its origin (`_origin_from_index`, above). Third,
+Timestamps in different zones cannot be one `DatetimeIndex`, so
+`pd.Index` left them as objects and the conversion left them alone:
+`times` returned Timestamps and nothing raised. Calendar datetimes are
+stamps by element type now, whatever container they came in.
+
+codex alone: a `Decimal` bound to `time_slice` regressed (`main`
+compared it against the index; the first cut's `numbers.Real` test sent
+it down the calendar branch to a "no timestamp origin" error) - the #30
+lesson, `Decimal` registers under `Number` only; a microsecond index
+spanning 1700-2200 is a valid `DatetimeIndex` that the accessor cannot
+rebuild in int64 nanoseconds, contradicting "at any span" - the limit is
+stated and refused now; and the -1.0000000005 s case, already fixed by
+the trunc split before the panel reported it. agy's two remaining
+findings were verified false (the flag assignment it thought missing is
+present on both trees; the unparseable-string test pins the documented
+pass-through).
+
+glm-5.3, reading only the diff, did the ulp arithmetic the docstring got
+wrong: at 2**22 s a float64 second's ulp passes half a nanosecond, not a
+nanosecond, so the nanosecond threshold is one octave further, 2**23 s
+(97 days) - confirmed by a 1000-consecutive-nanosecond sweep per octave
+(0 mismatches at 97 days, 463 at 97.1). It asked what happens past int64
+nanoseconds (measured: a silent wrap to 1686; refused now) and doubted
+that `Timedelta.total_seconds()` rounds to the microsecond (measured on
+all three pandas legs: it does). It also counted the census: the entry
+said 14 cases and listed grids the test did not have; it is 15 now and
+the list matches the test. A mutation round in between found the
+"97 days out" census case built with its own first stamp as the origin,
+so its seconds were 0, 1 and 2 ns; it starts at 2023-01-01 now. Then
+the threshold survivor: 30 mutants over every new guard, arm and
+rounding step, all killed.
 
 ## [Unreleased] — `compute_fft_power`'s constant-signal branch reports its FFT branch's DC bin (#98)
 

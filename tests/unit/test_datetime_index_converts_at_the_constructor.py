@@ -19,6 +19,8 @@ Measured on `main` at 0cbffcb before this change: such a series derived
 
 import datetime
 import pickle
+from decimal import Decimal
+from fractions import Fraction
 
 import numpy as np
 import pandas as pd
@@ -683,3 +685,139 @@ class TestTheNumericPathIsUntouched:
         consumption guard and the span helper the same way.)"""
         ts = baseTs(np.arange(3.0), np.array(['a', 'b', 'c'], dtype=object))
         assert np.isnan(ts.freq)
+
+
+class TestSetAxisIsTheOneDoor:
+    """Review round 1 (consensus panel, codex + agy): the first cut converted
+    in `__init__` and the `times` setter, so pandas' own doors -
+    `ts.index = dates`, `set_axis(dates)` - installed a raw DatetimeIndex on
+    an object whose pair said "no origin". The door is `_set_axis` now,
+    which every one of those routes through (measured on pandas 2.2.3 and
+    3.0.1)."""
+
+    def test_assigning_index_converts_and_sets_the_origin(self):
+        ts = baseTs(np.arange(3.0), [0.0, 1.0, 2.0])
+        ts.index = pd.date_range('2020-01-01', periods=3, freq='D')
+        assert ts.index.dtype == np.float64
+        np.testing.assert_array_equal(ts.times, [0.0, 86400.0, 172800.0])
+        assert ts.ts_offset == epoch_seconds(pd.Timestamp('2020-01-01'))
+        assert ts.duration() == 172800.0
+        assert ts.datetimes[1] == pd.Timestamp('2020-01-02')
+
+    def test_set_axis_returns_a_converted_series_with_the_origin(self):
+        ts = baseTs(np.arange(3.0), [0.0, 1.0, 2.0])
+        out = ts.set_axis(pd.date_range('2020-01-01', periods=3, freq='D'))
+        assert out.index.dtype == np.float64
+        assert out.ts_offset == epoch_seconds(pd.Timestamp('2020-01-01'))
+        assert ts.has_timestamp_offset is False           # the source is untouched
+
+    def test_reindex_to_dates_keeps_the_dates_origin_not_the_parents(self):
+        """`reindex` builds through the constructor and then `__finalize__`
+        copies the parent's pair; the child's index carries its origin."""
+        parent = stamped(DAILY, np.arange(365.0))
+        out = parent.reindex(pd.date_range('2024-01-01', periods=3, freq='D'))
+        assert out.ts_offset == epoch_seconds(pd.Timestamp('2024-01-01'))
+        assert out.datetimes[0] == pd.Timestamp('2024-01-01')
+        assert np.isnan(out.data).all()                    # no overlap, as pandas says
+
+    def test_create_new_with_data_given_dates_keeps_their_origin(self):
+        """The hardcoded copy list overwrote the fresh origin with the
+        parent's: 2024 dates came back labelled 2023."""
+        parent = stamped(DAILY[:3], np.arange(3.0))
+        out = parent._create_new_with_data(
+            parent.data * 2, pd.date_range('2024-01-01', periods=3, freq='D'))
+        assert out.ts_offset == epoch_seconds(pd.Timestamp('2024-01-01'))
+        assert out.datetimes.equals(pd.date_range('2024-01-01', periods=3, freq='D'))
+
+    def test_create_new_with_data_given_seconds_keeps_the_parents_origin(self):
+        parent = stamped(DAILY[:3], np.arange(3.0))
+        out = parent._create_new_with_data(parent.data * 2, np.array([0.0, 1.0, 2.0]))
+        assert out.ts_offset == parent.ts_offset
+
+    def test_adopt_data_inplace_given_dates_keeps_their_origin(self):
+        """No package path hands a stamped index here; pinned directly."""
+        ts = stamped(DAILY[:3], np.arange(3.0))
+        ts._adopt_data_inplace(np.arange(3.0), pd.date_range('2024-01-01', periods=3, freq='D'))
+        assert ts.ts_offset == epoch_seconds(pd.Timestamp('2024-01-01'))
+
+    def test_a_reinitialised_object_with_seconds_keeps_its_pair(self):
+        ts = stamped(DAILY[:3], np.arange(3.0))
+        origin = ts.ts_offset
+        ts.data = np.arange(2.0)                 # shrinks through _adopt_data_inplace
+        assert ts.ts_offset == origin
+
+    def test_the_origin_note_is_not_pickled_and_not_propagated(self):
+        """`_origin_from_index` describes one object's own index; a copy
+        must not inherit a note about a different index."""
+        ts = stamped(DAILY[:3], np.arange(3.0))
+        assert '_origin_from_index' not in pickle.loads(pickle.dumps(ts)).__dict__
+        assert '_origin_from_index' not in TimeSeriesData._metadata
+
+
+class TestAnObjectIndexOfDatetimesIsStamped:
+    """Review round 1 (both panelists): Timestamps in different zones cannot
+    be one DatetimeIndex, so `pd.Index` left them as objects and the first
+    cut left them alone - `times` returned Timestamps and nothing raised.
+    The rule is by element type: calendar datetimes are stamps whatever
+    container they came in."""
+
+    def test_mixed_zone_timestamps_are_instants(self):
+        mixed = np.array([pd.Timestamp('2023-01-01', tz='UTC'),
+                          pd.Timestamp('2023-01-02', tz='US/Eastern')], dtype=object)
+        ts = baseTs(np.arange(2.0), times=mixed)
+        assert ts.index.dtype == np.float64
+        assert ts.times[1] == 86400.0 + 5 * 3600.0            # 05:00 UTC
+        assert ts.ts_offset == epoch_seconds(pd.Timestamp('2023-01-01'))
+
+    def test_dates_are_their_midnights(self):
+        ts = baseTs(np.arange(2.0), times=[datetime.date(2023, 1, 1), datetime.date(2023, 1, 2)])
+        np.testing.assert_array_equal(ts.times, [0.0, 86400.0])
+        assert ts.datetimes[1] == pd.Timestamp('2023-01-02')
+
+    def test_a_missing_element_among_stamps_is_a_nan_second(self):
+        ts = baseTs(np.arange(3.0), times=np.array([pd.Timestamp('2023-01-01'), None,
+                                                   pd.Timestamp('2023-01-03')], dtype=object))
+        assert np.isnan(ts.times[1]) and ts.times[2] == 172800.0
+        assert ts.datetimes.isna().tolist() == [False, True, False]
+
+    def test_strings_are_not_stamps_however_they_read(self):
+        ts = baseTs(np.arange(2.0), times=np.array(['2023-01-01', '2023-01-02'], dtype=object))
+        assert ts.index.dtype != np.float64
+        assert ts.has_timestamp_offset is False
+
+    def test_a_stamp_next_to_a_string_is_not_a_stamped_index(self):
+        ts = baseTs(np.arange(2.0), times=np.array([pd.Timestamp('2023-01-01'), 'x'], dtype=object))
+        assert ts.has_timestamp_offset is False
+
+
+class TestRoundOneBoundsAndLimits:
+
+    @pytest.mark.parametrize("bound", [Decimal('0.5'), Fraction(1, 2)], ids=['Decimal', 'Fraction'])
+    def test_a_decimal_or_fraction_bound_is_seconds_as_on_main(self, bound):
+        """`Decimal` registers under `numbers.Number`, not `numbers.Real`;
+        `main` compared it against the index and returned 6 rows."""
+        ts = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        assert len(ts.time_slice(end_time=bound)) == 6
+
+    def test_a_span_past_292_years_is_refused_by_the_accessor(self):
+        """A microsecond index from 1700 to 2200 is a valid DatetimeIndex
+        (unit us), converts to seconds, and cannot be rebuilt in int64
+        nanoseconds; the refusal names the limit instead of wrapping."""
+        arr = np.array(['1700-01-01T00:00:00.000001', '2200-01-01T00:00:00.000001'],
+                       dtype='datetime64[us]')
+        ts = baseTs(np.arange(2.0), times=pd.DatetimeIndex(arr))
+        assert ts.times[1] == 182621 * 86400.0                  # 500 calendar years
+        with pytest.raises(OverflowError, match="292 years"):
+            ts.datetimes
+
+    @pytest.mark.parametrize("path", ['array', 'conversion'])
+    def test_an_offset_with_the_flag_asserted_sets_the_pair(self, path):
+        """The remaining keyword combination of the pinned pair table."""
+        src = baseTs(np.arange(10.0), np.arange(10) / 10.0)
+        if path == 'conversion':
+            src.set_timestamp_offset(1.5)
+            ts = baseTs(src, ts_offset=2.5, has_timestamp_offset=True)
+        else:
+            ts = baseTs(np.arange(10.0), np.arange(10) / 10.0, ts_offset=2.5,
+                        has_timestamp_offset=True)
+        assert (ts.ts_offset, ts.has_timestamp_offset) == (2.5, True)
