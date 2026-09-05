@@ -126,7 +126,8 @@ class TestObjectArraysOfFloatsCompute:
         The guard hands a numeric ndarray back *as is* - the same object -
         so computing with its return value must not demean the caller's
         series. A pin, not a proof: it passes before #93 too, when the copy
-        was taken before the guard ran; it fails if the copy goes."""
+        was taken before the guard ran. Since #96 the copy is the float64
+        cast's (`astype(float)`); it fails if that becomes `copy=False`."""
         ts = _ts(_sine() + 5.0)
         before = ts.values.copy()
 

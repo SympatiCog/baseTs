@@ -604,7 +604,10 @@ def compute_fft_power(
         max_rate: Maximum frequency to include in the output
 
     Returns:
-        Tuple of (frequencies, power_spectrum)
+        Tuple of (frequencies, power_spectrum), both float64. The spectrum
+        is computed on a float64 copy of the data whatever its dtype, so an
+        integer, bool, float16 or float32 series gives exactly the spectrum
+        of its float64 cast (#96); the caller's series is never modified.
 
     Raises:
         ValueError: If the time series is empty or has fewer than two samples
@@ -620,9 +623,14 @@ def compute_fft_power(
     # Computed on what the guard returns, not on ts.data (#93): the guard
     # coerces an object array and hands the coerced copy back (#75), and
     # until #93 this function threw that away and ran np.fft on the object
-    # array. The copy is still needed: for a numeric array the guard returns
-    # the caller's own array, and the demeaning below is in place.
-    data = validate_finite_data(ts.data).copy()
+    # array. Cast to float64 (#96): the guard admits integer and bool data,
+    # which the in-place demeaning below cannot write a float into (numpy's
+    # bare UFuncTypeError), and the constancy check further down is taken
+    # in float64 as relative_band_power's is - taken in a float32 series'
+    # own precision it can reach the other verdict. `astype(float)` copies,
+    # which the in-place subtraction needs: for a float64 array the guard
+    # returns the caller's own array.
+    data = validate_finite_data(ts.data).astype(float)
 
     if demean:
         data_mean = data.mean()

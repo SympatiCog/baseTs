@@ -867,6 +867,13 @@ Get frequency domain representation using enhanced FFT with optional windowing.
   as "not numeric".
   Until #93 an object array of ordinary floats passed the guard and died in numpy's FFT with a
   bare `TypeError`.
+- **`compute_fft_power()` computes on a float64 copy** of the validated data, whatever its dtype:
+  an integer, bool, float16 or float32 series gives exactly the spectrum of its float64 cast, the
+  returned power is float64, and the caller's series is never modified. Until #96
+  `compute_fft_power(demean=True)` on an integer or bool series raised numpy's bare
+  `UFuncTypeError` (the demeaning wrote a float difference into the integer array in place), and
+  a float32 series was judged constant-or-not in float32, where `relative_band_power()` judges in
+  float64.
 
 **Example:**
 ```python
