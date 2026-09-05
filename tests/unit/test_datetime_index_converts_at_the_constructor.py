@@ -248,6 +248,15 @@ class TestTheDatetimesAccessor:
         assert err.max() < 5e-7
         assert err.max() > 0     # the pin is honest: this case is inexact
 
+    def test_a_negative_sub_nanosecond_second_rounds_to_the_nearest_nanosecond(self):
+        """Mutation found `floor` and `trunc` splits agree on every stamp
+        (whole nanoseconds) and differ on one numeric second: -1.0000000005,
+        exactly -1000000000.50000004 ns as a float, which `floor`'s rounded
+        subtraction put at -1000000000. Only numeric times can hold it."""
+        ts = baseTs(np.arange(2.0), [-1.0000000005, 0.0])
+        ts.set_timestamp_offset(epoch_seconds(pd.Timestamp('2023-01-01')))
+        assert ts.datetimes[0] == pd.Timestamp('2022-12-31 23:59:58.999999999')
+
     def test_a_nanosecond_stamp_beyond_48_days_comes_back_at_the_microsecond(self):
         """Past 2**22 s a float64 second's ulp exceeds a nanosecond, so the
         nanosecond digits are rounded away rather than reported as noise."""

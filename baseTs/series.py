@@ -778,6 +778,14 @@ def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex
     nanosecond, an earlier cut, put a microsecond stamp 200 days out 2 ns
     off; the digits were not in the float.)
 
+    The split is `trunc`, not `floor`: for a negative second `x - trunc(x)`
+    is exact (Sterbenz - the two are within a factor of two, or trunc is
+    zero), while `x - floor(x)` subtracts a value up to twice x and can
+    round. Measured: a second of -1.0000000005, whose exact nanosecond
+    count is -1000000000.50000004, came back -1000000001 through trunc and
+    -1000000000 through floor. Only a numeric index can hold such a second
+    (a stamp is already whole nanoseconds), and the pin uses one.
+
     A NaN or infinite second becomes NaT, as the datetime64 NaT sentinel
     (int64 min) in the view below.
     """
@@ -785,7 +793,7 @@ def _stamps_from_seconds(origin: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex
     ns = np.full(secs.shape, np.iinfo(np.int64).min, dtype=np.int64)
     finite = np.isfinite(secs)
     kept = secs[finite]
-    whole = np.floor(kept)
+    whole = np.trunc(kept)
     frac_ns = np.round((kept - whole) * _NS_PER_SECOND)
     beyond = np.abs(kept) >= _NANOSECOND_EXACT_BELOW
     frac_ns[beyond] = np.round(frac_ns[beyond] / 1000.0) * 1000.0
