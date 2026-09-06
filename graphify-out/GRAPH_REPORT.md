@@ -1,26 +1,26 @@
-# Graph Report - baseTs  (2026-09-05)
+# Graph Report - baseTs  (2026-09-06)
 
 ## Corpus Check
-- 72 files · ~214,289 words
+- 72 files · ~214,979 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3015 nodes · 5575 edges · 177 communities (166 shown, 11 thin omitted)
-- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 273 edges (avg confidence: 0.52)
+- 3018 nodes · 5576 edges · 165 communities (151 shown, 14 thin omitted)
+- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 274 edges (avg confidence: 0.52)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7341accd`
+- Built from commit: `41d09964`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - TestRelativeBandPower
-- utils.py
+- .copy
 - LowessOutlierFilter
 - TestOutlierFilterSurvivesDerivation
 - AdaptiveLowessFilter
-- .falff
+- BandPowerResult
 - baseTs API Documentation
 - TestBaseTsInitialization
 - seeded
@@ -44,7 +44,7 @@
 - Derived `freq` Implementation Plan
 - test_gap_preservation.py
 - TestPandasEnhancedMethods
-- TestBaseTsTransformations
+- test_core.py
 - TestReadIsPureAndDerivationReleases
 - TestPandasIntegration
 - Bandpass Filter Pipeline (bp_2: 0.2Hz)
@@ -58,11 +58,11 @@
 - TestMetadataPropagation
 - ._enhanced_process_with_flags
 - FilterConfig
-- test_lag_shift_bounds.py
+- shift_timeseries
 - TestEffectiveFrequency
 - TestInvalidationOnInPlaceIndexChange
 - TestTheOffsetPairStaysCoherent
-- normalise_history
+- epoch_seconds
 - TestMetadataRegistry
 - _FinalizingWindow
 - TestArithmeticOperators
@@ -71,16 +71,16 @@
 - TestDerivationPathsAgree
 - TestFiltersRejectNanFreq
 - test_is_interpolated_means_one_thing.py
-- test_identity_propagation.py
+- identity_of
 - Carrying pandas' identity fields across derivation (#35, #39)
 - TestANonFiniteLagIsDiagnosed
 - test_filters.py
-- TestTheDomainTypesAreAlsoValueErrors
+- _all_four_entry_points
 - TestTypePreservation
 - TestIndexMutationsWithNoHookAtAll
 - TestTheStampIsNotLaunderable
 - TestDeepcopyOfAName
-- TestBaseTsFiltering
+- .__init__
 - _freq_token
 - ValidationError
 - Derived `freq`: closing #29, #31 and #23
@@ -95,16 +95,16 @@
 - test_conversion_preserves_metadata.py
 - test_data_stamp_invalidation.py
 - _ts
-- TestHistoryNoneGuard
-- .freq
+- TestRejectionMessagesNameTheRealLimit
+- validate_lag
 - TestTheOriginDescribesTheIndexItWasRecordedAgainst
-- _uniform
-- series.py
+- TestDerivationHardening
+- core.py
 - TestTheDisplayBoundsAreValidatedBeforeDrawing
 - validate_finite_data
 - TestEveryBandpassEntryPointRejectsABadLowerEdge
 - TestDuplicateLabelRefusal
-- get_lags
+- test_lag_shift_bounds.py
 - .test_augmented_assignment_is_still_in_place
 - test_spectral_empty_series.py
 - parametrize
@@ -119,8 +119,8 @@
 - TestTheStamp
 - TestLabelMetadataAtConstruction
 - _ts
-- basets_owned_inplace_methods
-- TestADerivedRateShiftsByTheSampleAsked
+- TestInplaceMethodsPreserveIdentity
+- TestPlotting
 - test_lag_plot_labels.py
 - TestTheNaNRemedyClearsAnEdgeGap
 - TestLegacyPickles
@@ -141,8 +141,8 @@
 - TestNanFreqIsNotLaundered
 - test_series_freq.py
 - TestReinitHasOneDoor
-- TestInvalidationThroughCreateNewWithData
-- requirements.txt
+- _complete_positional_slots
+- _label_property
 - baseTs
 - TestAttrsIsolation
 - TestFlagsAssignmentAssumption
@@ -150,46 +150,34 @@
 - parametrize
 - TestTheStampIsNotLaunderable
 - TestValuePreservingDerivationsKeepBoth
-- from_df
-- .plot_fft_power
+- test_datetime_index_converts_at_the_constructor.py
+- Axes
 - .test_the_stale_fit_is_not_drawn
 - parametrize
-- TestTheDatetimesAccessor
+- TestInplaceArithmeticIsUnaffected
 - TestTimeSliceTakesCalendarBounds
-- core.py
-- shift_timeseries
+- test_label_normalising_property.py
+- lf_baseTsObj
 - TestTheConstructorConvertsAStampedIndex
 - parametrize
 - TestTheStampNarrowsToEachDerivation
-- TestOutlierDetection
-- test_data_setter_span.py
 - parametrize
-- TestAnExplicitArgumentStillWins
-- TestAConfiguredFilterIsNotReplaced
+- empty
+- parametrize
 - .test_copy_configuring_does_not_reach_the_original
 - .test_get_outlier_filter_params_is_a_snapshot
 - .test_outlier_indices_is_reachable_after_slicing
 - _one_sample
-- TestWindowingParamsAreGuardedLikeTheBandEdges
 - TestInheritedPandasInplaceMethods
-- _DuckSeries
-- test_pipeline.py
-- TestBaseTsConversionPreservesMetadata
 - Handoff: #100 — convert a DatetimeIndex to seconds at the constructor
 - _origin_timestamp
 - TestSetTimestampOffsetRecordsTheOrigin
-- TestNaNSentinel
 - test_derived_lowess_invalidation.py
-- .__mul__
-- TestATimedeltaIndexIsDurations
-- _validate_display_rate
-- TestArgumentOrder
 - .len
-- zscale
 - .test_a_declared_rate_does_not_change_the_answer
 
 ## God Nodes (most connected - your core abstractions)
-1. `baseTs` - 485 edges
+1. `baseTs` - 484 edges
 2. `TimeSeriesData` - 149 edges
 3. `LowessOutlierFilter` - 96 edges
 4. `ValidationError` - 64 edges
@@ -209,8 +197,8 @@
   docs/API.md → baseTs/filters.py
 - `baseTs API Documentation` --references--> `from_df()`  [EXTRACTED]
   docs/API.md → baseTs/core.py
-- `Direct Pandas Series Inheritance Architecture` --rationale_for--> `baseTs`  [EXTRACTED]
-  MIGRATION_GUIDE.md → baseTs/core.py
+- `baseTs API Documentation` --references--> `baseTs`  [EXTRACTED]
+  docs/API.md → baseTs/core.py
 
 ## Import Cycles
 - None detected.
@@ -222,15 +210,15 @@
 - **Enhanced Pandas Series Methods (v2.0.0 Migration)** — basets_core_basets_resample, basets_core_basets_interpolate_gaps, basets_core_basets_align_with, basets_core_basets_correlation_with, basets_core_basets_detect_outliers, basets_core_basets_rolling_mean, basets_core_basets_time_slice, basets_core_basets_get_statistics, basets_core_basets_get_frequency_content, basets_core_basets_shift_time [EXTRACTED 1.00]
 - **baseTs Signal Processing Pipeline (despike -> lowpass filter -> rolling mean smoothing)** — imgs_example1_plot_raw_signal, imgs_example1_plot_despiked, imgs_example1_plot_filtered, imgs_example1_plot_smoothed [INFERRED 0.85]
 
-## Communities (177 total, 11 thin omitted)
+## Communities (165 total, 14 thin omitted)
 
 ### Community 0 - "TestRelativeBandPower"
 Cohesion: 0.13
 Nodes (12): Tests for the relative_band_power / falff methods., Slow 0.05 Hz signal long enough to resolve the 0.01-0.1 Hz band., Method delegates correctly and returns a builtin float., The headline robustness property: an undetrended mean offset must not move the…, The documented pipeline produces the same answer., falff() defaults to the amplitude convention., details=True carries the white-noise null alongside the ratio., The window argument reaches get_frequency_content. (+4 more)
 
-### Community 1 - "utils.py"
-Cohesion: 0.07
-Nodes (42): Compute the cumulative sum of the timeseries., Resample onto a uniform grid at exactly new_freq. The grid is built from the…, BandPowerResult, _blank_head(), coerce_real_scalar(), dediff(), _describe(), falff() (+34 more)
+### Community 1 - ".copy"
+Cohesion: 0.17
+Nodes (6): Compute the cumulative sum of the timeseries., Create a copy of the baseTs object. Args: deep: Whether to make a deep copy…, Detrend the data by subtracting a robust LOWESS fit. The trend is the LOWESS…, Resample onto a uniform grid at exactly new_freq. The grid is built from the…, The source span the two resamplers spread their grid across. Shared by…, Interpolate the times to a new length. Args: new_len (int): The desired new…
 
 ### Community 2 - "LowessOutlierFilter"
 Cohesion: 0.10
@@ -244,25 +232,25 @@ Nodes (9): _cleared_filter(), A series whose filter has been cleared - the state
 Cohesion: 0.11
 Nodes (18): AdaptiveLowessFilter, demo_adaptive_lowess(), LowessConfig, ndarray, Calculate optimal segment length based on dominant frequency content., Configuration parameters for adaptive LOWESS filtering., Calculate overlap ratio based on signal complexity., Calculate LOWESS fraction based on frequency content and noise. (+10 more)
 
-### Community 5 - ".falff"
-Cohesion: 0.27
-Nodes (8): Compute the relative power (or amplitude) in a frequency band. This is the…, Fractional amplitude of low-frequency fluctuations (fALFF). Convenience wrapper…, baseTs Changelog, Unreleased: Relative Band Power / fALFF, baseTs 1.0.0 Release (NumPy backend), Keep a Changelog, Semantic Versioning, Zou et al. 2008, J Neurosci Methods 172(1):137-141 (fALFF)
+### Community 5 - "BandPowerResult"
+Cohesion: 0.24
+Nodes (10): Compute the relative power (or amplitude) in a frequency band. This is the…, Fractional amplitude of low-frequency fluctuations (fALFF). Convenience wrapper…, BandPowerResult, Detailed breakdown of a relative band power computation. Attributes: ratio: The…, baseTs Changelog, Unreleased: Relative Band Power / fALFF, baseTs 1.0.0 Release (NumPy backend), Keep a Changelog (+2 more)
 
 ### Community 6 - "baseTs API Documentation"
 Cohesion: 0.08
-Nodes (36): Apply a lowpass filter at the specified cutoff frequency. Args: cutoff: Lowpass…, Apply a lowpass filter to the data. Args: cutoff: Lowpass cutoff frequency in…, Apply a bandpass filter to the signal at specified low-pass and high-pass…, Set outlier filter parameters. Parameters ---------- params : dict, optional…, Apply the outlier filter to the signal. Args: inplace (bool, optional): If…, Apply a rolling mean to the data. Args: window: Size of the rolling window…, Apply a rolling standard deviation to the data., Apply a rolling median to the data. (+28 more)
+Nodes (37): Apply a lowpass filter at the specified cutoff frequency. Args: cutoff: Lowpass…, Apply a lowpass filter to the data. Args: cutoff: Lowpass cutoff frequency in…, Apply a bandpass filter to the signal at specified low-pass and high-pass…, Set outlier filter parameters. Parameters ---------- params : dict, optional…, Apply the outlier filter to the signal. Args: inplace (bool, optional): If…, Apply a rolling mean to the data. Args: window: Size of the rolling window…, Apply a rolling standard deviation to the data., Apply a rolling median to the data. (+29 more)
 
 ### Community 7 - "TestBaseTsInitialization"
-Cohesion: 0.17
-Nodes (7): Tests for baseTs initialization and basic properties., Test initializing baseTs with data and times., Test initializing baseTs with data and frequency., Test initialization validation requirements., Test length and duration calculations., Test creating baseTs from DataFrame., TestBaseTsInitialization
+Cohesion: 0.20
+Nodes (6): Tests for baseTs initialization and basic properties., Test initializing baseTs with data and times., Test initializing baseTs with data and frequency., Test initialization validation requirements., Test length and duration calculations., TestBaseTsInitialization
 
 ### Community 8 - "seeded"
 Cohesion: 0.06
-Nodes (32): add_constant(), diff(), Add a constant to a time series. Args: ts: Source baseTs. constant: Value added…, First difference of a time series. Args: ts: Source baseTs. zeropad: If True,…, parametrize, TestDediffIsUntouched, TestFewerThanTwoSamplesIsRefused, TestTwoSamplesIsTheBoundary (+24 more)
+Nodes (35): add_constant(), dediff(), diff(), Add a constant to a time series. Args: ts: Source baseTs. constant: Value added…, First difference of a time series. Args: ts: Source baseTs. zeropad: If True,…, Cumulative sum of a time series. Undoes `diff(zeropad=True)` up to the level…, parametrize, utils.diff and diff_ts refuse a series with fewer than two samples (#89).… (+27 more)
 
 ### Community 9 - "conftest.py"
-Cohesion: 0.15
-Nodes (18): data_with_outliers(), noisy_baseTsObj(), noisy_data(), outlier_baseTsObj(), fixture, Pytest configuration and fixtures., Sine with two large, unambiguous spikes. Returns (data, times) rather than a…, Generate a simple sine wave dataset for testing. (+10 more)
+Cohesion: 0.06
+Nodes (38): Python Package CI Workflow, hypothesis, Matplotlib, moepy, NumPy, Pandas, psutil, pytest (+30 more)
 
 ### Community 10 - "TestInvalidationOnDerivation"
 Cohesion: 0.14
@@ -281,8 +269,8 @@ Cohesion: 0.08
 Nodes (15): Integration tests for real-world time series workflows. Tests complete end-to-…, Test batch processing multiple time series., Test realistic time series analysis workflows., Test data consistency across operations., Test complete signal processing workflow., Test workflow with larger datasets., Test scientific analysis workflow., Test compatibility across different workflow scenarios. (+7 more)
 
 ### Community 14 - "parametrize"
-Cohesion: 0.10
-Nodes (21): _FreqStub, parametrize, The original zero/negative rejection is preserved. Routed through _FreqStub…, The guard rejects bad values, not unfamiliar dtypes - and since #75 hands back…, Complex is a dtype rejection, made before the finiteness check. Issue #43. The…, The complex message is for complex numbers, not for strings complex() parses.…, NaT must not slip through the float cast. This is the one dtype family where…, Non-finite and non-positive rates alike. (+13 more)
+Cohesion: 0.07
+Nodes (31): _FreqStub, _gappy_ts(), parametrize, The original zero/negative rejection is preserved. Routed through _FreqStub…, A 0.16 Hz sine over 500 samples with `n_bad` samples replaced by `bad`., The production site raises instead of returning an all-NaN spectrum.…, The headline defect: no confident wrong answer on gappy data. Pins behaviour,…, The guard rejects bad values, not unfamiliar dtypes - and since #75 hands back… (+23 more)
 
 ### Community 15 - "TestHistoryInvariantHoldsEverywhere"
 Cohesion: 0.07
@@ -297,8 +285,8 @@ Cohesion: 0.12
 Nodes (13): Every metadata slot must come out where bandpass_at puts it. Asserted against…, Delegation is deliberate: the entry reads bandpass, not butterworth. No caller…, butterpass_at must actually run, and must mean what its name says (#27). It…, Amplitude of one tone by projection, so no FFT bin has to line up., The issue's reproduction: this raised TypeError on every call., The band kept must be [hp_freq, lp_freq], not its mirror image. A positional…, An alias that computes something else is not an alias., A source carrying a non-default value in every seedable metadata slot. The… (+5 more)
 
 ### Community 18 - "TestLabelMetadataSurvivesDerivation"
-Cohesion: 0.27
-Nodes (6): parametrize, signal_name and last_process are always strings" - same defect class. Issue #33…, A number is as fatal to `name + " " + process` as a None is. On the…, The live crash: TypeError: unsupported operand 'NoneType' + 'str'., Restoring a default must not rewrite a name someone chose. Deliberately already…, TestLabelMetadataSurvivesDerivation
+Cohesion: 0.20
+Nodes (8): parametrize, signal_name and last_process are always strings" - same defect class. Issue #33…, A number is as fatal to `name + " " + process` as a None is. On the…, The live crash: TypeError: unsupported operand 'NoneType' + 'str'., Restoring a default must not rewrite a name someone chose. Deliberately already…, The normaliser must restore a default, never impose one. A fix that assigned…, TestAConfiguredFilterIsNotReplaced, TestLabelMetadataSurvivesDerivation
 
 ### Community 19 - "TestFilteringOperations"
 Cohesion: 0.08
@@ -309,8 +297,8 @@ Cohesion: 0.13
 Nodes (12): array, ndarray, setter, Interpolate data to a uniform sampling grid. If new_grid is not specified, use…, Initialize baseTs object as pandas Series with time-series metadata. Args:…, Set specific indices to NaN and interpolate the missing values. Args: indices:…, Get the data values as numpy array (backward compatibility)., Set the data values (backward compatibility). (+4 more)
 
 ### Community 21 - "test_pandas_compat.py"
-Cohesion: 0.07
-Nodes (16): fixture, parametrize, Regression tests for pandas 2.x/3.x compatibility. Each test here corresponds…, baseTs.duration() shadowed the guarded TimeSeriesData.duration()., get_statistics() calls duration(), so it inherited the crash., 5000 normal samples with one unmistakable spike at index 100., pandas 3.0 removed fillna(method=...)., Series.interpolate() does not fill leading/trailing NaN, so this path always… (+8 more)
+Cohesion: 0.06
+Nodes (20): fixture, parametrize, Regression tests for pandas 2.x/3.x compatibility. Each test here corresponds…, baseTs.duration() shadowed the guarded TimeSeriesData.duration()., get_statistics() calls duration(), so it inherited the crash., `freq is np.nan` only matched the one np.nan object., Previously this silently produced an all-NaN time index instead of raising,…, Deriving freq from the times array must still work. NB: the derived value is… (+12 more)
 
 ### Community 22 - "test_integer_parameter_policy.py"
 Cohesion: 0.11
@@ -340,9 +328,9 @@ Nodes (22): _gappy(), _nan_mask(), fixture, parametrize, _quiet(), Tests for iss
 Cohesion: 0.11
 Nodes (10): Test new pandas-enhanced methods., Test pandas-powered rolling mean., Test rolling standard deviation., Test time-based slicing., Test pandas resampling., Test cross-correlation between time series., Test outlier detection., Test gap interpolation. (+2 more)
 
-### Community 29 - "TestBaseTsTransformations"
-Cohesion: 0.17
-Nodes (7): Test data normalization functions., Test detrending functionality., Test trimming functionality., Tests for baseTs data transformations., Test interpolation to specified number of samples., Test interpolation to specified frequency., TestBaseTsTransformations
+### Community 29 - "test_core.py"
+Cohesion: 0.06
+Nodes (21): Unit tests for baseTs core functionality., Test data normalization functions., Test detrending functionality., Test trimming functionality., Tests for baseTs filtering functionality., Test highpass filter., Test bandpass filter., Test Savitzky-Golay filter. (+13 more)
 
 ### Community 30 - "TestReadIsPureAndDerivationReleases"
 Cohesion: 0.19
@@ -365,12 +353,12 @@ Cohesion: 0.80
 Nodes (5): Example 1 Signal Processing Plot, Despiked Panel (LAB SIGNAL_outfilt), Filtered Panel (LAB SIGNAL_lp_6Hz), Raw Signal Panel (LAB SIGNAL_outfilt_params), Smoothed Panel (LAB SIGNAL_rolling_mean_30)
 
 ### Community 35 - "bandpass_filter"
-Cohesion: 0.09
-Nodes (15): bandpass_filter(), Apply a symmetric bandpass filter to the input data. Args: data: Input data…, All of these must raise; four of the seven previously did not. The negative,…, A message about ordering is useless without the two values in it., The asymmetry that made this bug position-dependent. `max(0.1, nan)` returns…, Nyquist must come from the effective rate, not the declared one. The filter…, Pins that the check above is about the effective rate. Without this, the…, The guard must not disturb an ordinary call. (+7 more)
+Cohesion: 0.06
+Nodes (20): bandpass_filter(), Apply a symmetric bandpass filter to the input data. Args: data: Input data…, #48 added a translation site of the same shape, around validate_finite_data.…, `except ValueError -> raise InvalidParameterError` in filters now has a self-…, All of these must raise; four of the seven previously did not. The negative,…, A message about ordering is useless without the two values in it., The asymmetry that made this bug position-dependent. `max(0.1, nan)` returns…, Nyquist must come from the effective rate, not the declared one. The filter… (+12 more)
 
 ### Community 36 - "TailType"
 Cohesion: 0.08
-Nodes (16): Created on Oct 19 2024 @author: stan@sympaticog.com, Enum for specifying which tails to process in outlier detection., TailType, baseTs Package README, Enum, LOWESS Outlier Detection & Despiking, Tests for the statsmodels LOWESS backend of LowessOutlierFilter. Covers the…, The unslotted dataclass must not resurrect the attribute. (+8 more)
+Nodes (15): Enum for specifying which tails to process in outlier detection., TailType, Enum, Tests for the statsmodels LOWESS backend of LowessOutlierFilter. Covers the…, The unslotted dataclass must not resurrect the attribute., The filter must work with moepy made unimportable., statsmodels is lowess(endog, exog) = (y, x); moepy was fit(x, y). Transposing…, Same y, x stretched: the fitted values must be essentially unchanged. (+7 more)
 
 ### Community 37 - "Design"
 Cohesion: 0.11
@@ -382,7 +370,7 @@ Nodes (11): close_figures(), fixture, parametrize, Tests for the hybrid baseTs.p
 
 ### Community 39 - "test_utils.py"
 Cohesion: 0.03
-Nodes (76): _all_four_entry_points(), _analytic_ts(), _degenerate_freq_ts(), _gappy_ts(), _leading_gap_ts(), lf_baseTsObj(), fixture, Unit tests for baseTs utility functions. (+68 more)
+Nodes (99): Find the closest time in the timeseries to a target time in seconds. Args: sec:…, _blank_head(), ClosestMatch, _coerce_lag(), coerce_real_scalar(), compute_fft_power(), _describe(), falff() (+91 more)
 
 ### Community 40 - "TestMetadataPropagation"
 Cohesion: 0.09
@@ -390,15 +378,15 @@ Nodes (11): The __finalize__ concat special-case exists for nlargest/nsmallest's
 
 ### Community 41 - "._enhanced_process_with_flags"
 Cohesion: 0.08
-Nodes (13): Apply a notch filter at the specified frequency. The stopped band is `cutoff_hz…, Apply a notch filter at the specified frequency (alias for notch_at). Args:…, Apply a highpass filter at the specified cutoff frequency. Args: cutoff:…, Apply a highpass filter at the specified cutoff frequency (alias for…, Apply a Gaussian filter to the data. Args: sigma: Standard deviation for…, Apply a Savitzky-Golay filter to the signal. Args: window_length: Length of the…, Helper method to update object flags., Enhanced processing method that handles both data and time modifications. Args:… (+5 more)
+Nodes (14): Apply a notch filter at the specified frequency. The stopped band is `cutoff_hz…, Apply a notch filter at the specified frequency (alias for notch_at). Args:…, Apply a highpass filter at the specified cutoff frequency. Args: cutoff:…, Apply a highpass filter at the specified cutoff frequency (alias for…, Apply a Gaussian filter to the data. Args: sigma: Standard deviation for…, Apply a Savitzky-Golay filter to the signal. Args: window_length: Length of the…, Helper method to update object flags., Enhanced processing method that handles both data and time modifications. Args:… (+6 more)
 
 ### Community 42 - "FilterConfig"
 Cohesion: 0.08
 Nodes (19): FilterConfig, Configuration parameters for the LowessOutlierFilter. Attributes ----------…, Initialize the LowessOutlierFilter with filtering parameters. Parameters…, np.asarray drops a mask and exposes the payload underneath., TestMaskedArrayGapsAreSeen, parametrize, A perfectly-fit signal drives MAD to zero; z_threshold then means nothing, so…, A window of <= 3 points makes LOWESS interpolate the data exactly. The fit is… (+11 more)
 
-### Community 43 - "test_lag_shift_bounds.py"
-Cohesion: 0.07
-Nodes (24): lag_plot(), Generate a lag plot for a given timeseries object and lag., _closed(), _declared(), _five(), _five_int(), The lag that is applied is the lag that is reported (#51-#54). Four defects in…, `Lag Plot at 0.5 seconds (49items)` was the issue's example. (+16 more)
+### Community 43 - "shift_timeseries"
+Cohesion: 0.06
+Nodes (26): Shift a time series by a lag value. Args: ts: Time series object with data and…, shift_timeseries(), _closed(), _five(), _five_int(), `lagged_data[:lag_idx] = np.nan` on int64 raised the very message #32 is named…, With `drop_nan=True` the blanked samples are sliced off anyway; widening to…, The caller asked for NaN placeholders, and NaN is a float. This is what… (+18 more)
 
 ### Community 44 - "TestEffectiveFrequency"
 Cohesion: 0.09
@@ -412,17 +400,17 @@ Nodes (6): The index can change without any derivation at all., `.index` is pand
 Cohesion: 0.29
 Nodes (4): `has_timestamp_offset` False with a non-zero `ts_offset` was unreachable. The…, `is False` matches one object; numpy booleans are not it. `arr.any()`, a…, The coherence rule runs one way, deliberately, and this pins it. Clearing the…, TestTheOffsetPairStaysCoherent
 
-### Community 47 - "normalise_history"
-Cohesion: 0.22
-Nodes (7): Display information about the data, times, outlier filter parameters, and…, normalise_history(), Helper method to update history and last_process. Normalises rather than…, Display information about the time series data., Coerce any history value to a fresh list. The single definition of the "history…, Round a float to a specified number of decimal places, or return the value…, round_values()
+### Community 47 - "epoch_seconds"
+Cohesion: 0.13
+Nodes (10): epoch_seconds(), Two series of one origin on interleaved grids align onto their union, which…, The common case: same grid, so the union is the grid itself., Review round 1 (consensus panel, codex + agy): the first cut converted in…, `reindex` builds through the constructor and then `__finalize__` copies the…, The stamp is set where the origin is, in `_set_axis`, so a later replacement of…, The hardcoded copy list overwrote the fresh origin with the parent's: 2024…, No package path hands a stamped index here; pinned directly. (+2 more)
 
 ### Community 48 - "TestMetadataRegistry"
 Cohesion: 0.40
 Nodes (3): `_metadata` must extend pandas' list rather than replace it., Every name pandas declares must still be carried. Asserted against…, TestMetadataRegistry
 
 ### Community 54 - "_FinalizingWindow"
-Cohesion: 0.16
-Nodes (7): _FinalizingWindow, Wraps a pandas window object (Rolling/Expanding/ExponentialMovingWindow) so its…, Python looks up dunder methods on the type, bypassing __getattr__, so this…, See _FinalizingWindow: rolling()/expanding()/ewm() never call __finalize__., Rolling window whose aggregations propagate metadata - see _FinalizingWindow., Expanding window whose aggregations propagate metadata - see _FinalizingWindow., EWM window whose aggregations propagate metadata - see _FinalizingWindow.
+Cohesion: 0.10
+Nodes (13): _FinalizingWindow, Any, setter, Wraps a pandas window object (Rolling/Expanding/ExponentialMovingWindow) so its…, Python looks up dunder methods on the type, bypassing __getattr__, so this…, Derive the sampling frequency from the time index. Returns NaN rather than…, The sampling rate in Hz, derived from the index unless declared. An explicitly…, Declare an explicit sampling rate against the current index. The single… (+5 more)
 
 ### Community 55 - "TestArithmeticOperators"
 Cohesion: 0.20
@@ -448,29 +436,29 @@ Nodes (4): A degenerate time base must not filter to silent all-NaN output.…, 
 Cohesion: 0.07
 Nodes (22): Interpolate missing values in the data. Linear interpolation across every NaN,…, interpolate_missing_values(), ValueError, Interpolate missing values in a time series. Args: ts: Time series object…, _clean(), _gappy(), parametrize, `is_interpolated` means one thing, and every producer follows it (#90). The… (+14 more)
 
-### Community 61 - "test_identity_propagation.py"
-Cohesion: 0.21
-Nodes (7): identity_of(), The three identity fields pandas owns must survive derivation (#35, #39). A…, The bar is pandas' own behaviour, not an invented one. If a future pandas stops…, The three fields as one comparable tuple., `ts += 1` keeps the target's own identity, as stock pandas does. Pinned because…, TestIdentitySurvivesDerivation, TestInplaceArithmeticIsUnaffected
+### Community 61 - "identity_of"
+Cohesion: 0.18
+Nodes (6): identity_of(), parametrize, The bar is pandas' own behaviour, not an invented one. If a future pandas stops…, The identity fix must not cost what already worked. These survived a re-init…, The three fields as one comparable tuple., The check must hand back what it built, not drain the caller's. Building a…
 
 ### Community 62 - "Carrying pandas' identity fields across derivation (#35, #39)"
 Cohesion: 0.10
 Nodes (19): Carrying pandas' identity fields across derivation (#35, #39), Decisions taken, Deliberately not in scope, Design, Half A — `_name` joins `_metadata`, Half B, Group 1 — one door for the identity triple, Half B, Group 2 — collapse three doors into one, Making a tenth site fail loudly (+11 more)
 
 ### Community 63 - "TestANonFiniteLagIsDiagnosed"
-Cohesion: 0.09
-Nodes (14): parametrize, `validate_lag` never gets to speak, because `get_lags` converts first. The rate…, A string lag dies on main with `can't multiply sequence by non-int`. It must…, float(10**400) raises OverflowError, which is neither TypeError nor ValueError…, It is a perfectly good real number; it is out of float's range. Collapsing…, `{lag!r}` on a large object builds a megabyte-long exception. A 200k-element…, The str/bytes exclusion is load-bearing for both, not just str. `float(b"0.5")`…, One argument, one exception type, whichever mode it arrives in. Guarding only… (+6 more)
+Cohesion: 0.05
+Nodes (28): parametrize, `validate_lag` never gets to speak, because `get_lags` converts first. The rate…, A string lag dies on main with `can't multiply sequence by non-int`. It must…, One argument, one exception type. `validate_lag` raises ValidationError for…, float(10**400) raises OverflowError, which is neither TypeError nor ValueError…, It is a perfectly good real number; it is out of float's range. Collapsing…, `{lag!r}` on a large object builds a megabyte-long exception. A 200k-element…, A deliberate narrowing, pinned so it is not mistaken for a bug. `lag * rate`… (+20 more)
 
 ### Community 64 - "test_filters.py"
 Cohesion: 0.08
 Nodes (15): _DeclaresOneHz, _LiesAboutDivision, register, Registers as a Real but cannot become one. numbers.Real is a registrable ABC,…, A Real that converts to 1.0 and supports nothing else. Registers, coerces,…, Validation is worthless if the filter then uses a different value. Five review…, It declared float() == 1.0, so 1.0 is what the filter must use., The value validated is the value filtered, whatever __truediv__ says. (+7 more)
 
-### Community 65 - "TestTheDomainTypesAreAlsoValueErrors"
-Cohesion: 0.08
-Nodes (16): Exception, Base exception for time series related errors., TimeSeriesError, _degenerate(), The same site inside validate_filter_params, reached by the three single-cutoff…, #48 added a translation site of the same shape, around validate_finite_data.…, `_calculate_effective_frequency` catches (TypeError, ValueError) to fall back…, The identity is added, never swapped. (+8 more)
+### Community 65 - "_all_four_entry_points"
+Cohesion: 0.12
+Nodes (16): _all_four_entry_points(), _analytic_ts(), _leading_gap_ts(), The _gappy_ts sine with the gap at sample 0 instead of sample 100., The spectral family shares the message with the filters, so it shares the trap:…, Executed, not just named: 0.16 Hz is the peak of the gap-free series., The four public ways into an FFT, as zero-argument callables., All four spectral entry points give the same actionable error. They drifted… (+8 more)
 
 ### Community 66 - "TestTypePreservation"
-Cohesion: 0.18
-Nodes (7): fixture, Tests that pandas operations preserve the baseTs type and its metadata. Before…, The documented pattern: a pandas op followed by a baseTs op., pandas builds subclasses as _constructor(values, index=...)., pandas looks this up on the class; a plain method breaks that., TestTypePreservation, ts()
+Cohesion: 0.29
+Nodes (4): The documented pattern: a pandas op followed by a baseTs op., pandas builds subclasses as _constructor(values, index=...)., pandas looks this up on the class; a plain method breaks that., TestTypePreservation
 
 ### Community 67 - "TestIndexMutationsWithNoHookAtAll"
 Cohesion: 0.22
@@ -484,17 +472,17 @@ Nodes (5): A copy must move the (value, index) pair, never re-stamp it. Any path
 Cohesion: 0.40
 Nodes (3): `_name` now reaches deepcopy_metadata_value; it must pass through., Which is why the isinstance gate in that helper never matches it. Recorded as a…, TestDeepcopyOfAName
 
-### Community 70 - "TestBaseTsFiltering"
-Cohesion: 0.22
-Nodes (5): Tests for baseTs filtering functionality., Test highpass filter., Test bandpass filter., Test Savitzky-Golay filter., TestBaseTsFiltering
+### Community 70 - ".__init__"
+Cohesion: 0.13
+Nodes (10): normalise_label(), Initialize TimeSeriesData object. A `DatetimeIndex` or `TimedeltaIndex` -…, Give the pair the origin the installed index brought, if any. The rule every…, Initialize default metadata values., Copy metadata from a baseTs object, without sharing its mutables., The type of `_UNSET`. Distinct so it can be annotated and matched., Coerce a label attribute (`signal_name`, `last_process`) to a string. The…, Stamp a just-declared origin with the index it was declared against. Only where… (+2 more)
 
 ### Community 71 - "_freq_token"
 Cohesion: 0.29
 Nodes (5): _freq_token(), Fingerprint an index for the purpose of sampling-rate derivation. Deliberately…, The token must be exactly the inputs _calculate_effective_frequency reads. That…, And must not: the derived rate is unchanged, so the token is right.…, TestFreqToken
 
 ### Community 72 - "ValidationError"
-Cohesion: 0.10
-Nodes (19): _coerce_lag(), idx_to_time(), Convert a lag to a float, or say which argument is wrong. validate_lag is the…, Convert an index to a time value. Args: lag_idx: Index to convert freq:…, Convert a time value to the nearest whole number of samples. Args: lag_secs:…, Exception raised for validation errors. Also a ValueError, because a rejected…, time_to_idx(), ValidationError (+11 more)
+Cohesion: 0.06
+Nodes (35): FilterError, Exception, Base exception for filter-related errors., idx_to_time(), Exception, Convert an index to a time value. Args: lag_idx: Index to convert freq:…, Convert a time value to the nearest whole number of samples. Args: lag_secs:…, Base exception for time series related errors. (+27 more)
 
 ### Community 73 - "Derived `freq`: closing #29, #31 and #23"
 Cohesion: 0.14
@@ -509,16 +497,16 @@ Cohesion: 0.27
 Nodes (5): Every known bad input raises InvalidParameterError, enumerated. The CHANGELOG…, Every known bad input raises, with the message its own guard makes., The number in the prose is asserted against the table. Adding a case without…, A fragment true of another case's message pins nothing. Three fragments were…, TestTheInvalidParameterContractIsComplete
 
 ### Community 76 - "stamped"
-Cohesion: 0.08
-Nodes (17): epoch_seconds(), numeric_twin(), A DatetimeIndex becomes seconds since its first stamp at the constructor…, Same data on the same seconds: bit-identical results., The seconds index is what is resampled, so a series starting at 08:00 has day…, `_update_series_data`'s no-span shrink slices the index it has; on `main` that…, Review round 1 (consensus panel, codex + agy): the first cut converted in…, `reindex` builds through the constructor and then `__finalize__` copies the… (+9 more)
+Cohesion: 0.13
+Nodes (8): numeric_twin(), Same data on the same seconds: bit-identical results., The seconds index is what is resampled, so a series starting at 08:00 has day…, `_update_series_data`'s no-span shrink slices the index it has; on `main` that…, stamped(), TestTheFourMethodsThatRaisedNowAgreeWithTheNumericTwin, TestTheOriginSurvivesEveryDerivation, TestTheTimesSetterIsTheOtherDoor
 
 ### Community 77 - "coerce_numeric_data"
 Cohesion: 0.08
-Nodes (22): coerce_numeric_data(), _complex_data_message(), The rejection text for complex sample values (issue #43). `what` describes the…, Return `data` as an array with a dtype numeric code can loop over. The dtype…, _as_object(), parametrize, Classified by what the elements *are*, not by whether a float() parse would…, numbers.Real is a registrable ABC; membership does not imply a working… (+14 more)
+Nodes (23): coerce_numeric_data(), _complex_data_message(), The rejection text for complex sample values (issue #43). `what` describes the…, Return `data` as an array with a dtype numeric code can loop over. The dtype…, _as_object(), parametrize, Object-dtype data reaching numeric code, and the Inf half of the NaN remedy.…, Classified by what the elements *are*, not by whether a float() parse would… (+15 more)
 
 ### Community 78 - "InvalidParameterError"
-Cohesion: 0.09
-Nodes (41): ArrayLike, _as_filterable(), _as_real_float(), FilterConfig, FilterError, highpass_filter(), InvalidParameterError, lowpass_filter() (+33 more)
+Cohesion: 0.11
+Nodes (37): ArrayLike, _as_filterable(), _as_real_float(), FilterConfig, highpass_filter(), InvalidParameterError, lowpass_filter(), _notch_bounds_hz() (+29 more)
 
 ### Community 79 - "plot_fft_power"
 Cohesion: 0.09
@@ -529,12 +517,12 @@ Cohesion: 0.29
 Nodes (9): fenced_python_under(), Executable pins on the worked examples in docs/USER_GUIDE.md. The example is…, The first ```python block after the given markdown heading line., Execute a doc block and return its namespace. The guide's opening block does…, Issue #44: a self-referential dict literal and a cutoff at Nyquist. The Nyquist…, The `quality_score < 0.95` branch, which the example's own data never takes.…, run_example(), test_example_4_enhanced_cleaning_branch_completes() (+1 more)
 
 ### Community 81 - "plotting.py"
-Cohesion: 0.16
-Nodes (16): hist(), plot(), plot_series(), array, Axes, qc_plot(), Plots a histogram of a timeseries., Plots multiple timeseries on the same plot. (+8 more)
+Cohesion: 0.14
+Nodes (22): hist(), lag_plot(), plot(), plot_series(), Any, array, Axes, ndarray (+14 more)
 
 ### Community 82 - "test_conversion_preserves_metadata.py"
-Cohesion: 0.14
-Nodes (10): carrying(), fixture, Converting a series must not reset what it was carrying (issue #57).…, The conversion branch was gated on `.times` and `.data`. Only `baseTs` defines…, An empty carried history must not become a fabricated creation entry. The…, A series with every metadata value moved off its default., The ordinary path must still start from defaults, not from nothing. Nothing is…, TestAnEmptyHistoryIsAHistory (+2 more)
+Cohesion: 0.05
+Nodes (24): carrying(), fixture, parametrize, Converting a series must not reset what it was carrying (issue #57).…, The conversion branch was gated on `.times` and `.data`. Only `baseTs` defines…, An empty carried history must not become a fabricated creation entry. The…, The conversion branch takes its index from the source, so a `times` argument…, Preserving what was not passed must not ignore what was. The fix distinguishes… (+16 more)
 
 ### Community 83 - "test_data_stamp_invalidation.py"
 Cohesion: 0.19
@@ -544,25 +532,21 @@ Nodes (10): _close_figures(), filtered(), gapped(), fixture, Tests for #40: lowe
 Cohesion: 0.11
 Nodes (22): _as_object(), parametrize, Object-dtype data reaching the spectral family and gauss_filter (#93). The same…, The constancy threshold (`np.std(data) < 1e-15`) was always taken on a float64…, compute_fft_power demeans in place on the array it computes with. The guard…, `astype(float, copy=False)` hands a float64 series' own array back, so…, #93 dropped get_frequency_content's copy on the strength of "nothing below…, For the spectral family this held before #93 (the guard ran, its result was… (+14 more)
 
-### Community 85 - "TestHistoryNoneGuard"
-Cohesion: 0.29
-Nodes (4): A `history` of None must not crash the next operation (issue #22). __finalize__…, The superclass guard is hasattr-only, so None slips past it too., The guard must not discard a history that is genuinely present., TestHistoryNoneGuard
+### Community 85 - "TestRejectionMessagesNameTheRealLimit"
+Cohesion: 0.31
+Nodes (4): A message that states no number sends the caller round the loop twice. At…, Pull the Nyquist figure the message quotes., Execute the remedy rather than asserting the string., TestRejectionMessagesNameTheRealLimit
 
-### Community 86 - ".freq"
+### Community 86 - "validate_lag"
 Cohesion: 0.25
-Nodes (5): setter, Derive the sampling frequency from the time index. Returns NaN rather than…, The sampling rate in Hz, derived from the index unless declared. An explicitly…, Declare an explicit sampling rate against the current index. The single…, String representation of TimeSeriesData.
+Nodes (5): Validate lag parameters. Args: lag: Lag value lag_idx: Lag index lag_unit: Unit…, validate_lag(), The bound lives with the other lag rules. Without the keyword the validator is…, An index that is both non-integer and past the bound gets the integer rule. A…, Its else-branch produced the index-mode message for any unknown unit - the same…
 
 ### Community 87 - "TestTheOriginDescribesTheIndexItWasRecordedAgainst"
-Cohesion: 0.09
-Nodes (14): The case the healing made permanent: the pair survived an index replacement…, The remedy names a value, and on a pre-#100 object the stored one is the wrong…, It cannot say which index its offset described., The offsets agreed, so the arm re-stamped the merged index and read the stale…, Two series of one origin on interleaved grids align onto their union, which…, The common case: same grid, so the union is the grid itself., Review round 2 (consensus panel, codex + agy): the pair rode along through…, `_update_inplace` swaps the manager without `__finalize__`; the read-time check… (+6 more)
+Cohesion: 0.11
+Nodes (12): The case the healing made permanent: the pair survived an index replacement…, The remedy names a value, and on a pre-#100 object the stored one is the wrong…, It cannot say which index its offset described., The offsets agreed, so the arm re-stamped the merged index and read the stale…, Review round 2 (consensus panel, codex + agy): the pair rode along through…, `_update_inplace` swaps the manager without `__finalize__`; the read-time check…, The package's door asserts the base; pandas' door does not., `ts.index = ...` is the door `reset_index(inplace=True)` uses to install… (+4 more)
 
-### Community 88 - "_uniform"
-Cohesion: 0.10
-Nodes (12): One argument, one exception type. `validate_lag` raises ValidationError for…, Unchanged, and deliberately so: `idx_to_time` divides rather than truncating,…, Coercion must not start *accepting* what validate_lag rejects: a Decimal…, `lag_secs=inf` used to ride out into the returned dict and the plot title,…, Pinned so a future guard cannot quietly change what a good call returns. The…, Guarding the rate must not be mistaken for normalising it: the rate stays…, #30's escape, one module over: validating a coerced value and then computing…, Documented, not overlooked: coercion happens before the multiply. Accepting… (+4 more)
-
-### Community 89 - "series.py"
+### Community 89 - "core.py"
 Cohesion: 0.05
-Nodes (53): Create a copy of the baseTs object. Args: deep: Whether to make a deep copy…, _apply_duplicate_label_declaration(), _carries_metadata(), _carry_identity(), _complete_positional_slots(), deepcopy_metadata_value(), _detach_shared_metadata(), _drawn_from() (+45 more)
+Nodes (50): _is_unset(), True if a numeric argument was not supplied. The constructor uses np.nan as its…, Display information about the data, times, outlier filter parameters, and…, baseTs - A Python library for time series analysis, Created on Oct 19 2024 @author: stan@sympaticog.com, baseTs Package README, _apply_duplicate_label_declaration(), _carries_metadata() (+42 more)
 
 ### Community 90 - "TestTheDisplayBoundsAreValidatedBeforeDrawing"
 Cohesion: 0.17
@@ -577,12 +561,12 @@ Cohesion: 0.43
 Nodes (3): The contract must hold on all three names, on the axis it is about. #28's…, Reachable at all only since #27, which was dead before it., TestEveryBandpassEntryPointRejectsABadLowerEdge
 
 ### Community 93 - "TestDuplicateLabelRefusal"
-Cohesion: 0.09
-Nodes (13): _Flags, Only a *stale* shadow is dropped, not any shadow. Deleting unconditionally also…, The restore arm, exercised directly. Since the pre-commit check landed, no path…, A stand-in whose flag setter raises what the caller chooses., Raising pandas' real class, not a look-alike. An earlier version of this test…, An error that names a remedy is code; the remedy must run. This repo shipped an…, The remedy that was there before, and why it was wrong. `ts.data = ...`,…, A diagnosis must not become the payload. Naming every duplicated label built an… (+5 more)
+Cohesion: 0.16
+Nodes (9): _Flags, The restore arm, exercised directly. Since the pre-commit check landed, no path…, A stand-in whose flag setter raises what the caller chooses., Raising pandas' real class, not a look-alike. An earlier version of this test…, A diagnosis must not become the payload. Naming every duplicated label built an…, Bounding the message must not stop it being useful., Not everything the setter can raise is a duplicate-label refusal. Converting…, _RefusingTarget (+1 more)
 
-### Community 94 - "get_lags"
-Cohesion: 0.09
-Nodes (14): get_lags(), Get lag values in both seconds and indices. Args: lag: Lag value lag_unit: Unit…, parametrize, `lag_secs` was the caller's argument echoed back. Now it is derived from…, 0.3 s at 7 Hz is 2.1 samples. Rounding alone would make the two values agree in…, Nothing changes for the caller who was already getting the right answer: 50 /…, Accepted, and pinned so it is not re-raised: review round 1 found a call that…, A Decimal or a bool used to be echoed back as itself. (+6 more)
+### Community 94 - "test_lag_shift_bounds.py"
+Cohesion: 0.06
+Nodes (25): get_lags(), Get lag values in both seconds and indices. Args: lag: Lag value lag_unit: Unit…, _declared(), _derived(), parametrize, The lag that is applied is the lag that is reported (#51-#54). Four defects in…, Every length from 100 to 2000 at a nominal 100 Hz, three lags. The issue…, The tie rule is Python's, stated so it is not mistaken for drift. A lag that… (+17 more)
 
 ### Community 96 - "test_spectral_empty_series.py"
 Cohesion: 0.19
@@ -593,16 +577,16 @@ Cohesion: 0.15
 Nodes (9): parametrize, ValueError, matching every other bound failure in this function. '30' and True…, `band_low >= band_high` is False for NaN, so a NaN edge passed the guard. Pre-…, One ValueError for every malformed band, from two different doors. The 1- and…, One contract for the whole function, generated from a census against main.…, Newly accepted, in the opposite direction to the rest of the census. On main…, test_every_rejected_input_raises_valueerror_and_draws_nothing(), test_high_precision_bounds_are_now_accepted() (+1 more)
 
 ### Community 98 - "test_docs_fenced_blocks.py"
-Cohesion: 0.10
-Nodes (24): Block, blocks_in(), _execute(), _literal_default(), outcome(), parametrize, python_fences(), Every fenced Python block in docs/ runs (#69). The document is the source of… (+16 more)
+Cohesion: 0.09
+Nodes (26): parametrize, Block, blocks_in(), _execute(), _literal_default(), outcome(), python_fences(), Every fenced Python block in docs/ runs (#69). The document is the source of… (+18 more)
 
 ### Community 99 - "TimeSeriesData"
 Cohesion: 0.05
-Nodes (23): Pandas Series subclass optimized for time series analysis. This class extends…, Restore from a pickle, healing a blob that predates `_name`. Adding '_name' to…, Install an index, converting a stamped one to seconds (#100). This is the one…, pandas' in-place door: swap the manager, then narrow the stamp.…, Initialize default metadata values., Return constructor for pandas operations., Return constructor for sliced operations., Calculate the duration of the time series. Returns: Duration in seconds (or… (+15 more)
+Nodes (28): Pandas Series subclass optimized for time series analysis. This class extends…, Install an index, converting a stamped one to seconds (#100). This is the one…, pandas' in-place door: swap the manager, then narrow the stamp.…, Return constructor for pandas operations., Return constructor for sliced operations., Calculate the duration of the time series. Returns: Duration in seconds (or…, Get the length of the time series (backward compatibility). Returns: Number of…, Helper method to update history and last_process. Normalises rather than… (+20 more)
 
 ### Community 101 - "_ts"
-Cohesion: 0.12
-Nodes (15): _close_figures(), fixture, parametrize, `signal_name` and `last_process` are always strings, in place too (#61). #33…, The public names stay in `_metadata`; propagation runs the setter., A blob written before this change can hold `None` under the public name - #33…, The getter defaults rather than raising: pandas can build a subclass instance…, The half #33 left open: the object you mutate, not the one you derive. (+7 more)
+Cohesion: 0.14
+Nodes (12): parametrize, The public names stay in `_metadata`; propagation runs the setter., A blob written before this change can hold `None` under the public name - #33…, The getter defaults rather than raising: pandas can build a subclass instance…, The half #33 left open: the object you mutate, not the one you derive., The property lives on the base class, so the pandas-level object gets it…, #33's live crash, on the object that was mutated rather than on a derivation of…, One more door. A plain attribute could be deleted, after which the next read… (+4 more)
 
 ### Community 102 - "._data"
 Cohesion: 0.12
@@ -632,13 +616,13 @@ Nodes (4): The constructor kwargs are a door of their own, and one was left open
 Cohesion: 0.16
 Nodes (10): parametrize, compute_fft_power's constant-signal branch reports the FFT branch's DC bin…, Observed and not changed: a different function, not divided by n., The number the FFT branch would have produced for the same array, computed here…, 600 samples of 3.0, and the same with every other sample raised by 1e-13: std 0…, Under the default scale_power=True the DC bin is the only non-zero one on…, Review round 1: `n * mean**2` reimplements the FFT branch's DC bin rather than…, TestTheConstantBranchReportsTheFftBranchsDcBin (+2 more)
 
-### Community 109 - "basets_owned_inplace_methods"
-Cohesion: 0.50
-Nodes (3): basets_owned_inplace_methods(), Every public method this package defines that takes `inplace`. Restricted to…, A new `inplace=` method fails here until someone classifies it. The point of…
+### Community 109 - "TestInplaceMethodsPreserveIdentity"
+Cohesion: 0.33
+Nodes (5): basets_owned_inplace_methods(), Every public method this package defines that takes `inplace`. Restricted to…, `inplace=True` mutates the object; it must not reset its identity. This is the…, A new `inplace=` method fails here until someone classifies it. The point of…, TestInplaceMethodsPreserveIdentity
 
-### Community 110 - "TestADerivedRateShiftsByTheSampleAsked"
-Cohesion: 0.14
-Nodes (8): _derived(), Every length from 100 to 2000 at a nominal 100 Hz, three lags. The issue…, The tie rule is Python's, stated so it is not mistaken for drift. A lag that…, `round()` on a float returns int; `validate_lag` insists on it., Rounding must not start inventing a one-sample shift for a lag that is nearer…, A nominal 100 Hz series with the rate *derived*, which is the default. The…, `int(0.5 * 99.99999999999999)` is 49. The caller asked for 50., TestADerivedRateShiftsByTheSampleAsked
+### Community 110 - "TestPlotting"
+Cohesion: 0.29
+Nodes (4): The reported symptom, and the one plotting path with no guard., plotting.py:87 raised ValueError on mismatched first dimensions., The caller asked for a fit explicitly; silence would be worse., TestPlotting
 
 ### Community 111 - "test_lag_plot_labels.py"
 Cohesion: 0.14
@@ -677,8 +661,8 @@ Cohesion: 0.17
 Nodes (6): one_sample(), `except ValueError` is the family's promised catch., An error that names a remedy is code; the remedy must run., The rule is about the span, and sample count was only its proxy. Review round 1…, `nan == nan` is False, so an equality test alone let a NaN endpoint through to…, TestGrowingASeriesWithNoSpanIsRefused
 
 ### Community 121 - "seeded"
-Cohesion: 0.19
-Nodes (9): parametrize, Each of these raised AttributeError: no attribute '_name'. Parametrised one…, `inplace=True` mutates the object; it must not reset its identity. This is the…, A baseTs whose three identity fields are all at non-default values. Every field…, The identity fix must not cost what already worked. These survived a re-init…, #39: the round-trip always worked; what came back did not. Stated precisely…, seeded(), TestInplaceMethodsPreserveIdentity (+1 more)
+Cohesion: 0.15
+Nodes (8): Each of these raised AttributeError: no attribute '_name'. Parametrised one…, Only a *stale* shadow is dropped, not any shadow. Deleting unconditionally also…, A baseTs whose three identity fields are all at non-default values. Every field…, An error that names a remedy is code; the remedy must run. This repo shipped an…, The remedy that was there before, and why it was wrong. `ts.data = ...`,…, #39: the round-trip always worked; what came back did not. Stated precisely…, seeded(), TestUnpickledObjectIsUsable
 
 ### Community 122 - "_ExtendedForPickling"
 Cohesion: 0.40
@@ -712,17 +696,17 @@ Nodes (3): Issue #31's sharpest production site: the one place a user hands base
 Cohesion: 0.24
 Nodes (7): _calls_in_own_scope(), Yield the `ast.Call` nodes belonging to `node` itself. A flat `ast.walk`…, `super(TimeSeriesData, self).__init__` may appear in exactly one place. A…, Functions in core.py that re-initialise self through pandas. Parsed, not…, The scan must attribute a call to its *nearest* enclosing function. A flat…, Guards the scan itself against silently matching nothing. An assertion that a…, TestReinitHasOneDoor
 
-### Community 131 - "TestInvalidationThroughCreateNewWithData"
+### Community 131 - "_complete_positional_slots"
 Cohesion: 0.33
-Nodes (3): _create_new_with_data copies the metadata slots outside pandas' machinery.…, Same index and same values, so both still describe the result. sg_filter was…, TestInvalidationThroughCreateNewWithData
+Nodes (5): _complete_positional_slots(), Restore from a pickle, healing a blob that predates `_name`. Adding '_name' to…, Bring a positional slot restored from a pickle up to the current shape.…, Snapshot `obj`'s values for a positional slot to be checked against. A…, _values_stamp()
 
-### Community 132 - "requirements.txt"
-Cohesion: 0.20
-Nodes (10): Python Package CI Workflow, hypothesis, Matplotlib, moepy, NumPy, Pandas, psutil, pytest (+2 more)
+### Community 132 - "_label_property"
+Cohesion: 0.40
+Nodes (5): _label_property(), _positional_property(), Build a label attribute that is always a string. `signal_name` and…, Build a property that hands back `value` only while the index it was computed…, property
 
 ### Community 133 - "baseTs"
-Cohesion: 0.04
-Nodes (31): baseTs, Apply a bandpass filter between two cutoff frequencies (alias for bandpass_at).…, Apply a Butterworth bandpass filter (alias for bandpass_at). Args: hp_freq:…, Get outlier filter parameters as a plain dict. A snapshot, not the live config.…, Compute the first difference of the timeseries. Args: zeropad: If True, the…, Basic data class to hold a timeseries and data. Built on pandas Series…, A time_slice bound as seconds on the index. A number is seconds on the index,…, Compute the FFT power of the timeseries. Computed on a float64 copy of the… (+23 more)
+Cohesion: 0.03
+Nodes (41): baseTs, Apply a bandpass filter between two cutoff frequencies (alias for bandpass_at).…, Apply a Butterworth bandpass filter (alias for bandpass_at). Args: hp_freq:…, Get outlier filter parameters as a plain dict. A snapshot, not the live config.…, Compute the first difference of the timeseries. Args: zeropad: If True, the…, Basic data class to hold a timeseries and data. Built on pandas Series…, A time_slice bound as seconds on the index. A number is seconds on the index,…, Compute the FFT power of the timeseries. Computed on a float64 copy of the… (+33 more)
 
 ### Community 134 - "TestAttrsIsolation"
 Cohesion: 0.29
@@ -748,33 +732,29 @@ Nodes (3): A copy must move the triple, never re-stamp it. The discriminating de
 Cohesion: 0.40
 Nodes (3): The discriminating half: same index, same values, a method was called., NaN in the same place compares equal to itself., TestValuePreservingDerivationsKeepBoth
 
-### Community 140 - "from_df"
-Cohesion: 0.15
-Nodes (9): from_df(), Convert the timeseries to a pandas DataFrame. Args: set_index (bool): If True,…, Create a baseTs object from a pandas DataFrame. Args: df: Input DataFrame…, DataFrame, A caller asking for relative seconds only. Coherent, so allowed., seconds_since_first(), TestAnExplicitOffsetAlongsideAStampedIndex, TestFromDfAcceptsADatetimeColumn (+1 more)
+### Community 140 - "test_datetime_index_converts_at_the_constructor.py"
+Cohesion: 0.13
+Nodes (11): from_df(), Convert the timeseries to a pandas DataFrame. Args: set_index (bool): If True,…, Create a baseTs object from a pandas DataFrame. Args: df: Input DataFrame…, DataFrame, Test creating baseTs from DataFrame., A DatetimeIndex becomes seconds since its first stamp at the constructor…, A caller asking for relative seconds only. Coherent, so allowed., seconds_since_first() (+3 more)
 
-### Community 141 - ".plot_fft_power"
-Cohesion: 0.14
-Nodes (10): Axes, Plot this timeseries against one or more other timeseries. e.g. for QC,…, Plot a histogram of the timeseries., Plot the power spectrum of the timeseries using enhanced frequency analysis.…, Plot a lag plot of the timeseries., Direct Pandas Series Inheritance Architecture, baseTs 2.0.0 Release (Pandas Series Foundation), Dual Backend Architecture (removed in v2.0.0) (+2 more)
+### Community 141 - "Axes"
+Cohesion: 0.29
+Nodes (4): Axes, Plot this timeseries against one or more other timeseries. e.g. for QC,…, Plot a histogram of the timeseries., Plot a lag plot of the timeseries.
 
 ### Community 143 - "parametrize"
-Cohesion: 0.10
+Cohesion: 0.09
 Nodes (11): parametrize, `pd.Timestamp(2592000)` is 2.592 ms into 1970; the rule is `numbers.Real`,…, The load-bearing agreement between the two conversions: the index comes from…, A series built from seconds must come out byte-for-byte as before. The pair's…, The TypeError arm in the rate derivation used to be described as the…, `Decimal` registers under `numbers.Number`, not `numbers.Real`; `main` compared…, A microsecond index from 1700 to 2200 is a valid DatetimeIndex (unit us),…, The remaining keyword combination of the pinned pair table. (+3 more)
-
-### Community 144 - "TestTheDatetimesAccessor"
-Cohesion: 0.11
-Nodes (8): Exact whenever the first stamp lies on a microsecond and each later stamp is at…, 2.11e-7 s, the number the CHANGELOG quotes, asserted rather than bounded: the…, Mutation found `floor` and `trunc` splits agree on every stamp (whole…, Past 2**23 s a float64 second's ulp exceeds a nanosecond, so the nanosecond…, The int64 nanosecond product wrapped silently: 9.5e9 s came back as a date in…, `has_timestamp_offset=True` with `ts_offset` 0 is a caller's own assertion…, A property raising AttributeError is invisible to hasattr and would fall into…, TestTheDatetimesAccessor
 
 ### Community 145 - "TestTimeSliceTakesCalendarBounds"
 Cohesion: 0.12
 Nodes (5): fixture, The bound is turned into seconds the way the index was, so a bound that names a…, `Timedelta.total_seconds()` rounds to the microsecond; the bound is placed as…, Whatever the string says: the origin check runs before parsing., TestTimeSliceTakesCalendarBounds
 
-### Community 146 - "core.py"
-Cohesion: 0.09
-Nodes (22): _is_unset(), True if a numeric argument was not supplied. The constructor uses np.nan as its…, Find the closest time in the timeseries to a target time in seconds. Args: sec:…, baseTs - A Python library for time series analysis, ClosestMatch, compute_fft_power(), find_closest(), find_closest_time() (+14 more)
+### Community 146 - "test_label_normalising_property.py"
+Cohesion: 0.50
+Nodes (3): _close_figures(), fixture, `signal_name` and `last_process` are always strings, in place too (#61). #33…
 
-### Community 147 - "shift_timeseries"
-Cohesion: 0.13
-Nodes (10): Shift a time series by a lag value. Args: ts: Time series object with data and…, shift_timeseries(), A datetime index derived no rate, so these needed a declared one to reach the…, Its times are seconds since the first stamp now (#100)., The dtype's own missing value where it has one; float64 where it has none.…, Review round 2 (codex): widening the whole array to float64 for the sake of two…, A bytes array has no missing value, and it is not numeric, so there is nothing…, Review round 1 (codex): an outcome-based fallback - try `astype(float)`, refuse… (+2 more)
+### Community 147 - "lf_baseTsObj"
+Cohesion: 0.67
+Nodes (3): lf_baseTsObj(), fixture, Long, slowly-varying signal suitable for 0.01-0.1 Hz band analysis. 600 s at 2…
 
 ### Community 148 - "TestTheConstructorConvertsAStampedIndex"
 Cohesion: 0.13
@@ -788,45 +768,17 @@ Nodes (12): parametrize, An array edge escaped with numpy's ambiguity error, on 
 Cohesion: 0.20
 Nodes (6): Review round 3 (quick-review, a different harness): the subset test is by…, `dropna(inplace=True)` swaps the manager through `_update_inplace`, which…, Positions 0..n-1 of a series whose own seconds are exactly those values read as…, A two-key groupby's MultiIndex cannot be compared with seconds; `Index.isin`…, The one index `_set_axis` could narrow against is a same-length permutation,…, TestTheStampNarrowsToEachDerivation
 
-### Community 151 - "TestOutlierDetection"
-Cohesion: 0.33
-Nodes (4): Tests for outlier detection functionality., Test setting outlier filter parameters., Test outlier filtering., TestOutlierDetection
-
-### Community 152 - "test_data_setter_span.py"
-Cohesion: 0.33
-Nodes (3): empty(), A length-changing `ts.data = x` resamples over the span it has (#65). The rule.…, One sample still has to be placed somewhere.
-
 ### Community 153 - "parametrize"
 Cohesion: 0.33
 Nodes (3): parametrize, Regression guard over spanning sources: true on `main` too. The no-span cases…, The one package method that grew a no-span source. Review round 1 (codex +…
-
-### Community 154 - "TestAnExplicitArgumentStillWins"
-Cohesion: 0.17
-Nodes (6): parametrize, The conversion branch takes its index from the source, so a `times` argument…, Preserving what was not passed must not ignore what was. The fix distinguishes…, `history=None` is the documented way to ask for a fresh entry. Folding it into…, TestAnExplicitArgumentStillWins, TestAnIgnoredIndexIsRefused
 
 ### Community 159 - "_one_sample"
 Cohesion: 0.21
 Nodes (8): filterwarnings, _one_sample(), Only the empty series is rejected by the door. One sample is not. A 1-sample…, A confident 0.0 for a spectrum with no peak in it - observed and left as…, The constant-data branch, which runs before the FFT: one sample has a standard…, matplotlib warns about a singular x-range for one point; that is the draw's,…, Its threshold is its own contract and is not the door's., TestTheOneSampleDecision
 
-### Community 160 - "TestWindowingParamsAreGuardedLikeTheBandEdges"
-Cohesion: 0.15
-Nodes (7): `max(1, window_step - overlap)` is the same defect one line down (#30). The…, `window_step=10**400` raised a bare OverflowError on main, through `sample_Hz /…, `overlap=10**400` raised under #30 only because the float coercion overflowed;…, Since #78 the guard is the integer one, so the message names that rule rather…, The worst of them: it produced output rather than an error., validate_band_params is public, so it cannot rely on its caller.…, TestWindowingParamsAreGuardedLikeTheBandEdges
-
 ### Community 161 - "TestInheritedPandasInplaceMethods"
 Cohesion: 0.18
 Nodes (5): `inplace=True` on an inherited pandas method swaps the block manager. pandas…, The reported crash, reachable without any baseTs method at all., The silent variant: same length, every position moved., These keep the positions, so the index rule must not fire. On this fixture they…, TestInheritedPandasInplaceMethods
-
-### Community 162 - "_DuckSeries"
-Cohesion: 0.22
-Nodes (6): _DuckSeries, The other route to a None: the metadata-copy fallback in series.py.…, `is_outlier_filtered` is a flag, and the fallback left it None. The defaulting…, The shape `TimeSeriesData.__init__` treats as a baseTs to convert from.…, TestFlagDefaultsAtConstruction, TestOutlierFilterDefaultAtConstruction
-
-### Community 163 - "test_pipeline.py"
-Cohesion: 0.20
-Nodes (9): Integration tests for baseTs processing pipeline., Test a complete processing pipeline with multiple steps., Test creating baseTs from DataFrame and applying pipeline., Test method chaining for creating a processing pipeline., Test conversions between baseTs and pandas DataFrame., test_complete_processing_pipeline(), test_dataframe_conversions(), test_from_df_to_pipeline() (+1 more)
-
-### Community 164 - "TestBaseTsConversionPreservesMetadata"
-Cohesion: 0.20
-Nodes (6): `baseTs(ts)` is a conversion, not a reset., The sharpest edge: a converted object claimed to be freshly made. Verbatim, not…, #15's guard, which was the only name that already worked., Assigned through the public properties, these were cleared to None. Read back…, The whole list, so a name added later cannot quietly drop out., TestBaseTsConversionPreservesMetadata
 
 ### Community 165 - "Handoff: #100 — convert a DatetimeIndex to seconds at the constructor"
 Cohesion: 0.22
@@ -840,33 +792,9 @@ Nodes (7): _origin_timestamp(), The index as calendar stamps: the origin plus ea
 Cohesion: 0.25
 Nodes (3): It used to move the index by the offset and record it; the index stays put now.…, Nothing about the index changes, so the declaration's token holds., TestSetTimestampOffsetRecordsTheOrigin
 
-### Community 168 - "TestNaNSentinel"
-Cohesion: 0.25
-Nodes (4): `freq is np.nan` only matched the one np.nan object., Previously this silently produced an all-NaN time index instead of raising,…, Deriving freq from the times array must still work. NB: the derived value is…, TestNaNSentinel
-
 ### Community 169 - "test_derived_lowess_invalidation.py"
-Cohesion: 0.33
-Nodes (5): _close_figures(), filtered(), fixture, Tests for #20: lowess_fit and outlier_indices on derived objects. `lowess_fit`…, A filtered series carrying a real fit and a real outlier record.
-
-### Community 170 - ".__mul__"
-Cohesion: 0.33
-Nodes (3): Multiplication operation returning a baseTs object., A deliberate narrowing, pinned so it is not mistaken for a bug. `lag * rate`…, float() declared 0.5 s, so 0.5 s is what must be converted.
-
-### Community 171 - "TestATimedeltaIndexIsDurations"
-Cohesion: 0.33
-Nodes (3): Durations carry no origin, so a caller may name one., Seconds are the durations themselves, not durations since the first., TestATimedeltaIndexIsDurations
-
-### Community 172 - "_validate_display_rate"
-Cohesion: 0.50
-Nodes (5): Any, Coerce a frequency bound to a float matplotlib can use as an axis limit. The…, Unpack and coerce a (low, high) band, or raise ValueError naming it. Both edges…, _validate_display_rate(), _validate_highlight_band()
-
-### Community 173 - "TestArgumentOrder"
-Cohesion: 0.40
-Nodes (3): statsmodels is lowess(endog, exog) = (y, x); moepy was fit(x, y). Transposing…, Same y, x stretched: the fitted values must be essentially unchanged., TestArgumentOrder
-
-### Community 175 - "zscale"
-Cohesion: 0.67
-Nodes (3): ndarray, Standardize data by removing the mean and scaling to unit variance., zscale()
+Cohesion: 0.17
+Nodes (8): _close_figures(), filtered(), fixture, Tests for #20: lowess_fit and outlier_indices on derived objects. `lowess_fit`…, A filtered series carrying a real fit and a real outlier record., _create_new_with_data copies the metadata slots outside pandas' machinery.…, Same index and same values, so both still describe the result. sg_filter was…, TestInvalidationThroughCreateNewWithData
 
 ## Ambiguous Edges - Review These
 - `LowessOutlierFilter.py` → `baseTs Package README`  [AMBIGUOUS]
@@ -893,7 +821,7 @@ Nodes (3): ndarray, Standardize data by removing the mean and scaling to unit va
 ## Knowledge Gaps
 - **68 isolated node(s):** `Global Constraints`, `Commit boundaries`, `Task 1: Index token and derivation hardening`, `Task 2: Make the legacy freq tests independent of freq storage`, `Task 3: The atomic switch — `freq` becomes a property` (+63 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **11 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **14 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
