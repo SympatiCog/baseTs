@@ -22,6 +22,13 @@ docs/CHANGELOG.md is excluded on purpose: its snippets illustrate what a
 change did, often in the API as it was, and are not documentation of the
 current API.
 
+The root README.md is in the census too: it is the first thing a new
+reader executes, and until now nothing did (review - it had rotted to
+two examples that run cleanly, under warnings-as-errors, while printing
+an all-NaN result; this harness cannot catch that class of drift, only
+a raise or a warning, but a renamed method or a widened exception was
+this class's whole first job).
+
 Issue #44 was the motivating case: USER_GUIDE.md's Example 4 had been
 unrunnable for two independent reasons and nothing executed it. Measured
 before this harness existed, 44 of 108 blocks failed (#69); most of
@@ -47,8 +54,19 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-DOCS = Path(__file__).resolve().parents[2] / "docs"
-FILES = ["USER_GUIDE.md", "EXAMPLES.md", "API.md", "API_SERIES.md"]
+ROOT = Path(__file__).resolve().parents[2]
+DOCS = ROOT / "docs"
+# Name -> path. The root README lives outside docs/, so the census is
+# keyed by name but resolved through this map rather than assuming
+# every file sits under DOCS.
+FILE_PATHS = {
+    "USER_GUIDE.md": DOCS / "USER_GUIDE.md",
+    "EXAMPLES.md": DOCS / "EXAMPLES.md",
+    "API.md": DOCS / "API.md",
+    "API_SERIES.md": DOCS / "API_SERIES.md",
+    "README.md": ROOT / "README.md",
+}
+FILES = list(FILE_PATHS.keys())
 
 # Fragments the harness compiles but does not run, per file.
 EXPECTED_NO_RUN = {
@@ -56,6 +74,7 @@ EXPECTED_NO_RUN = {
     "EXAMPLES.md": 0,
     "API.md": 13,
     "API_SERIES.md": 0,
+    "README.md": 0,
 }
 
 FENCE = re.compile(r"^```python([^\n]*)\n(.*?)^```", re.S | re.M)
@@ -80,7 +99,7 @@ class Block:
 
 
 def blocks_in(file):
-    text = (DOCS / file).read_text()
+    text = FILE_PATHS[file].read_text()
     return [Block(file, text[:m.start()].count("\n") + 1, m.group(1).strip(), m.group(2))
             for m in FENCE.finditer(text)]
 
@@ -138,7 +157,7 @@ def test_every_fenced_python_block_runs(block):
 
 def python_fences(file):
     """Every opening fence whose info word names Python, however spelled."""
-    text = (DOCS / file).read_text()
+    text = FILE_PATHS[file].read_text()
     openings, open_fence = [], None
     for m in ANY_FENCE.finditer(text):
         indent, fence, info = m.groups()
@@ -257,4 +276,14 @@ def test_the_fence_info_string_is_known(block):
 def test_the_census_is_the_whole_docs_directory():
     """A new doc file has to be listed (or excluded here with a reason)."""
     present = sorted(p.name for p in DOCS.glob("*.md"))
-    assert present == sorted(FILES + ["CHANGELOG.md"])
+    docs_files = [f for f in FILES if FILE_PATHS[f].parent == DOCS]
+    assert present == sorted(docs_files + ["CHANGELOG.md"])
+
+
+def test_the_root_readme_is_in_the_census():
+    """The root README is the one doc outside docs/ - it must stay listed
+    explicitly, not fall out of coverage the way it did before this test
+    existed (review)."""
+    assert "README.md" in FILES
+    assert FILE_PATHS["README.md"] == ROOT / "README.md"
+    assert FILE_PATHS["README.md"].exists()
