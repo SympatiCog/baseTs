@@ -5,6 +5,36 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — the benchmark scaffolding is removed (#108)
+
+### Removed — `pytest-benchmark` and the `benchmark` marker
+
+Three pieces of scaffolding declared a benchmark suite that was never
+written: `pytest-benchmark` in `requirements.txt` and in `setup.py`'s `dev`
+extra, and a `benchmark` marker registered in `pyproject.toml`. No test in
+the repo has ever carried `@pytest.mark.benchmark` or taken the `benchmark`
+fixture — `grep -rni benchmark tests/` returns nothing at all.
+
+The dependency was already dead in practice, not merely unused:
+`pytest-benchmark` is not installed in the development environment this was
+removed in, and the full suite passes there unchanged (2318 passed, 1
+skipped, before and after). Nothing imported it, so nothing noticed.
+
+Removed rather than backfilled with real benchmarks. The performance claims
+that motivated the scaffolding — 2-5x faster rolling operations, reduced
+memory — are recorded under 0.2.0 and were never measured in-repo; that
+entry now says so. Substantiating them is a separate piece of work, and
+carrying an unused dependency and marker in the meantime bought nothing
+while costing install time and a line of config that read as a promise.
+
+Untouched deliberately: `docs/USER_GUIDE.md`'s "Performance Benchmarking"
+example is hand-rolled `time.perf_counter()` timing and never used
+pytest-benchmark, so it still runs; and README's performance section already
+states that no benchmark suite ships in this repo, which stays accurate.
+
+Both `requirements.txt` and `pyproject.toml` also gained the trailing
+newline they had been missing, since the removal touched their last lines.
+
 ## [2.0.0] - 2024-XX-XX
 
 ### 🚀 Major Architecture Update: Pandas Series Foundation
