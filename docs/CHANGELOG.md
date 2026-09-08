@@ -5,55 +5,6 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2024-XX-XX
-
-### 🚀 Major Architecture Update: Pandas Series Foundation
-
-**BREAKING CHANGE**: baseTs now inherits directly from pandas Series, providing native access to 270+ pandas methods while maintaining 100% backward compatibility for existing APIs.
-
-### Added
-- **Pandas Series Foundation**: Direct inheritance from pandas Series via TimeSeriesData class
-- **Enhanced Frequency Analysis**: 
-  - `get_frequency_content(window=None)`: FFT with windowing support ('hann', 'hamming', 'blackman')
-  - `get_peak_freq()`: Enhanced peak detection with windowing and frequency range control
-  - `plot_fft_power()`: Enhanced plotting with `min_rate` parameter and windowing
-- **Advanced Interpolation**:
-  - `interpolate_gaps()`: Enhanced with `order` parameter for polynomial/spline interpolation
-  - Time interpolation support for numeric indices (not just datetime)
-- **Native Pandas Access**: Direct access to all pandas Series methods
-- **Windowing Functions**: Spectral leakage reduction for frequency analysis
-- **DC Component Control**: Automatic exclusion of DC component in peak frequency detection
-
-### Enhanced  
-- **Performance**: 2-5x faster rolling operations using native pandas implementations
-- **Memory Efficiency**: Eliminated dual array storage overhead  
-- **Time Slicing**: Optimized pandas indexing for time-based queries
-- **Statistical Operations**: Vectorized pandas computations
-- **Metadata Preservation**: All processing history and filter states maintained through pandas operations
-- **Method Signatures**: Enhanced with additional parameters while maintaining backward compatibility
-
-### Fixed
-- **Time Interpolation**: Now works correctly with numeric time indices 
-- **FFT Edge Cases**: Robust handling of constant signals, NaN/Inf values, and very short signals
-- **DC Component Handling**: Consistent behavior between legacy and enhanced FFT methods
-- **Power Scaling**: Safe normalization in compute_fft_power() for edge cases
-
-### Documentation
-- **Complete API Update**: Removed dual backend references, documented pandas Series foundation
-- **Enhanced Examples**: New windowing examples and frequency analysis workflows  
-- **Performance Notes**: Updated optimization guidelines for pandas Series architecture
-- **Method Chaining**: Enhanced examples with new capabilities
-
-### Testing
-- **Comprehensive Coverage**: All 62 tests passing with enhanced functionality
-- **Edge Case Validation**: Robust handling of degenerate cases in FFT analysis
-- **Backward Compatibility**: 100% API compatibility maintained
-
-### Removed
-- **Dual Backend System**: Simplified to single pandas Series backend
-- **Backend Parameters**: No longer need to specify `backend='series'`
-- **Backend Management**: Eliminated BackendManager and conversion utilities
-
 ## [Unreleased] — A `DatetimeIndex` is converted to seconds at the constructor (#100)
 
 The constructor accepted a `pd.DatetimeIndex` - API.md's own example built
@@ -3679,6 +3630,66 @@ used to silently remove them.
 
 ## [0.2.0] - 2026-08-25
 
+### Changed — Pandas Series foundation
+
+**BREAKING CHANGE**: baseTs now inherits directly from pandas Series,
+providing native access to 270+ pandas methods while maintaining backward
+compatibility for the documented API.
+
+This work landed 2025-05-24 (c7dde5d) through 2025-06-09 (bfba855), while
+the package still declared 0.1.1; it was never given a version bump of its
+own. 0.2.0 is the first declared version that contains it, so it is
+recorded here. This file previously headed it `[2.0.0] - 2024-XX-XX` — a
+version the package has never declared (#106).
+
+#### Added
+- **Pandas Series Foundation**: Direct inheritance from pandas Series via TimeSeriesData class
+- **Enhanced Frequency Analysis**: 
+  - `get_frequency_content(window=None)`: FFT with windowing support ('hann', 'hamming', 'blackman')
+  - `get_peak_freq()`: Enhanced peak detection with windowing and frequency range control
+  - `plot_fft_power()`: Enhanced plotting with `min_rate` parameter and windowing
+- **Advanced Interpolation**:
+  - `interpolate_gaps()`: Enhanced with `order` parameter for polynomial/spline interpolation
+  - Time interpolation support for numeric indices (not just datetime)
+- **Native Pandas Access**: Direct access to all pandas Series methods
+- **Windowing Functions**: Spectral leakage reduction for frequency analysis
+- **DC Component Control**: Automatic exclusion of DC component in peak frequency detection
+
+#### Enhanced  
+- **Performance**: 2-5x faster rolling operations using native pandas implementations
+  (as claimed at the time; the repo has never held a benchmark that measures it — #108)
+- **Memory Efficiency**: Eliminated dual array storage overhead  
+- **Time Slicing**: Optimized pandas indexing for time-based queries
+- **Statistical Operations**: Vectorized pandas computations
+- **Metadata Preservation**: All processing history and filter states maintained through pandas operations
+- **Method Signatures**: Enhanced with additional parameters while maintaining backward compatibility
+
+#### Fixed
+- **Time Interpolation**: Now works correctly with numeric time indices 
+- **FFT Edge Cases**: Robust handling of constant signals, NaN/Inf values, and very short signals
+- **DC Component Handling**: Consistent behavior between legacy and enhanced FFT methods
+- **Power Scaling**: Safe normalization in compute_fft_power() for edge cases
+
+#### Documentation
+- **Complete API Update**: Removed dual backend references, documented pandas Series foundation
+- **Enhanced Examples**: New windowing examples and frequency analysis workflows  
+- **Performance Notes**: Updated optimization guidelines for pandas Series architecture
+- **Method Chaining**: Enhanced examples with new capabilities
+
+#### Testing
+- **Comprehensive Coverage**: All 62 tests passing with enhanced functionality
+- **Edge Case Validation**: Robust handling of degenerate cases in FFT analysis
+- **Backward Compatibility**: 100% API compatibility maintained
+
+#### Removed
+- **Dual Backend System**: Simplified to single pandas Series backend
+- **Backend Parameters**: No longer need to specify `backend='series'`
+- **Backend Management**: Eliminated BackendManager and conversion utilities
+
+These three describe an intermediate state, not a user-visible removal: the
+dual backend was added at f2cf0f2 and removed at fbe682b, both between the
+0.1.1 and 0.2.0 declarations. No released version ever exposed `backend=`.
+
 ### Fixed — `ts.plot` no longer shadows the pandas plotting accessor
 
 `plot` was a plain alias for `plot_line`. Because `pandas.Series.plot` is an
@@ -3953,78 +3964,118 @@ after this change.
 - Enhanced plotting integration with matplotlib
 - Export functionality to various formats
 
-## [1.0.0] - 2023-XX-XX (Previous Release)
+## [0.1.1] - 2025-05-18
 
-### Features
-- Core baseTs class with NumPy backend
-- Basic filtering operations (`lowpass_filter`)
-- Normalization methods (`zscale`, `normalize_range`)
-- Function application (`apply_function`)
-- Outlier detection and removal
-- Basic interpolation and resampling
+### Changed
+- Package layout consolidated (2d95bd3, "no functional changes"):
+  `LowessOutlierFilter.py` moved from the repository root into the `baseTs/`
+  package, and the stale root copies of `exgaussian.py`, `filters.py`,
+  `plotting.py` and `utils.py` — duplicates left behind when 72b7d60 created
+  the package — were deleted.
 
-### Core Methods
-- `lowpass_filter(cutoff)`: Low-pass filtering with Butterworth filter
-- `zscale()`: Z-score normalization (mean=0, std=1)
-- `normalize_range()`: Range normalization (min=0, max=1)
-- `apply_function(func)`: Apply arbitrary function to data
-- `remove_outliers()`: Remove statistical outliers
-- `interpolate()`: Linear interpolation of missing values
-- `resample(factor)`: Resample to different time resolution
+Note the two version declarations disagreed across this release:
+`baseTs/version.py` was bumped to `0.1.1`, but `setup.py` was left at
+`0.1.0`. They only agreed again at 0.2.0.
 
-### Properties
-- `data`: Access to underlying data array
-- `times`: Access to time points array
-- `len()`: Get length of time series
+## [0.1.0] - 2025-04-25
+
+The first packaged release (72b7d60). Built on NumPy arrays: `baseTs` held
+`data` and `times` as two separate `np.array` attributes, and the class was
+declared `class baseTs(object)` — it did **not** inherit from `pandas.Series`.
+pandas appeared only at the edges: `from_df`, `to_dataframe`, and a throwaway
+`pd.Series` used to interpolate inside `filters.py` and `lowess_filter.py`.
+The Series foundation came later and first shipped in 0.2.0.
+
+### Core methods
+- **Construction**: `baseTs(data, times=None, freq=nan, ts_offset=nan, ...)`,
+  `from_df(df, time_col='time', data_col='value', signal_name=None)`
+- **Normalization**: `zscale()`, `normalize_range()`
+- **Filters**: `lowpass_at(cutoff, order=5)`, `highpass_at(cutoff, order=5)`,
+  `bandpass_at(hp_hz=0.01, lp_hz=0.1, reset_mean=True)`,
+  `butterpass_at(hp_freq, lp_freq)`, `gauss_filter(sigma=1)`,
+  `sg_filter(window_length=11, polyorder=2)`, `lowess_detrend(frac=0.25)`
+- **Outliers**: `set_outlier_filter(params=None, z_threshold=7, frac=0.075, ...)`,
+  `get_outlier_filter_params()`, `filter_outliers(qcplot=False, ...)`
+- **Resampling and gaps**: `interpto_samples(new_len, kind='linear')`,
+  `interpto_hz(new_freq, kind='linear')`,
+  `interp_to_uniform_grid(new_grid=None, kind='linear')`,
+  `interpolate_missing()`, `trimto_timepoints(start_val, end_val)`
+- **Spectral**: `compute_fft_power(max_rate=nan, demean=True, scale_power=True)`,
+  `get_peak_freq()`, `get_peaks(min_dist_secs=1.0, min_height=None)`
+- **Plotting**: `plot_line()`, `plot_series()`, `plot_hist()`, `plot_fft_power()`
+- **Other**: `apply(func, *args, inplace=False, **kwargs)`, `copy()`, `info()`,
+  `duration()`, `len()`, `get_closest_time(sec)`,
+  `set_timestamp_offset(ts_offset)`, `to_dataframe(set_index=False)`
+
+### Attributes
+- `data`, `times`: the two NumPy arrays the object was built from
+- `freq`: stored on the instance, defaulting to `len() / duration()`. It only
+  became a derived property much later (#29, #31, #23).
+- `history`, `signal_name`, and the `is_filtered` / `is_interpolated` /
+  `is_uniform_grid` / `is_outlier_filtered` / `has_timestamp_offset` flags
+
+### Not in this release
+Contrary to what this file claimed until now, 0.1.0 had no `lowpass_filter`,
+`remove_outliers`, `apply_function`, `interpolate` or `resample`. Those names
+arrived later — `lowpass_filter` and `apply_function` with the pandas
+migration (d393cc9, 2025-06-09), `resample` at 51c5c98 the same day, and
+`remove_outliers` not until 0a64bbb (2026-08-25, #13).
 
 ## Migration Notes
 
-### From 1.0.0 to Current
+### From 0.1.x to 0.2.0
 
-#### Breaking Changes
-- **None**: This release maintains 100% backward compatibility
+#### Breaking changes
+`baseTs` began inheriting from `pandas.Series`. Construction and the filter,
+spectral and plotting calls keep their 0.1.x spellings, so most calling code is
+unaffected. What changed is the object's identity, and that is where 0.1.x code
+breaks:
 
-#### Migration from 1.0.0 to 2.0.0
 ```python
-# Before (1.0.0 - still works exactly the same)
-ts = baseTs(data=data, times=times)
-filtered = ts.lowpass_filter(cutoff=0.3)
+ts = baseTs(data=data, times=times)   # unchanged
+filtered = ts.lowpass_at(cutoff=0.3)  # unchanged
 
-# After (2.0.0 - same API, enhanced capabilities)
-ts = baseTs(data=data, times=times)  # Now pandas Series-based
-filtered = ts.lowpass_filter(cutoff=0.3)  # Same method, better performance
+# BREAKS: `data` was a writable np.array in 0.1.x. It is now a read-only view
+# under pandas Copy-on-Write, and item assignment raises ValueError.
+ts.data[0] = 1.0
+# Use instead: ts.iloc[0] = 1.0, or the `ts.data = array` setter.
 
-# New enhanced features available automatically
-freqs, power = ts.get_frequency_content(window='hann')  # Enhanced FFT
-peak = ts.get_peak_freq(window='blackman', min_freq=1.0)  # Windowed peak detection
-ts.plot_fft_power(min_rate=1.0, max_rate=50.0, window='hann')  # Enhanced plotting
+# `times` is no longer a stored array — it is the Series index.
+# `freq` became a derived property rather than a stored attribute (#29, #31, #23).
+
+# New, from the Series foundation:
+ts.describe(); ts.quantile(0.95); ts.rolling(10).mean()
+freqs, power = ts.get_frequency_content(window='hann')
 ```
 
-#### Automatic Benefits in 2.0.0
-- **No Code Changes Required**: All existing code works unchanged
-- **Enhanced Performance**: Automatic 2-5x speedup in rolling operations
-- **Memory Efficiency**: Reduced memory usage vs. previous dual backend system
-- **Native Pandas Access**: Use any pandas Series method directly (e.g., `ts.describe()`, `ts.quantile(0.95)`)
+Note 0.1.x never had a `backend=` parameter — see the note under 0.2.0's
+Removed block.
 
-## Future Roadmap
+#### On the performance claims
+0.2.0's entry claims 2-5x faster rolling operations and reduced memory. Those
+figures were never measured in-repo and nothing substantiates them — see #108.
 
-### Version 2.1.0 (Planned - 3 months)
-- **Additional Windowing Functions**: Kaiser, Tukey, and custom window support
-- **Enhanced Plotting**: Integration with plotly for interactive plots
-- **Export Functionality**: Easy export to pandas DataFrame, CSV, HDF5, Parquet
-- **Performance Optimizations**: Further improvements for large datasets
+## Ideas, unscheduled
 
-### Version 2.2.0 (Planned - 6 months)
-- **Seasonal Decomposition**: Trend, seasonal, and residual analysis
-- **Advanced Analytics**: Cross-correlation, coherence analysis
-- **Multi-resolution Analysis**: Wavelet transforms and time-frequency analysis
-- **Batch Processing**: Tools for processing multiple time series
+The list below is intent, not a plan. It carried version numbers (2.1.0, 2.2.0,
+3.0.0) and "planned in 3/6/12 months" dates that were written in 2025-05 against
+a 2.0.0 that never shipped; none of it is scheduled and no dates are promised.
 
-### Version 3.0.0 (Planned - 12 months)
-- **Multi-dimensional Support**: Support for multi-channel time series
-- **Machine Learning Integration**: Built-in feature extraction and anomaly detection
-- **Advanced Resampling**: Non-uniform resampling and gap-filling algorithms
-- **Streaming Support**: Real-time time series processing capabilities
+### Nearer term
+- **Additional windowing functions**: Kaiser, Tukey, and custom window support
+- **Enhanced plotting**: integration with plotly for interactive plots
+- **Export functionality**: easy export to pandas DataFrame, CSV, HDF5, Parquet
+- **Performance optimizations**: further improvements for large datasets
+- **Seasonal decomposition**: trend, seasonal, and residual analysis
+- **Advanced analytics**: cross-correlation, coherence analysis
+- **Multi-resolution analysis**: wavelet transforms and time-frequency analysis
+- **Batch processing**: tools for processing multiple time series
+
+### Further out
+- **Multi-dimensional support**: multi-channel time series
+- **Machine learning integration**: built-in feature extraction and anomaly detection
+- **Advanced resampling**: non-uniform resampling and gap-filling algorithms
+- **Streaming support**: real-time time series processing
 
 ## Development Process
 
