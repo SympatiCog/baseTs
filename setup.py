@@ -19,7 +19,6 @@ setup(
             "pytest>=6.0",
             "hypothesis>=6.0",
             "psutil>=5.0",
-            "pytest-benchmark>=4.0",
             "black>=22.0",
             "isort>=5.0",
             "mypy>=0.910",
