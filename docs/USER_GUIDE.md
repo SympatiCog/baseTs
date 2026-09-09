@@ -15,12 +15,22 @@
 ### Installation
 
 ```bash
-# Install from PyPI
+# Install from PyPI (when available)
 pip install baseTs
+pip install "baseTs[dev]"    # with all testing dependencies
 
-# For development with all testing dependencies
-pip install baseTs[dev]
+# Or install from source
+git clone https://github.com/SympatiCog/baseTs.git
+cd baseTs
+pip install -e .
+pip install -e ".[dev]"      # development, includes test dependencies
 ```
+
+Quote the extras. Unquoted, `baseTs[dev]` is a shell glob: zsh — the default
+shell on macOS, and what this repo's `CLAUDE.md` assumes — fails outright with
+`no matches found: baseTs[dev]`, and bash silently expands it to a filename if
+one happens to match (a `baseTsd` in the working directory is enough), which
+installs the wrong thing without an error.
 
 ### Your First baseTs Object
 
