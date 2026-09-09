@@ -5,6 +5,33 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — USER_GUIDE's install command survives its own shell (#107)
+
+### Fixed — the extras are quoted, and the block installs something that exists
+
+`docs/USER_GUIDE.md`'s installation block read `pip install baseTs[dev]`.
+Unquoted, `baseTs[dev]` is a glob. zsh — the macOS default, and the shell
+this repo's `CLAUDE.md` documents — refuses with `no matches found:
+baseTs[dev]` and never runs pip.
+
+The issue reported this as zsh-only, noting it "does work as written in
+bash". It is worse than that in bash: bash expands the glob when a file
+happens to match, so a `baseTsd` in the working directory turns the command
+into `pip install baseTsd` and installs the wrong package with no error at
+all. The loud zsh failure is the good case. Verified both ways, and verified
+that after the fix every argument reaches pip verbatim in both shells with
+that decoy file present.
+
+The block had a second problem the quoting would have masked: it was headed
+`# Install from PyPI`, but baseTs is not published — `pypi.org/pypi/baseTs`
+returns 404, so `pip install baseTs` fails whatever the quoting. It now
+mirrors README's wording, which already hedged with "(when available)", and
+carries the install-from-source path that actually works today.
+
+README.md was already correct at `pip install -e ".[dev]"` and is unchanged;
+it is now the only spelling either doc uses. Every fenced command was
+syntax-checked under zsh, bash and sh.
+
 ## [Unreleased] — the benchmark scaffolding is removed (#108)
 
 ### Removed — `pytest-benchmark` and the `benchmark` marker
