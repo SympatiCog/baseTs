@@ -5,6 +5,44 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — the Python floor moves to 3.9, which is what CI actually tests
+
+### Changed — `python_requires>=3.9`, and the 3.8 classifier is dropped
+
+The package advertised Python 3.8 in four places — a `Programming Language ::
+Python :: 3.8` classifier and `python_requires=">=3.8"` in `setup.py`, black's
+`target-version = ["py38"]` and mypy's `python_version = "3.8"` in
+`pyproject.toml` — while `.github/workflows/python-package.yml` has only ever
+tested 3.9, 3.10 and 3.11. The 3.8 claim was never verified by anything.
+
+It could not have been honoured either. Python 3.8 reached end of life on
+2024-10-07, which is **before this project's first commit** (2025-04-25): there
+has never been a moment in the repository's history when 3.8 was a supported
+interpreter.
+
+Nothing forced the change from the code's side, and that was checked rather
+than assumed: an AST scan of all 10 package modules and all 43 test modules
+under `feature_version=(3, 8)` found no syntax 3.8 cannot parse, no PEP 585
+builtin generics or PEP 604 unions in runtime-evaluated annotations, and no
+post-3.8 stdlib methods. The declared dependency floors (pandas 2.0.0,
+statsmodels 0.14.0) also still permit 3.8. So this is a policy change — the
+package now claims exactly what CI proves — not a forced break.
+
+The classifier list and the CI matrix are now the same set: 3.9, 3.10, 3.11.
+`pip` refuses 3.7 and 3.8 and accepts 3.9 upward, verified against the parsed
+specifier.
+
+**Worth knowing for whoever sets the next floor.** 3.9 is itself past end of
+life (2025-10-31) and 3.10 reaches it on 2026-10-31, about seven weeks from
+this entry. Only 3.11 of the three tested versions is still supported upstream,
+and CI tests neither 3.12 nor 3.13 even though `>=3.9` accepts them. Raising
+the floor further means changing the CI matrix first, so it was left alone
+here.
+
+`README.md` and `CLAUDE.md` were updated to match. The 3.8 references in
+`docs/superpowers/plans/2026-08-27-derived-freq.md` are left as written: it is
+a dated plan record, not a live claim.
+
 ## [Unreleased] — USER_GUIDE's install command survives its own shell (#107)
 
 ### Fixed — the extras are quoted, and the block installs something that exists
