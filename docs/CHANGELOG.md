@@ -4136,36 +4136,72 @@ a 2.0.0 that never shipped; none of it is scheduled and no dates are promised.
 
 ## Development Process
 
-### Versioning Strategy
-- **Major versions**: Breaking changes, architecture changes
-- **Minor versions**: New features, non-breaking enhancements
-- **Patch versions**: Bug fixes, documentation updates
+### Versioning
 
-### Release Process
-1. Feature development and testing
-2. Beta release for testing
-3. Release candidate with final testing
-4. Stable release with documentation
-5. Post-release monitoring and hotfixes
+The version is declared in two places that must agree: `setup.py` and
+`baseTs/version.py`. They have disagreed before — `version.py` went to 0.1.1
+while `setup.py` stayed at 0.1.0 — so check both.
 
-### Compatibility Promise
-- **Backward compatibility**: Maintained within major versions
-- **Deprecation notice**: 12 months minimum before removing features
-- **Migration tools**: Provided for major version transitions
-- **Legacy support**: Previous major version supported for 24 months
+The package is 0.x, which under semantic versioning carries no stability
+guarantee, and this project uses that latitude rather than reserving breaking
+changes for a major bump: 0.2.0 was the pandas Series rewrite, and 0.3.0
+changed the LOWESS backend in a way that moves outlier counts on real data.
+Breaking changes ship in minor bumps here, and the entries above say so where
+they occur.
+
+This section previously described a beta → release-candidate → stable release
+process and promised a 12-month deprecation notice with 24 months of legacy
+support. None of it was ever practiced, and some of it could not have been:
+the repository has no tags and no GitHub releases, the package is not on PyPI,
+and the project (first commit 2025-04-25) is younger than the 24-month promise
+itself. The one deprecation the codebase actually carries — `num_fits` in
+`set_outlier_filter`, added at 0.3.0 — warns *and is ignored* in the same
+release, rather than after twelve months.
+
+### How a change lands
+
+Observed from the #20–#108 arc, not aspirational:
+
+1. An issue records the defect, usually with the measurement that found it.
+2. A branch, and a test that fails without the fix.
+3. Review rounds against the diff, findings checked against `main` before
+   they are accepted.
+4. A CHANGELOG entry citing the issue — 35 of the 39 entries above do — saying
+   what changed and what did not survive review.
+5. A pull request that closes the issue.
+   `.github/workflows/python-package.yml` runs flake8 and the full pytest
+   suite on Python 3.9, 3.10 and 3.11 for every pull request and every push
+   to `main`.
 
 ## Credits
 
-### Contributors
-- Core development team
-- Community contributors
-- Beta testers and early adopters
+### Author
+
+Stan Colcombe (stan@sympaticog.com), sole author. The log carries six
+spellings of that one identity — `Stan`, `SympatiCog`, `sympaticog` and
+`Stan Colcombe`, across two emails and two GitHub noreply addresses — over
+317 commits on `main`. There is no wider development team and there have been
+no outside contributors. This file previously credited a "core development
+team", "community contributors" and "beta testers and early adopters"; none
+of the three exist.
 
 ### Dependencies
-- **NumPy**: Core numerical operations and array handling
-- **SciPy**: Signal processing algorithms and filters  
-- **Pandas**: Series foundation and enhanced time-series operations (required)
-- **Matplotlib**: Plotting functionality (optional)
+
+All five are hard requirements in `install_requires`. Four are needed to
+`import baseTs` at all:
+
+- **NumPy** (>= 1.19): array operations
+- **SciPy** (>= 1.5): filter design, signal processing, interpolation
+- **pandas** (>= 2.0): the Series foundation `baseTs` inherits from
+- **Matplotlib** (>= 3.0): plotting. Required, not optional — `baseTs/core.py`
+  imports `matplotlib.pyplot` at module scope, so `import baseTs` raises
+  without it. This file previously listed it as optional.
+
+The fifth is deferred:
+
+- **statsmodels** (>= 0.14): LOWESS fitting, since 0.3.0. Imported inside
+  `LowessOutlierFilter._apply_lowess`, so it is needed when the LOWESS
+  outlier filter runs rather than at import. This file previously omitted it.
 
 ### Acknowledgments
 - Scientific Python community for best practices
