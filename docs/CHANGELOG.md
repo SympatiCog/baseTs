@@ -5,6 +5,52 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — the Python floor moves to 3.11, and pandas 2.x keeps a CI job
+
+### Changed — `python_requires>=3.11`, CI matrix 3.11/3.12/3.13
+
+The previous entry set the floor at 3.9 because that was what CI tested, while
+noting 3.9 was already past end of life (2025-10-31) and 3.10 reached it on
+2026-10-31. Both are now dropped. `setup.py`, `pyproject.toml` (black's
+`target-version`, mypy's `python_version`), `README.md` and `CLAUDE.md` all
+move to 3.11, and the CI matrix moves to 3.11, 3.12 and 3.13 — every version
+still supported upstream, and nothing else. The classifier list and the CI
+interpreter set are asserted to be the same set.
+
+Local development runs 3.12, so the floor sits below the interpreter actually
+in use.
+
+### Added — a pandas 2.x job, so the declared pandas floor stays tested
+
+Raising the Python floor would have silently cost the project all pandas 2.x
+coverage, which is worth spelling out because nothing would have failed to
+announce it. `requirements.txt` and `setup.py` declare `pandas>=2.0.0`, and
+pandas resolves by interpreter:
+
+```
+Python 3.9, 3.10   -> pandas 2.3.3
+Python 3.11+       -> pandas 3.0.5
+```
+
+The old matrix got 2.x coverage for free from its two EOL runners. Every
+interpreter in the new matrix resolves to pandas 3.x, so the 2.x half of the
+declared floor would have become an untested claim — the exact shape of defect
+the #106–#108 arc was about. `tests/unit/test_pandas_compat.py` exists "to
+catch environment drift" across 2.x/3.x and would have run only against 3.x
+from here on.
+
+So the matrix gains a fourth job: Python 3.11 with `pandas<3` pinned after the
+install (2.3.3 today). Four jobs now — 3.11, 3.12, 3.13 on the newest pandas,
+plus 3.11 on pandas 2.x. Dropping pandas 2.x support instead is a defensible
+choice, but a product decision rather than a consequence of moving the Python
+floor, so it was not taken here.
+
+CI also gained a **Show environment** step printing the resolved python,
+pandas, numpy and scipy versions. This project has been broken twice by
+behaviour that differs across that matrix (`objs`/`input_objs` in PR #25,
+`float(np.array([30.0]))` in PR #26); having the versions in the log makes the
+next such difference readable rather than inferred.
+
 ## [Unreleased] — the Python floor moves to 3.9, which is what CI actually tests
 
 ### Changed — `python_requires>=3.9`, and the 3.8 classifier is dropped

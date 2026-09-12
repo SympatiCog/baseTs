@@ -3,7 +3,7 @@
 ## Commands
 - Run code directly with: `python baseTs.py`
 - Lint: `flake8 *.py`
-- Type check: `mypy *.py` (configured in pyproject.toml with Python 3.9 target)
+- Type check: `mypy *.py` (configured in pyproject.toml with Python 3.11 target)
 - Test: `pytest` (configured to look in tests directory)
 - Run single test: `pytest path/to/test.py::test_function -v`
 
