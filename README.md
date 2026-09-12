@@ -10,6 +10,12 @@ A powerful Python library for time series analysis built on pandas Series, provi
 - **Quality Control**: Built-in QC plotting to visualize outlier detection results
 - **Iterative Processing**: Multiple passes for thorough artifact removal
 
+![filter_outliers() flags samples and replaces them](imgs/despiking.png)
+
+The LOWESS fit *detects* the outlier; the flagged sample is then replaced by
+linear interpolation between its neighbours — landing near the fit, not on it,
+and never dropped. Regenerate with `python examples/figures.py`.
+
 ### 🎛️ **Comprehensive Signal Processing**
 - **Digital Filters**: Low-pass, high-pass, bandpass, notch, and Gaussian filtering
 - **Advanced Filtering**: Butterworth, Savitzky-Golay, and custom filter implementations
@@ -258,6 +264,8 @@ A handful of behaviors that a first-time reader is likely to get wrong. See
   then raise. Run `interpolate_gaps()` first if your data has gaps.
   `sg_filter()` and `gauss_filter()` are windowed convolutions and are not
   guarded the same way.
+
+  ![Why interpolate_gaps() has to come first](imgs/gap_order.png)
 - **Errors are typed and widen `ValueError`.** `ValidationError` and
   `InvalidParameterError` both subclass `ValueError`, so `except ValueError`
   catches either — the library does not raise bare numpy/scipy errors for

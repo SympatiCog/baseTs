@@ -1070,6 +1070,13 @@ for sensor_id, metrics in fusion_result['agreement_metrics'].items():
 
 ## Enhanced Frequency Analysis
 
+![relative_band_power() and the null to read it against](../imgs/band_power.png)
+
+A band ratio is hard to read on its own, so `details=True` returns a
+`BandPowerResult` carrying `bin_fraction` — what an equal-power (white-noise)
+series of the same length would score. Regenerate with
+`python examples/figures.py`.
+
 ### Advanced Spectral Analysis with Windowing
 
 ```python
