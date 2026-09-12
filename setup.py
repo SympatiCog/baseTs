@@ -10,7 +10,7 @@ setup(
     install_requires=[
         "numpy>=1.19.0",
         "scipy>=1.5.0",
-        "pandas>=2.0.0",
+        "pandas>=3.0.0",
         "matplotlib>=3.0.0",
         "statsmodels>=0.14",  # For LOWESS fitting
     ],

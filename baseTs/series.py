@@ -584,8 +584,8 @@ def _apply_duplicate_label_declaration(target, declared):
         # Caught by class. An earlier version matched `type(exc).__name__` and
         # justified it by saying an import would itself become a version
         # dependency - which is false: pandas has exported this from
-        # `pandas.errors` since 1.2, well below this project's `pandas>=2.0.0`
-        # floor, and it is importable on both majors the CI matrix covers.
+        # `pandas.errors` since 1.2, well below this project's `pandas>=3.0.0`
+        # floor, and it is importable on every version the CI matrix covers.
         _raise_duplicate_label_refusal(target.index, cause=exc)
 
 
@@ -1603,14 +1603,14 @@ class TimeSeriesData(pd.Series):
 
         method == 'concat' is special-cased: nlargest/nsmallest route through
         an internal concat step where `other` is not an NDFrame (a
-        SimpleNamespace on pandas >= 3.0, a private _Concatenator on
-        pandas 2.x), so pandas' own isinstance(other, NDFrame) branch above
-        skips it and metadata is silently dropped. `objs` is the attribute
-        both shapes carry; the newer `input_objs` pandas' >= 3.0
-        __finalize__ docstring documents does not exist on pandas 2.x and
-        using it there silently no-ops this whole block - caught by CI on
-        Python 3.9/3.10 (pandas 2.3.3), which this project's own
-        `pandas>=2.0.0` floor requires supporting. Recovery only fires when
+        SimpleNamespace on pandas >= 3.0), so pandas' own
+        isinstance(other, NDFrame) branch above skips it and metadata is
+        silently dropped. `objs` is the attribute read here. The newer
+        `input_objs` that pandas' >= 3.0 __finalize__ docstring documents
+        would also work now that the floor is `pandas>=3.0.0`, but `objs` is
+        kept: it was the spelling that worked on both majors back when the
+        floor was `pandas>=2.0.0` - `input_objs` silently no-opped this whole
+        block on 2.x - and it is what the tests pin. Recovery only fires when
         exactly one of those objects is non-empty: that is nlargest/
         nsmallest's internal single-real-result-plus-empty-placeholder
         pattern. A genuine multi-operand pd.concat() has more than one

@@ -280,10 +280,10 @@ A handful of behaviors that a first-time reader is likely to get wrong. See
 ## Requirements
 
 ### Core Dependencies
-- Python 3.11+ (CI tests 3.11, 3.12 and 3.13, plus a pandas 2.x job on 3.11)
+- Python 3.11+ (CI tests 3.11, 3.12 and 3.13)
 - NumPy >= 1.19
 - SciPy >= 1.5
-- Pandas >= 2.0
+- Pandas >= 3.0
 - statsmodels >= 0.14 (LOWESS outlier filtering; imported lazily, only needed for despiking)
 - Matplotlib >= 3.0 (imported at package load, required to `import baseTs` at all)
 
