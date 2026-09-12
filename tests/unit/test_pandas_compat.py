@@ -1,9 +1,13 @@
 """
-Regression tests for pandas 2.x/3.x compatibility.
+Regression tests for pandas API removals.
 
-Each test here corresponds to an API that pandas removed after 1.x, or to a
-guard that was lost. They are grouped separately from the feature tests because
-they exist to catch environment drift, not behaviour changes.
+Each test here corresponds to an API that pandas removed on the way to 3.x, or
+to a guard that was lost. They are grouped separately from the feature tests
+because they exist to catch environment drift, not behaviour changes.
+
+Written when the floor was `pandas>=2.0.0` and both majors were tested. The
+floor is `pandas>=3.0.0` now, so these no longer span two majors - they still
+pin that none of the removed APIs has crept back in.
 """
 import warnings
 

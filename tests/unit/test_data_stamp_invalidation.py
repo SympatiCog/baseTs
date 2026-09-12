@@ -184,14 +184,21 @@ class TestInPlaceValueWrites:
         assert filtered.lowess_fit is None
         assert filtered.outlier_indices is None
 
-    def test_a_write_through_the_values_view_drops_both(self, filtered):
-        """Open on pandas 2.x; copy-on-write closes it on 3.x."""
-        try:
+    def test_a_write_through_the_values_view_is_refused(self, filtered):
+        """
+        pandas closes this door itself under copy-on-write.
+
+        This was the one door that stayed open on pandas 2.x, where the write
+        landed and the stamps had to be dropped; on 3.x it raises, so the test
+        skipped. With the floor at `pandas>=3.0.0` the refusal is guaranteed on
+        every supported configuration, so it is asserted rather than skipped
+        past - and since no write lands, the stamps must survive untouched.
+        """
+        with pytest.raises(ValueError, match="read-only"):
             filtered.values[:] = 0.0
-        except ValueError as exc:
-            pytest.skip(f"pandas closed this door itself: {exc}")
-        assert filtered.lowess_fit is None
-        assert filtered.outlier_indices is None
+
+        assert filtered.lowess_fit is not None
+        assert filtered.outlier_indices
 
     def test_augmented_scalar_arithmetic_drops_both(self, filtered):
         filtered += 1.0

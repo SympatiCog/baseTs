@@ -5,6 +5,54 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — pandas 2.x is dropped; the floor is `pandas>=3.0.0`
+
+### Changed — the declared pandas floor, and the CI job that guarded 2.x
+
+The previous entry added a fourth CI job pinning `pandas<3` so the declared
+`pandas>=2.0.0` floor would not become an untested claim, and noted that
+dropping pandas 2.x support was the other defensible answer. That is the
+answer taken. `requirements.txt` and `setup.py` now declare `pandas>=3.0.0`,
+the pandas 2.x job is removed, and the matrix is back to three jobs on 3.11,
+3.12 and 3.13.
+
+The two floors now agree exactly rather than by coincidence: pandas 3.0.0's
+own `requires_python` is `>=3.11`, which is this package's
+`python_requires`. Neither number is arbitrary now.
+
+### No code changed, and that was checked rather than assumed
+
+Nothing in `baseTs/` branches on the pandas version — `grep` for
+`pd.__version__`, `parse_version` and every `PANDAS_*` spelling returns
+nothing across the package. The compatibility work was done by choosing APIs
+present on both majors rather than by version-gating, so removing 2.x support
+removes no code. The clearest case is `TimeSeriesData.__finalize__`, which
+reads `objs` off the concat helper: `input_objs`, which pandas' own >= 3.0
+docstring documents, would work now, but `objs` is kept — it is what the
+tests pin, and its comment now records why rather than claiming a 2.x floor
+that no longer exists.
+
+Comments citing the old floor or the old CI matrix were corrected in
+`baseTs/series.py` (two sites).
+
+### Fixed — a test that could no longer run now asserts
+
+`test_a_write_through_the_values_view_drops_both` wrote through `.values` and
+called `pytest.skip("pandas closed this door itself")` when pandas refused.
+That skip was the single `1 skipped` in every run of this suite: the door is
+open only on pandas 2.x, and local development has been on 3.x throughout.
+With 2.x dropped it could never have run again.
+
+It is now `test_a_write_through_the_values_view_is_refused`, asserting the
+`ValueError` that copy-on-write guarantees on every supported configuration,
+plus the consequence worth pinning — no write lands, so the `lowess_fit` and
+`outlier_indices` stamps must survive untouched. The suite is **2319 passed,
+0 skipped**, up from 2318 passed / 1 skipped.
+
+`tests/unit/test_pandas_compat.py` keeps its tests; its docstring no longer
+describes itself as spanning two majors. The removed APIs it pins still must
+not creep back.
+
 ## [Unreleased] — the Python floor moves to 3.11, and pandas 2.x keeps a CI job
 
 ### Changed — `python_requires>=3.11`, CI matrix 3.11/3.12/3.13
