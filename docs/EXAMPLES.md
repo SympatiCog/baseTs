@@ -1618,7 +1618,13 @@ chunk_means = [chunk['mean'] for chunk in stats['chunk_stats']]
 chunk_stds = [chunk['std'] for chunk in stats['chunk_stats']]
 
 print(f"\nChunk-to-chunk consistency:")
-print(f"  Mean variation (CV): {np.std(chunk_means) / np.mean(chunk_means) * 100:.2f}%")
+# The default operations end in zscale(), so every chunk mean is 0 to within
+# floating-point noise (~1e-15). A coefficient of variation divides by that
+# mean: the result is meaningless, and when the noise cancels exactly it is a
+# divide-by-zero. Report the spread of the means directly instead.
+print(f"  Mean spread (std of chunk means): {np.std(chunk_means):.2e}")
+# The standard deviations are centred on 1 after zscale(), so a CV is well
+# defined here.
 print(f"  Std variation (CV): {np.std(chunk_stds) / np.mean(chunk_stds) * 100:.2f}%")
 ```
 

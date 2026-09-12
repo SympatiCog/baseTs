@@ -5,6 +5,34 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — EXAMPLES.md's chunk-consistency report stops dividing by zero
+
+### Fixed — a coefficient of variation on z-scaled data
+
+`docs/EXAMPLES.md`'s "Large Dataset Processing" example ends by reporting
+chunk-to-chunk consistency as a coefficient of variation:
+
+```python
+np.std(chunk_means) / np.mean(chunk_means) * 100
+```
+
+The default operation list ends in `zscale()`, so every chunk mean is zero to
+within floating-point noise (~1e-15 measured). Dividing by that mean produces a
+meaningless number — 141.78% on one local run — and when the noise happens to
+cancel exactly, numpy raises `RuntimeWarning: divide by zero encountered in
+scalar divide`, which the docs harness treats as a failure.
+
+Whether it warns depends on how the last bits fall, so it was a latent flake:
+green locally and on CI's 3.11 and 3.13 runners, red on 3.12 in the same run.
+Present since cb8cf5f and not caused by the change that surfaced it — inserting
+a figure above it renumbered the parametrised test id, which is the only reason
+it came up now.
+
+The means line now reports `np.std(chunk_means)` directly, which is the
+quantity actually wanted and cannot divide by anything. The `chunk_stds` line
+keeps its CV: after `zscale()` those are centred on 1, where a CV is well
+defined.
+
 ## [Unreleased] — the figures are generated from the library, and tested
 
 ### Added — `examples/figures.py` and `tests/unit/test_figures.py`
