@@ -5,6 +5,51 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — two cpCST figures: the staircase trap, and a test-retest outcome
+
+### Added — `staircase_trap.png` and `test_retest.png`
+
+The first three generated figures demonstrated mechanics on a sine wave. These
+two are shaped after the series this library was actually written for: cpCST
+`lambda_val`, the adaptive-staircase parameter of a critical-stability tracking
+task, and `irt`, inter-response time. The subjects are synthetic; the pipeline
+and the outcome are not.
+
+**`staircase_trap.png`** draws the failure recorded under 0.3.0, where **141 of
+262 real cpCST series hit the residual-scale floor at the default settings**.
+LOWESS reproduces a staircase's plateaus exactly and deviates only at the steps;
+because the residual scale is a *median* absolute deviation, the near-zero
+plateau residuals dominate it and it collapses — 4.4e-16 measured here, against
+a `1e-06` floor. `z_threshold` is then inoperative, and on a staircase
+containing **no outliers at all** the filter flags 1276 of 6000 samples and
+interpolates over every one, turning each step into a ramp.
+
+The remedy panel is the part worth keeping: widening the bandwidth is **not
+monotone**. `frac=0.15` flags 3141 and `frac=0.3` flags 3562 — both worse than
+the default's 1276 — before `frac=0.5` stops the collapse and flags nothing,
+which is the correct answer for a signal with no outliers. Assuming a wider
+window is safer would have made things worse on real data.
+
+**`test_retest.png`** plots what the pipeline exists to produce rather than an
+intermediate: 32 subjects, two sessions, each series through
+`filter_outliers()` → `interpolate_gaps()` → `detrend()` →
+`relative_band_power(0.01, 0.1, ratio='amplitude')`, sessions scattered against
+each other with `ICC(2,1)` annotated. The ICC sits below Pearson `r` because
+most points fall above the identity line — a session effect a correlation
+ignores and an absolute-agreement ICC penalises, which the caption says rather
+than leaving as an apparent glitch.
+
+`icc2_1()` is hand-rolled, so it is pinned to Shrout & Fleiss (1979) Table 1
+(published 0.290, computed 0.2898) plus two behavioural checks. Annotating a
+figure with a statistic nothing verifies is the exact failure this suite exists
+to prevent.
+
+`docs/EXAMPLES.md`'s "Biophysical Signal Analysis" section gains both figures
+and a runnable snippet that catches the scale-floor `RuntimeWarning` and treats
+it as a result — verified under the docs harness's warnings-as-errors rule, and
+reproducing the figure's numbers exactly (floor engaged, 1276 flagged, 0 at
+`frac=0.5`).
+
 ## [Unreleased] — EXAMPLES.md's chunk-consistency report stops dividing by zero
 
 ### Fixed — a coefficient of variation on z-scaled data
