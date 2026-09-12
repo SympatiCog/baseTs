@@ -22,6 +22,7 @@ carry their own marker shape.
 
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -315,10 +316,227 @@ def fig_band_power():
     return fig, facts
 
 
+# --------------------------------------------------------------------------
+# cpCST-style figures. The signals are synthetic but shaped after the series
+# this library was written for: `lambda_val`, the adaptive-staircase parameter
+# of a critical-stability tracking task, and `irt`, inter-response time.
+# --------------------------------------------------------------------------
+
+def _staircase(n=6000, plateau=1200, seed=7):
+    """
+    A `lambda_val`-style adaptive staircase: long plateaus, occasional steps.
+
+    The plateau length matters. LOWESS with the default `frac=0.075` spans
+    0.075*n samples; when the plateaus are longer than that window the fit
+    reproduces them exactly, which is the whole point of the figure below.
+    """
+    rng = np.random.RandomState(seed)
+    lam = np.empty(n)
+    value, i = 1.0, 0
+    while i < n:
+        run = max(4, int(rng.normal(plateau, plateau * 0.25)))
+        lam[i:i + run] = value
+        value += rng.choice([-0.08, 0.06])
+        i += run
+    return lam
+
+
+def fig_staircase_trap():
+    """
+    A clean staircase, and the default outlier filter destroying 21% of it.
+
+    CHANGELOG 0.3.0 records this against real data: **141 of 262 cpCST series
+    hit the residual-scale floor at the default settings**. LOWESS reproduces a
+    staircase's plateaus exactly and only deviates at the steps; because the
+    residual scale is a *median* absolute deviation, the near-zero plateau
+    residuals dominate it and it collapses. Every z-score is then divided by
+    `SCALE_FLOOR` instead, and `z_threshold` stops meaning anything.
+
+    The signal here contains **no outliers at all**. Everything the filter
+    reports at `frac=0.075` is spurious, and it interpolates over each one.
+    """
+    n = 6000
+    lam = _staircase(n)
+    t = np.arange(n) / 10.0
+
+    def run(frac):
+        ts = baseTs(lam, t, freq=10.0, signal_name="lambda_val")
+        ts.set_outlier_filter(z_threshold=3.0, frac=frac)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = ts.filter_outliers()
+            floored = any(issubclass(c.category, RuntimeWarning) for c in caught)
+        resid = lam - np.asarray(out.lowess_fit, float)
+        mad = float(np.median(np.abs(resid - np.median(resid))))
+        return out, np.asarray(out.outlier_indices, dtype=int), floored, mad
+
+    sweep_fracs = [0.075, 0.15, 0.3, 0.5]
+    sweep = {f: run(f)[1:] for f in sweep_fracs}
+    default, flagged, floored, mad = run(0.075)
+    remedy = next(f for f in sweep_fracs if not sweep[f][1] and len(sweep[f][0]) == 0)
+
+    facts = {
+        "n_total": n,
+        "n_real_outliers": 0,
+        "mad_at_default": mad,
+        "floored_at_default": floored,
+        "n_flagged_at_default": len(flagged),
+        "remedy_frac": remedy,
+        "n_flagged_at_remedy": len(sweep[remedy][0]),
+        "sweep": {f: len(v[0]) for f, v in sweep.items()},
+    }
+
+    fig = plt.figure(figsize=(11.5, 5.4), layout="constrained")
+    gs = fig.add_gridspec(2, 2, width_ratios=[2.2, 1])
+    ax0, ax1 = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0])
+    axs = fig.add_subplot(gs[:, 1])
+
+    ax0.plot(t, lam, color=RAW, linewidth=2.4, label="lambda_val (no outliers)")
+    ax0.plot(t, np.asarray(default.lowess_fit, float), color=FIT, linewidth=1.2,
+             linestyle="--", label="LOWESS fit, frac=0.075")
+    _style(ax0)
+    ax0.set_title("A clean adaptive staircase — the fit reproduces every plateau",
+                  fontsize=10.5, color=INK, loc="left")
+    ax0.set_ylabel("lambda", fontsize=9, color=MUTED)
+    ax0.legend(loc="upper right", frameon=False, fontsize=8)
+    ax0.text(0.012, 0.06,
+             f"plateau residuals ≈ 0; only the steps deviate, and MAD is a median\n"
+             f"→ residual MAD = {mad:.1e}, below the 1e-06 scale floor",
+             transform=ax0.transAxes, fontsize=8, color="#8c2f12", family="monospace")
+
+    out_v = np.asarray(default, float)
+    ax1.plot(t, lam, color=RAW, linewidth=2.4, label="Input")
+    ax1.plot(t, out_v, color=DESPIKED, linewidth=1.2, label="After filter_outliers()")
+    ax1.plot(t[flagged], lam[flagged], linestyle="none", marker="|", markersize=7,
+             color=FLAGGED, alpha=0.5, label=f"“Flagged” ({len(flagged)})")
+    _style(ax1)
+    ax1.set_title(f"{len(flagged)} of {n} flagged and interpolated over — the steps "
+                  f"become ramps", fontsize=10.5, color=INK, loc="left")
+    ax1.set_xlabel("Time (s)", fontsize=9, color=MUTED)
+    ax1.set_ylabel("lambda", fontsize=9, color=MUTED)
+    ax1.legend(loc="upper right", frameon=False, fontsize=8)
+
+    counts = [len(sweep[f][0]) for f in sweep_fracs]
+    colors = [FLAGGED if sweep[f][1] else FIT for f in sweep_fracs]
+    axs.bar([str(f) for f in sweep_fracs], counts, color=colors, width=0.6)
+    _style(axs)
+    axs.grid(axis="x", visible=False)
+    axs.set_title("Spurious flags vs bandwidth", fontsize=10.5, color=INK, loc="left")
+    axs.set_xlabel("frac (LOWESS bandwidth)", fontsize=9, color=MUTED)
+    axs.set_ylabel("samples flagged", fontsize=9, color=MUTED)
+    for x, (c, f) in enumerate(zip(counts, sweep_fracs)):
+        axs.text(x, c, f"  {c}", ha="center", va="bottom", fontsize=8, color=INK)
+    axs.text(0.0, -0.26,
+             "orange = residual-scale floor engaged, z_threshold inoperative.\n"
+             f"Widening to frac={remedy} stops the fit interpolating; nothing is flagged,\n"
+             "which is correct — the signal has no outliers. Note it is not monotone.",
+             transform=axs.transAxes, fontsize=8, color=MUTED)
+    return fig, facts
+
+
+def icc2_1(matrix):
+    """
+    ICC(2,1) — two-way random effects, absolute agreement, single measurement.
+
+    `matrix` is targets x raters (here subjects x sessions). Validated against
+    Shrout & Fleiss (1979) Table 1 in `tests/unit/test_figures.py`, which is the
+    only reason this hand-rolled formula is trustworthy enough to annotate a
+    figure with.
+    """
+    m = np.asarray(matrix, float)
+    n, k = m.shape
+    grand = m.mean()
+    ms_rows = k * ((m.mean(axis=1) - grand) ** 2).sum() / (n - 1)
+    ms_cols = n * ((m.mean(axis=0) - grand) ** 2).sum() / (k - 1)
+    ss_total = ((m - grand) ** 2).sum()
+    ms_err = (ss_total - (n - 1) * ms_rows - (k - 1) * ms_cols) / ((n - 1) * (k - 1))
+    return float((ms_rows - ms_err)
+                 / (ms_rows + (k - 1) * ms_err + k * (ms_cols - ms_err) / n))
+
+
+def fig_test_retest():
+    """
+    The outcome the whole pipeline exists to produce.
+
+    32 subjects, two sessions each, `irt`-style series carrying a subject-level
+    slow-band drive plus session noise and blink-like spikes. Every series goes
+    through the same chain the library was built for -
+    `filter_outliers() -> interpolate_gaps() -> detrend() -> falff band` - and
+    the two sessions are plotted against each other with ICC(2,1) annotated.
+
+    Reliability, not a cleaned trace, is what a session-to-session study
+    reports, and it is the number a change to any filter default moves.
+    """
+    rng = np.random.RandomState(11)
+    n_subj, fs, duration = 32, 4.0, 300.0
+    t = np.arange(0, duration, 1 / fs)
+    subject_level = rng.uniform(0.25, 1.15, n_subj)
+
+    values = np.zeros((n_subj, 2))
+    for s in range(n_subj):
+        for session in range(2):
+            amp = subject_level[s] * np.exp(rng.normal(0, 0.22))
+            slow = amp * np.sin(2 * np.pi * 0.05 * t + rng.uniform(0, 2 * np.pi))
+            sig = slow + 0.9 * rng.randn(len(t))
+            sig[rng.choice(len(t), 6, replace=False)] += rng.choice([-1, 1], 6) * 7.0
+            ts = baseTs(sig, t, freq=fs, signal_name=f"sub-{s:02d}_ses-{session}_irt")
+            ts.set_outlier_filter(z_threshold=3.0, frac=0.075)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                cleaned = (ts.filter_outliers()
+                             .interpolate_gaps()
+                             .detrend(method="linear"))
+                values[s, session] = cleaned.relative_band_power(
+                    0.01, 0.1, ratio="amplitude")
+
+    icc = icc2_1(values)
+    r = float(np.corrcoef(values[:, 0], values[:, 1])[0, 1])
+    facts = {
+        "n_subjects": n_subj,
+        "n_sessions": 2,
+        "icc2_1": icc,
+        "pearson_r": r,
+        "all_finite": bool(np.isfinite(values).all()),
+        "all_in_unit_interval": bool(((values >= 0) & (values <= 1)).all()),
+    }
+
+    fig, ax = plt.subplots(figsize=(7.2, 6.4), layout="constrained")
+    fig.get_layout_engine().set(rect=(0, 0.075, 1, 0.925))
+    lo = float(values.min()) * 0.92
+    hi = float(values.max()) * 1.08
+    ax.plot([lo, hi], [lo, hi], color=RAW, linewidth=1.2, linestyle="--",
+            label="identity")
+    ax.plot(values[:, 0], values[:, 1], linestyle="none", marker="o",
+            markersize=7, markerfacecolor=DESPIKED, markeredgecolor="white",
+            markeredgewidth=1.0, alpha=0.9, label=f"subject (n={n_subj})")
+    _style(ax)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal")
+    ax.set_title("Test–retest of the fALFF-band amplitude ratio",
+                 fontsize=12, color=INK, loc="left")
+    ax.set_xlabel("Session 1", fontsize=9, color=MUTED)
+    ax.set_ylabel("Session 2", fontsize=9, color=MUTED)
+    ax.legend(loc="upper left", frameon=False, fontsize=8)
+    ax.text(0.97, 0.06, f"ICC(2,1) = {icc:.3f}\nPearson r = {r:.3f}",
+            transform=ax.transAxes, ha="right", fontsize=10, color=INK,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#f2f5fa",
+                      edgecolor="#cfd9e8", linewidth=0.8))
+    fig.text(0.015, 0.012,
+             "Most points sit above the identity line: a session effect, which ICC(2,1) "
+             "penalises because it\nscores absolute agreement rather than correlation — "
+             f"hence ICC {icc:.3f} below r {r:.3f}.  Synthetic subjects\nshaped after "
+             "cpCST `irt` series: the pipeline and the outcome are real, the data is not.",
+             fontsize=8, color=MUTED)
+    return fig, facts
+
+
 FIGURES = {
     "despiking": fig_despiking,
     "gap_order": fig_gap_order,
     "band_power": fig_band_power,
+    "staircase_trap": fig_staircase_trap,
+    "test_retest": fig_test_retest,
 }
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -165,3 +166,84 @@ def test_the_committed_png_exists(name):
     path = IMGS / f"{name}.png"
     assert path.exists(), f"run `python examples/figures.py` to regenerate {path.name}"
     assert path.stat().st_size > 10_000, f"{path.name} looks truncated"
+
+
+class TestStaircaseTrapFigure:
+    """
+    CHANGELOG 0.3.0: 141 of 262 real cpCST series hit the residual-scale floor
+    at the default settings. The figure reproduces that regime on a staircase
+    with no outliers in it at all, so every one of these assertions is about
+    the filter misbehaving on clean input - which is the point being drawn.
+    """
+
+    def test_the_signal_really_has_no_outliers(self, built):
+        assert built["staircase_trap"]["n_real_outliers"] == 0
+
+    def test_the_residual_scale_collapses_and_the_floor_engages(self, built):
+        f = built["staircase_trap"]
+        assert f["mad_at_default"] < 1e-6, "the floor would not engage"
+        assert f["floored_at_default"], "the RuntimeWarning the caption quotes"
+
+    def test_the_default_settings_flag_a_clean_signal(self, built):
+        f = built["staircase_trap"]
+        assert f["n_flagged_at_default"] > 0
+        assert f["n_flagged_at_default"] < f["n_total"]
+
+    def test_widening_the_bandwidth_is_the_remedy(self, built):
+        f = built["staircase_trap"]
+        assert f["n_flagged_at_remedy"] == 0
+
+    def test_the_sweep_is_not_monotone(self, built):
+        """
+        The caption says so, because it is the counter-intuitive part: widening
+        a little makes it worse before enough widening fixes it.
+        """
+        sweep = built["staircase_trap"]["sweep"]
+        assert sweep[0.15] > sweep[0.075]
+
+
+class TestTestRetestFigure:
+    """The outcome plot: does the pipeline's number survive a second session."""
+
+    def test_the_cohort_is_the_shape_the_caption_claims(self, built):
+        f = built["test_retest"]
+        assert f["n_subjects"] == 32
+        assert f["n_sessions"] == 2
+
+    def test_every_band_ratio_is_a_usable_number(self, built):
+        f = built["test_retest"]
+        assert f["all_finite"]
+        assert f["all_in_unit_interval"]
+
+    def test_the_icc_is_a_real_coefficient(self, built):
+        icc = built["test_retest"]["icc2_1"]
+        assert -1.0 <= icc <= 1.0
+        assert icc > 0.0, "a reliability plot showing no reliability is not the point"
+
+
+class TestTheICCImplementation:
+    """
+    `icc2_1` is hand-rolled, so it is pinned to a published worked example
+    rather than trusted. Without this the figure annotates itself with a number
+    nothing checks - the exact failure mode this whole figure suite exists to
+    avoid.
+    """
+
+    #: Shrout & Fleiss (1979), Table 1 - 6 targets x 4 judges.
+    SHROUT_FLEISS = [[9, 2, 5, 8], [6, 1, 3, 2], [8, 4, 6, 8],
+                     [7, 1, 2, 6], [10, 5, 6, 9], [6, 2, 4, 7]]
+
+    def test_matches_the_published_value(self):
+        """Shrout & Fleiss report ICC(2,1) = 0.290 for this table."""
+        assert round(figures.icc2_1(self.SHROUT_FLEISS), 2) == 0.29
+
+    def test_identical_raters_give_unity(self):
+        col = [[3.0], [1.0], [4.0], [1.0], [5.0], [9.0]]
+        assert figures.icc2_1(np.hstack([col, col])) == pytest.approx(1.0)
+
+    def test_shuffled_targets_destroy_agreement(self):
+        rng = np.random.RandomState(0)
+        a = rng.normal(size=40)
+        paired = np.column_stack([a, a])
+        shuffled = np.column_stack([a, rng.permutation(a)])
+        assert figures.icc2_1(paired) > figures.icc2_1(shuffled)
