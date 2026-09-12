@@ -280,7 +280,7 @@ A handful of behaviors that a first-time reader is likely to get wrong. See
 ## Requirements
 
 ### Core Dependencies
-- Python 3.9+ (CI tests 3.9, 3.10 and 3.11)
+- Python 3.11+ (CI tests 3.11, 3.12 and 3.13, plus a pandas 2.x job on 3.11)
 - NumPy >= 1.19
 - SciPy >= 1.5
 - Pandas >= 2.0
