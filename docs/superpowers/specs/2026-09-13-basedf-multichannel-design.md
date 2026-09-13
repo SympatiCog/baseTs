@@ -84,10 +84,14 @@ hostile to a shared index, because it assigns both `self.data` and
 `self.times`. Measured: 500 samples in, 500 out, index identical, 53 values
 replaced, 0 NaN. It diverges per column in values and flags, never in index.
 
-**API shape.** `core.py` has 30 methods returning `"baseTs"`, plus 3 returning
+**API shape.** `core.py` has **40** methods returning `"baseTs"` (by introspecting
+`__annotations__`; a line-based grep reports 30 because it misses multi-line
+signatures such as `bandpass_at`, `time_slice`, `remove_outliers`,
+`interpolate_gaps` and `set_outlier_filter`), plus 3 returning
 `tuple`, 3 `np.ndarray`, 2 `dict`, and one each of `list`, `int`, `float`,
-`ClosestMatch`, `pd.DataFrame`, `plt.Axes`, `_PlotAccessor`. The 30 transforms are the broadcast
-target; the rest are measurements needing per-method handling.
+`ClosestMatch`, `pd.DataFrame`, `plt.Axes`, `_PlotAccessor`. Of the 40, all but
+`copy` (the frame has its own) are the broadcast target: **39**. The rest are
+measurements needing per-method handling.
 
 **Metadata splits cleanly.** `TimeSeriesData._metadata` (series.py:1111) has 14
 slots beyond `_name`. Five are functions of the index alone and are therefore
@@ -105,7 +109,7 @@ removes the reason for the seam.
 | State | Type | Why exactly one |
 |---|---|---|
 | `_df` | `pd.DataFrame`; index is seconds-since-origin (float), as `baseTs` stores post-#100. Columns are channel/ROI/trial labels. | The values. |
-| `_index_meta` | The five shared slots above. | All five are functions of the index alone, which every column shares by definition. |
+| `_index_meta` | Four scalars: declared freq, `ts_offset`, `has_timestamp_offset`, `is_uniform_grid`. | All are functions of the index alone, which every column shares by definition. `_origin_index` is the fifth shared slot but is **derived**, not stored: measured, passing `ts_offset` with `has_timestamp_offset=True` restamps an identical origin. |
 | `_col_meta` | `pd.DataFrame`, one row per column, index aligned to `_df.columns`. | The nine per-column slots, **plus** arbitrary user attributes: `network`, `hemisphere`, `bad`, `condition`, `rt`, `trial`. |
 
 **The frame stores declarations; `baseTs` validates them.** `_index_meta` holds
@@ -125,7 +129,7 @@ predicate serve both.
 
 Every public `baseTs` method falls into one of four buckets.
 
-**1. Transforms** (30, `-> "baseTs"`). Broadcast column-wise, return a new
+**1. Transforms** (39, `-> "baseTs"`). Broadcast column-wise, return a new
 `baseDf`. Each column's `history` row receives the same new entry — they
 genuinely each got lowpassed — and `last_process`/`is_filtered` update per
 column. For index-changing transforms, `_index_meta` is re-derived from the
