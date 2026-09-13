@@ -146,6 +146,39 @@ broadcast: the frequency axis is shared, the power becomes a DataFrame.
 
 **4. Plots.** Out of scope for this spec; minimal forwarding only.
 
+### Correlation
+
+**Decision (Stan, 2026-09-13): the default is one vector against every column,
+not every column against every other.** The motivating case is a seed: a
+continuous behavioural regressor correlated against a FOOOF-derived measure at
+each electrode, or a seed timeseries against each fMRI ROI. An all-pairs matrix
+is the wrong default because it answers a question nobody asked and costs
+O(k^2) to answer it.
+
+```python
+frame.correlation_with(other: baseTs, method="pearson") -> pd.Series
+frame.correlation_matrix(other: baseDf | None = None, method="pearson") -> pd.DataFrame
+```
+
+Two methods rather than dispatch on the type of `other`, holding to the
+return-type rule. Passing a frame to the first, or a series to the second, is
+refused with a message naming the other method. `correlation_matrix(None)`
+means "against myself" — the within-frame connectivity matrix, which is the
+dominant fMRI use and costs one line to allow.
+
+`baseTs.correlation_with` (core.py:2242) aligns with an **inner** join and then
+calls `Series.corr`. Alignment is harmless here in a way it is not elsewhere:
+the result is scalars, so there is no shared index to preserve, and every
+column aligns identically against the same `other`.
+
+The vector case delegates per column and is therefore equivalent by
+construction. The matrix case cannot — 400 x 400 would be 160,000 aligned
+`baseTs` calls — so it intersects the two indices **once** and then uses
+`DataFrame.corrwith` per right-hand column. Measured equivalent to the
+per-pair path for `pearson`, `spearman` and `kendall`, with a NaN present, so
+the vectorisation is a speed-up and not a second definition of correlation. A
+test pins that equivalence.
+
 ### Selective averaging
 
 Two methods, not one overloaded method — a function whose return *type* depends

@@ -29,14 +29,14 @@
 | File | Responsibility |
 |---|---|
 | `baseTs/frame_meta.py` (new) | Splits `TimeSeriesData._metadata` into shared vs per-column. Owns `_IndexMeta`, `COL_META_FIELDS`, `harvest_col_meta`, `hydrate_column`, `default_col_meta_row`. Nothing here knows what a frame is. |
-| `baseTs/frame.py` (new) | The `baseDf` container: state, invariants, entry points, indexing, broadcast, measurements. |
+| `baseTs/frame.py` (new) | The `baseDf` container: state, invariants, entry points, indexing, broadcast, measurements, correlation. |
 | `baseTs/frame_average.py` (new) | Averaging: selection resolution, the flag rules, common-prefix history. Free functions, so the rules are testable without a frame. |
 | `baseTs/__init__.py` (modify) | Export `baseDf`. |
 | `docs/API_FRAME.md` (new) | Public API reference, matching `docs/API.md` style. |
 | `docs/EXAMPLES.md` (modify) | Parquet and long→wide recipes. |
 
 Tests, one file per concern, matching the repo's intent-naming convention:
-`test_frame_meta_round_trip.py`, `test_frame_refuses_bad_construction.py`, `test_frame_entry_points.py`, `test_frame_indexing_keeps_col_meta.py`, `test_frame_broadcast_equals_series.py`, `test_frame_measurements.py`, `test_frame_average_rules.py`.
+`test_frame_meta_round_trip.py`, `test_frame_refuses_bad_construction.py`, `test_frame_entry_points.py`, `test_frame_indexing_keeps_col_meta.py`, `test_frame_broadcast_equals_series.py`, `test_frame_measurements.py`, `test_frame_correlation.py`, `test_frame_average_rules.py`.
 
 ---
 
@@ -1559,7 +1559,6 @@ Add to `class baseDf` in `baseTs/frame.py`:
     MEASURE_KINDS = {
         "falff": "scalar",
         "relative_band_power": "scalar",
-        "correlation_with": "scalar",
         "get_statistics": "mapping",
         "detect_outliers": "per_sample",
         "get_peaks": "object",
@@ -1709,7 +1708,225 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Selective averaging — `average` and `average_by`
+### Task 7: Correlation — one seed against every column
+
+**Files:**
+- Modify: `baseTs/frame.py`
+- Test: `tests/unit/test_frame_correlation.py`
+
+**Interfaces:**
+- Consumes: `__getitem__` (Task 4), `_df`, `columns`.
+- Produces: `baseDf.correlation_with(other, method="pearson") -> pd.Series`; `baseDf.correlation_matrix(other=None, method="pearson") -> pd.DataFrame`.
+
+The default is a **seed**: one series correlated against every column — a behavioural regressor against a FOOOF measure per electrode, or a seed timeseries against each ROI. An all-pairs matrix is available but never implicit.
+
+`baseTs.correlation_with` (core.py:2242) inner-joins then calls `Series.corr`. The vector case delegates per column, so it is equivalent by construction. The matrix case cannot delegate — 400 x 400 would be 160,000 aligned calls — so it intersects the indices once and uses `DataFrame.corrwith` per right-hand column. That was measured identical to the per-pair path for `pearson`, `spearman` and `kendall` with a NaN present; the test below pins it.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/unit/test_frame_correlation.py`:
+
+```python
+"""Correlating a frame: one seed against every column, or frame against frame."""
+import warnings
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from baseTs import baseTs
+from baseTs.frame import baseDf
+from baseTs.utils import ValidationError
+
+N = 200
+TIMES = np.arange(N) / 10.0
+
+
+def _left() -> baseDf:
+    rng = np.random.default_rng(0)
+    data = {f"l{i}": rng.normal(size=N) + np.sin(2 * np.pi * 0.1 * TIMES) * i
+            for i in range(4)}
+    data["l2"][5] = np.nan
+    return baseDf(pd.DataFrame(data, index=TIMES), freq=10.0)
+
+
+def _right() -> baseDf:
+    rng = np.random.default_rng(1)
+    data = {f"r{j}": rng.normal(size=N) + np.cos(2 * np.pi * 0.1 * TIMES) * j
+            for j in range(3)}
+    return baseDf(pd.DataFrame(data, index=TIMES), freq=10.0)
+
+
+def _seed() -> baseTs:
+    rng = np.random.default_rng(2)
+    return baseTs(data=rng.normal(size=N), times=TIMES.copy(), freq=10.0,
+                  signal_name="behaviour")
+
+
+def test_a_seed_gives_one_value_per_column():
+    got = _left().correlation_with(_seed())
+    assert isinstance(got, pd.Series)
+    assert list(got.index) == ["l0", "l1", "l2", "l3"]
+    assert got.dtype.kind == "f"
+
+
+def test_the_seed_result_equals_the_per_column_baseTs_call():
+    frame, seed = _left(), _seed()
+    got = frame.correlation_with(seed)
+    for label in frame.columns:
+        assert got[label] == pytest.approx(
+            frame[label].correlation_with(seed), nan_ok=True)
+
+
+@pytest.mark.parametrize("method", ["pearson", "spearman", "kendall"])
+def test_the_matrix_equals_the_per_pair_calls(method):
+    warnings.filterwarnings("ignore")
+    left, right = _left(), _right()
+    got = left.correlation_matrix(right, method=method)
+    assert got.shape == (4, 3)
+    for lc in left.columns:
+        for rc in right.columns:
+            assert got.at[lc, rc] == pytest.approx(
+                left[lc].correlation_with(right[rc], method=method), nan_ok=True)
+
+
+def test_the_matrix_against_itself_is_square_and_symmetric():
+    got = _left().correlation_matrix()
+    assert got.shape == (4, 4)
+    assert np.allclose(np.diag(got.to_numpy()), 1.0)
+    assert np.allclose(got.to_numpy(), got.to_numpy().T, equal_nan=True)
+
+
+def test_a_frame_passed_to_correlation_with_is_refused():
+    with pytest.raises(ValidationError, match="correlation_matrix"):
+        _left().correlation_with(_right())
+
+
+def test_a_series_passed_to_correlation_matrix_is_refused():
+    with pytest.raises(ValidationError, match="correlation_with"):
+        _left().correlation_matrix(_seed())
+
+
+def test_frames_sharing_no_timepoints_are_refused():
+    other = _right()
+    other._df.index = pd.Index(np.asarray(other._df.index) + 10_000.0)
+    with pytest.raises(ValidationError, match="no timepoints"):
+        _left().correlation_matrix(other)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/unit/test_frame_correlation.py -v`
+Expected: FAIL — `AttributeError: 'baseDf' object has no attribute 'correlation_with'`
+
+- [ ] **Step 3: Write the implementation**
+
+Add to `class baseDf` in `baseTs/frame.py`:
+
+```python
+    def correlation_with(self, other: Any, method: str = "pearson") -> pd.Series:
+        """Correlate one series against every column.
+
+        The seed case: a behavioural regressor against a per-electrode measure,
+        or a seed timeseries against each ROI. Delegates to
+        ``baseTs.correlation_with`` per column, so the answer is identical to
+        pulling each column out and calling it there - including that method's
+        inner-join alignment, which is harmless here because the results are
+        scalars and every column aligns the same way against the same series.
+
+        Args:
+            other: A baseTs to correlate every column against.
+            method: 'pearson', 'kendall' or 'spearman'.
+
+        Returns:
+            pd.Series: One coefficient per column, keyed by column label.
+
+        Raises:
+            ValidationError: If ``other`` is a baseDf.
+        """
+        if isinstance(other, baseDf):
+            raise ValidationError(
+                "correlation_with takes one series to correlate every column "
+                "against. For a frame-against-frame matrix, use "
+                "correlation_matrix()."
+            )
+        return pd.Series(
+            {label: self[label].correlation_with(other, method=method)
+             for label in self._df.columns},
+            index=self._df.columns,
+            dtype=float,
+        )
+
+    def correlation_matrix(
+        self,
+        other: Optional["baseDf"] = None,
+        method: str = "pearson",
+    ) -> pd.DataFrame:
+        """Correlate every column against every column of another frame.
+
+        Never implicit: an all-pairs matrix costs O(k*m) and answers a
+        different question from the seed case, so it has its own name.
+
+        Intersects the two indices once rather than aligning per pair, which
+        400 x 400 columns would make 160,000 aligned calls. Measured identical
+        to the per-pair path for pearson, spearman and kendall.
+
+        Args:
+            other: The right-hand frame. None means this frame against itself,
+                which is the within-frame connectivity matrix.
+            method: 'pearson', 'kendall' or 'spearman'.
+
+        Returns:
+            pd.DataFrame: This frame's columns as rows, ``other``'s as columns.
+
+        Raises:
+            ValidationError: If ``other`` is not a baseDf, or the two frames
+                share no timepoints.
+        """
+        if other is None:
+            other = self
+        if not isinstance(other, baseDf):
+            raise ValidationError(
+                "correlation_matrix takes another baseDf, or None for this "
+                "frame against itself. To correlate a single series against "
+                "every column, use correlation_with()."
+            )
+        common = self._df.index.intersection(other._df.index)
+        if len(common) == 0:
+            raise ValidationError(
+                "the two frames share no timepoints, so there is nothing to "
+                "correlate. Put them on a common index first - baseTs."
+                "align_with() or interpto_hz() will do it."
+            )
+        left, right = self._df.loc[common], other._df.loc[common]
+        return pd.DataFrame(
+            {rc: left.corrwith(right[rc], method=method) for rc in right.columns},
+            index=left.columns,
+            columns=right.columns,
+        )
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pytest tests/unit/test_frame_correlation.py -v`
+Expected: PASS, 9 tests (3 of them the parametrized matrix-equivalence case)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add baseTs/frame.py tests/unit/test_frame_correlation.py
+git commit -m "Correlate a frame against a seed, or against another frame
+
+The default is one series against every column; an all-pairs matrix has
+its own name so it is never implicit. The matrix path vectorises via
+corrwith, measured identical to the per-pair baseTs calls.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 8: Selective averaging — `average` and `average_by`
 
 **Files:**
 - Create: `baseTs/frame_average.py`
@@ -2088,7 +2305,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 8: Export and documentation
+### Task 9: Export and documentation
 
 **Files:**
 - Modify: `baseTs/__init__.py`
@@ -2134,7 +2351,7 @@ from .version import __version__
 __all__ = ['baseTs', 'baseDf', 'from_df', 'TimeSeriesData']
 ```
 
-Create `docs/API_FRAME.md` documenting, in the style of `docs/API.md`: the three pieces of state; `baseDf.__init__`, `from_df`, `from_series`; indexing and `select`; the broadcast transforms (list `baseDf.TRANSFORMS`); `measure` and its wrappers; `average` and `average_by` including the flag and NaN rules verbatim from the spec.
+Create `docs/API_FRAME.md` documenting, in the style of `docs/API.md`: the three pieces of state; `baseDf.__init__`, `from_df`, `from_series`; indexing and `select`; the broadcast transforms (list `baseDf.TRANSFORMS`); `measure` and its wrappers; `correlation_with` and `correlation_matrix`, making clear which is the default and why; `average` and `average_by` including the flag and NaN rules verbatim from the spec.
 
 Check `docs/API.md` for the exact heading and code-fence conventions first — `tests/unit/test_docs_fenced_blocks.py` executes fenced Python blocks in the docs, so every example must actually run.
 
@@ -2177,7 +2394,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 9: Full-suite verification
+### Task 10: Full-suite verification
 
 **Files:** none created; fixes only, wherever the suite points.
 
@@ -2239,9 +2456,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ## Self-Review Notes
 
-**Spec coverage.** Object model → Tasks 1–2. Four operation buckets → Tasks 5 (transforms), 6 (measurements), 7 (reduction); plots are out of scope per the spec. `average`/`average_by` with flag, history and NaN rules → Task 7. Indexing exception → Task 4. Three entry points and the persistence deferral → Task 3 and Task 8 (`to_dataframe` is `frame.df`, which the docs say). Error rules 1–8 → rules 1, 2, 4 in Task 2; 5 in Tasks 2 and 3; 7, 8 in Task 3; 3 in Task 5; 6 in Task 4. Testing section → the test file per task, with broadcast equivalence in Task 5.
+**Spec coverage.** Object model → Tasks 1–2. Four operation buckets → Tasks 5 (transforms), 6 and 7 (measurements and correlation), 8 (reduction); plots are out of scope per the spec. `average`/`average_by` with flag, history and NaN rules → Task 8. Correlation → Task 7. Indexing exception → Task 4. Three entry points and the persistence deferral → Task 3 and Task 9 (`to_dataframe` is `frame.df`, which the docs say). Error rules 1–8 → rules 1, 2, 4 in Task 2; 5 in Tasks 2 and 3; 7, 8 in Task 3; 3 in Task 5; 6 in Task 4. Testing section → the test file per task, with broadcast equivalence in Task 5.
 
 **Verified before writing.** All 40 entries in Task 5's `CALLS` table were run against a lone `baseTs` on that exact fixture (256 samples, 16 Hz, an outlier at index 40): 40 calls, 0 failures. The table therefore covers all 39 names in `TRANSFORMS` — `diff_ts` appears twice, with and without `zeropad` — and the coverage guard passes on a correct implementation rather than needing to be grown first.
 
-**Known gap, stated rather than hidden.**
-- `correlation_with` is listed in `MEASURE_KINDS` as `"scalar"` but takes another series, so `measure("correlation_with", other)` compares every column against one `other`. Task 6 does not test it. Add a test if the behaviour is wanted; remove it from the table if not.
+**Correlation (Stan, 2026-09-13).** Resolved into its own task rather than left in `MEASURE_KINDS`: the default is one seed series against every column, and the all-pairs matrix has a separate name so it is never implicit. The matrix path vectorises through `DataFrame.corrwith`, verified identical to per-pair `baseTs.correlation_with` for all three methods with a NaN present.
