@@ -8,7 +8,18 @@ the design spec for why that decision was taken.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional, Sequence, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Hashable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 import pandas as pd
@@ -549,6 +560,169 @@ class baseDf:
             self._check_invariants()
             return self
         return self._with(new_df, new_col_meta, new_index_meta)
+
+    #: How each measurement's per-column result is collapsed into one object.
+    #: "scalar"     -> pd.Series indexed by column
+    #: "mapping"    -> pd.DataFrame, columns as rows and dict keys as columns
+    #: "per_sample" -> pd.DataFrame, frame index x columns
+    #: "object"     -> pd.Series of objects, for results that are lists
+    #: "shared_axis"-> (axis, pd.DataFrame) for 2-tuples whose first element
+    #:                 is an axis every column must agree on
+    MEASURE_KINDS = {
+        "falff": "scalar",
+        "relative_band_power": "scalar",
+        "get_statistics": "mapping",
+        "detect_outliers": "per_sample",
+        "get_peaks": "object",
+        "get_peak_freq": "object",
+        "compute_fft_power": "shared_axis",
+        "get_frequency_content": "shared_axis",
+    }
+
+    def measure(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Run one baseTs measurement on every column and collect the results.
+
+        Args:
+            name: The baseTs method to call. Must be in MEASURE_KINDS.
+            *args: Positional arguments for it.
+            **kwargs: Keyword arguments for it.
+
+        Returns:
+            A pandas Series or DataFrame keyed by column label, or, for a
+            shared-axis measurement, a ``(axis, DataFrame)`` pair.
+
+        Raises:
+            ValidationError: If ``name`` is not a known measurement, or a
+                shared-axis measurement disagrees between columns.
+        """
+        if name not in self.MEASURE_KINDS:
+            raise ValidationError(
+                f"{name!r} is not a known baseDf measurement. Known: "
+                f"{sorted(self.MEASURE_KINDS)!r}. For anything else, pull the "
+                f"column out with frame[label] and call it there."
+            )
+        if name in ("falff", "relative_band_power") and kwargs.get("details"):
+            raise ValidationError(
+                f"{name}(details=True) returns a BandPowerResult, not a "
+                f"number, so it cannot fill a numeric pd.Series across "
+                f"columns. Call frame[label].{name}(details=True) on one "
+                f"column at a time instead."
+            )
+        kind = self.MEASURE_KINDS[name]
+        results = {label: getattr(self[label], name)(*args, **kwargs)
+                   for label in self._df.columns}
+
+        if kind == "scalar":
+            return pd.Series(results, index=self._df.columns, dtype=float)
+        if kind == "object":
+            return pd.Series(results, index=self._df.columns, dtype=object)
+        if kind == "mapping":
+            return pd.DataFrame.from_dict(results, orient="index").reindex(
+                self._df.columns)
+        if kind == "per_sample":
+            return pd.DataFrame(
+                {label: np.asarray(value) for label, value in results.items()},
+                index=self._df.index, columns=self._df.columns,
+            )
+        # shared_axis
+        axis: Optional[np.ndarray] = None
+        payload: Dict[Hashable, np.ndarray] = {}
+        for label in self._df.columns:
+            first, second = results[label]
+            first = np.asarray(first)
+            if axis is None:
+                axis = first
+            elif not np.array_equal(axis, first):
+                raise ValidationError(
+                    f"{name}() produced a different axis for column {label!r} "
+                    f"than for {list(self._df.columns)[0]!r}; the columns "
+                    f"share an index, so they must share this axis too."
+                )
+            payload[label] = np.asarray(second)
+        # self._df.columns is never empty (baseDf refuses an empty frame at
+        # construction), so the loop above ran at least once and axis is set.
+        assert axis is not None
+        return axis, pd.DataFrame(payload, index=pd.Index(axis),
+                                   columns=self._df.columns)
+
+    def falff(self, *args: Any, **kwargs: Any) -> pd.Series:
+        """fALFF per column. See ``baseTs.falff``.
+
+        Returns:
+            pd.Series: One value per column.
+        """
+        return cast(pd.Series, self.measure("falff", *args, **kwargs))
+
+    def relative_band_power(self, *args: Any, **kwargs: Any) -> pd.Series:
+        """Relative band power per column. See ``baseTs.relative_band_power``.
+
+        Returns:
+            pd.Series: One value per column.
+        """
+        return cast(pd.Series, self.measure("relative_band_power", *args, **kwargs))
+
+    def get_statistics(self, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        """Summary statistics per column. See ``baseTs.get_statistics``.
+
+        Returns:
+            pd.DataFrame: Columns as rows, statistic names as columns.
+        """
+        return cast(pd.DataFrame, self.measure("get_statistics", *args, **kwargs))
+
+    def detect_outliers(self, *args: Any, **kwargs: Any) -> pd.DataFrame:
+        """Outlier mask per column. See ``baseTs.detect_outliers``.
+
+        Returns:
+            pd.DataFrame: Frame index by column.
+        """
+        return cast(pd.DataFrame, self.measure("detect_outliers", *args, **kwargs))
+
+    def get_peaks(self, *args: Any, **kwargs: Any) -> pd.Series:
+        """Peaks per column. See ``baseTs.get_peaks``.
+
+        Returns:
+            pd.Series: One list per column.
+        """
+        return cast(pd.Series, self.measure("get_peaks", *args, **kwargs))
+
+    def get_peak_freq(self, *args: Any, **kwargs: Any) -> pd.Series:
+        """Peak frequency per column. See ``baseTs.get_peak_freq``.
+
+        Returns:
+            pd.Series: One value per column - a float if ``num_pks=1`` (the
+                default), a list if not.
+        """
+        return cast(pd.Series, self.measure("get_peak_freq", *args, **kwargs))
+
+    def compute_fft_power(self, *args: Any,
+                           **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
+        """FFT power per column over one shared frequency axis.
+
+        Returns:
+            tuple: ``(freqs, power)`` where ``power`` is indexed by ``freqs``.
+        """
+        return cast(Tuple[np.ndarray, pd.DataFrame],
+                    self.measure("compute_fft_power", *args, **kwargs))
+
+    def get_frequency_content(self, *args: Any,
+                               **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Frequency content per column over one shared axis.
+
+        Returns:
+            tuple: ``(freqs, content)``.
+        """
+        return cast(Tuple[np.ndarray, pd.DataFrame],
+                    self.measure("get_frequency_content", *args, **kwargs))
+
+    def duration(self) -> float:
+        """Span of the shared index in seconds.
+
+        Returns:
+            float: The duration, which is a property of the index and so is
+                the same for every column.
+        """
+        index = np.asarray(self._df.index, dtype=float)
+        return float(index[-1] - index[0]) if len(index) else 0.0
 
 
 def _make_broadcast_method(name: str):
