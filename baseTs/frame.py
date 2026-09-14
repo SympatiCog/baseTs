@@ -14,6 +14,7 @@ from typing import (
     Dict,
     Hashable,
     List,
+    Literal,
     Optional,
     Sequence,
     Tuple,
@@ -713,6 +714,88 @@ class baseDf:
         """
         return cast(Tuple[np.ndarray, pd.DataFrame],
                     self.measure("get_frequency_content", *args, **kwargs))
+
+    def correlation_with(self, other: Any, method: str = "pearson") -> pd.Series:
+        """Correlate one series against every column.
+
+        The seed case: a behavioural regressor against a per-electrode measure,
+        or a seed timeseries against each ROI. Delegates to
+        ``baseTs.correlation_with`` per column, so the answer is identical to
+        pulling each column out and calling it there - including that method's
+        inner-join alignment, which is harmless here because the results are
+        scalars and every column aligns the same way against the same series.
+
+        Args:
+            other: A baseTs to correlate every column against.
+            method: 'pearson', 'kendall' or 'spearman'.
+
+        Returns:
+            pd.Series: One coefficient per column, keyed by column label.
+
+        Raises:
+            ValidationError: If ``other`` is a baseDf.
+        """
+        if isinstance(other, baseDf):
+            raise ValidationError(
+                "correlation_with takes one series to correlate every column "
+                "against. For a frame-against-frame matrix, use "
+                "correlation_matrix()."
+            )
+        return pd.Series(
+            {label: self[label].correlation_with(other, method=method)
+             for label in self._df.columns},
+            index=self._df.columns,
+            dtype=float,
+        )
+
+    def correlation_matrix(
+        self,
+        other: Optional["baseDf"] = None,
+        method: str = "pearson",
+    ) -> pd.DataFrame:
+        """Correlate every column against every column of another frame.
+
+        Never implicit: an all-pairs matrix costs O(k*m) and answers a
+        different question from the seed case, so it has its own name.
+
+        Intersects the two indices once rather than aligning per pair, which
+        400 x 400 columns would make 160,000 aligned calls. Measured identical
+        to the per-pair path for pearson, spearman and kendall.
+
+        Args:
+            other: The right-hand frame. None means this frame against itself,
+                which is the within-frame connectivity matrix.
+            method: 'pearson', 'kendall' or 'spearman'.
+
+        Returns:
+            pd.DataFrame: This frame's columns as rows, ``other``'s as columns.
+
+        Raises:
+            ValidationError: If ``other`` is not a baseDf, or the two frames
+                share no timepoints.
+        """
+        if other is None:
+            other = self
+        if not isinstance(other, baseDf):
+            raise ValidationError(
+                "correlation_matrix takes another baseDf, or None for this "
+                "frame against itself. To correlate a single series against "
+                "every column, use correlation_with()."
+            )
+        common = self._df.index.intersection(other._df.index)
+        if len(common) == 0:
+            raise ValidationError(
+                "the two frames share no timepoints, so there is nothing to "
+                "correlate. Put them on a common index first - baseTs."
+                "align_with() or interpto_hz() will do it."
+            )
+        left, right = self._df.loc[common], other._df.loc[common]
+        corr_method = cast(Literal["pearson", "kendall", "spearman"], method)
+        return pd.DataFrame(
+            {rc: left.corrwith(right[rc], method=corr_method) for rc in right.columns},
+            index=left.columns,
+            columns=right.columns,
+        )
 
     def duration(self) -> float:
         """Span of the shared index in seconds.
