@@ -2429,25 +2429,55 @@ Create `docs/API_FRAME.md` documenting, in the style of `docs/API.md`: the three
 
 Check `docs/API.md` for the exact heading and code-fence conventions first — `tests/unit/test_docs_fenced_blocks.py` executes fenced Python blocks in the docs, so every example must actually run.
 
-Add to `docs/EXAMPLES.md` two recipes, each a runnable fenced block:
+Add to `docs/EXAMPLES.md` two recipes, each a runnable fenced block.
+
+**These must not literally call `pd.read_parquet` on a file that doesn't exist**
+(found during plan review, 2026-09-14): `docs/EXAMPLES.md` is in
+`test_docs_fenced_blocks.py`'s census, which executes every fenced block for
+real, under `warnings.simplefilter("error")`, in one shared namespace per file
+- and this repo's environment has neither `pyarrow` nor `fastparquet`
+installed, so `read_parquet`/`to_parquet` raise `ImportError` regardless of
+whether the path exists. Build the synthetic data inline instead (a comment
+marks where a real `pd.read_parquet(...)` call would go), the same way every
+other runnable example in this file already stands alone. The first recipe
+also has to actually pass the `network` column it later queries by - the plan
+text below fixes both. Verified end to end against the real `baseDf` before
+writing this note.
 
 ```python
-# Parquet -> baseDf
+# Wide table -> baseDf (a parquet file loads exactly the same way)
+import numpy as np
 import pandas as pd
 from baseTs import baseDf
 
-wide = pd.read_parquet("channels.parquet")
-frame = baseDf.from_df(wide, time_col="time", freq=250.0)
+n = 500
+t = np.arange(n) / 250.0
+wide = pd.DataFrame({
+    "time": t,
+    "Cz": np.sin(2 * np.pi * 10 * t) + 0.1 * np.random.randn(n),
+    "Pz": np.sin(2 * np.pi * 12 * t) + 0.1 * np.random.randn(n),
+})
+# In practice: wide = pd.read_parquet("channels.parquet")
+col_meta = pd.DataFrame({"network": ["DMN", "DMN"]}, index=["Cz", "Pz"])
+frame = baseDf.from_df(wide, time_col="time", freq=250.0, col_meta=col_meta)
 cleaned = frame.bandpass_at(1.0, 40.0).filter_outliers()
-network = cleaned.average(where="network == 'DMN'")
+dmn_mean = cleaned.average(where="network == 'DMN'")
 ```
 
 ```python
 # Long table -> baseDf
+import numpy as np
 import pandas as pd
 from baseTs import baseDf
 
-long = pd.read_parquet("roi_timeseries.parquet")   # time, roi, value
+n_time, n_roi = 200, 4
+times = np.arange(n_time) * 2.0
+long = pd.DataFrame({
+    "time": np.repeat(times, n_roi),
+    "roi": np.tile([f"roi{i}" for i in range(n_roi)], n_time),
+    "value": np.random.randn(n_time * n_roi),
+})
+# In practice: long = pd.read_parquet("roi_timeseries.parquet")
 wide = long.pivot(index="time", columns="roi", values="value").reset_index()
 frame = baseDf.from_df(wide, time_col="time", freq=0.5)
 ```
@@ -2551,5 +2581,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - The Tech Stack line said "Python 3.12"; `setup.py` declares `python_requires=">=3.11"` and CI runs 3.11/3.12/3.13. Corrected, and flagged as a constraint for every implementer: no 3.12-only syntax.
 
 No task's file scope, metadata partition, `ValidationError` inheritance, `correlation_with` behavior, or measured return shapes needed correction — all independently confirmed against the running code.
+
+**Task 9's EXAMPLES.md recipes, found during pre-dispatch verification (2026-09-14, after Tasks 1-8 shipped).** `test_docs_fenced_blocks.py` executes every fenced Python block in `docs/EXAMPLES.md` for real, under `warnings.simplefilter("error")`. The plan's two recipes called `pd.read_parquet` on files that don't exist, and this environment has neither `pyarrow` nor `fastparquet` installed, so the call would raise `ImportError` before the missing-file question even arose - verified live. The first recipe also queried `where="network == 'DMN'"` on a frame built from `from_df` without ever passing `col_meta`, so `network` would not exist on `col_meta` at all. Fixed by building synthetic data inline (a comment marks where the real `pd.read_parquet` call would go, matching how every other example in the file already stands alone) and passing the `network` column the query needs; both corrected recipes run end to end against the real `baseDf`.
 
 **Task 5's `_lone` fixture, found during pre-dispatch verification (2026-09-14, after Tasks 1-4 shipped).** `hydrate_column` passes `history` as an explicit list, even when empty, so a hydrated column takes `baseTs.__init__`'s "history given" branch and never gets the "Created baseTs object with N samples" entry the "history unset" branch mints - verified live. `_lone`, as originally written, did not pass `history=`, so it took the other branch and always carried that entry. Every one of the 39 parametrized equivalence tests would have failed on the final `history` assertion, not because the broadcast machinery was wrong, but because the two sides of the comparison were built through different construction paths. Fixed by having `_lone` also pass `history=[]`, matching the frame's own hydration convention - confirmed live that both sides then produce identical history after the same transform call.
