@@ -67,6 +67,16 @@ def test_an_object_measure_gives_a_series_of_objects():
     assert isinstance(got["c0"], list)
 
 
+def test_get_peak_freq_matches_the_lone_series():
+    # "object" kind like get_peaks: a float at the default num_pks=1, a list
+    # otherwise, so it cannot be forced into a numeric Series.
+    frame = _frame()
+    got = frame.get_peak_freq()
+    assert isinstance(got, pd.Series)
+    assert got.dtype == object
+    assert got["c0"] == pytest.approx(frame["c0"].get_peak_freq())
+
+
 def test_duration_is_a_frame_level_scalar():
     assert _frame().duration() == pytest.approx(_frame()["c0"].duration())
 
