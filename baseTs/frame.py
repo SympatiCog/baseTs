@@ -433,13 +433,24 @@ class baseDf:
                     f"name and the query syntax."
                 ) from exc
         if select is not None:
-            if not _is_listlike(select):
+            # Same tuple ambiguity as __getitem__: a tuple that IS an
+            # existing column label (e.g. an average_by(["network","hemi"])
+            # result's column) must be read as that one label, not
+            # iterated as a selector - checked only for tuples, since
+            # every other listlike type is unhashable and `in` on it would
+            # itself raise rather than answer False.
+            is_existing_tuple_label = (isinstance(select, tuple)
+                                       and select in self._df.columns)
+            if is_existing_tuple_label:
+                values = [select]
+            elif not _is_listlike(select):
                 raise ValidationError(
                     f"select must be a list of labels or a boolean mask, not "
                     f"a bare {type(select).__name__} ({select!r}). Wrap a "
                     f"single label in a list: select=[{select!r}]."
                 )
-            values = list(select)
+            else:
+                values = list(select)
             if values and all(isinstance(v, (bool, np.bool_)) for v in values):
                 if len(values) != len(self._df.columns):
                     raise ValidationError(

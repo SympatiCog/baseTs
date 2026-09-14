@@ -60,6 +60,21 @@ def test_a_genuine_tuple_selector_still_selects_two_columns():
     assert list(sub.columns) == ["c0", "c1"]
 
 
+def test_select_also_handles_a_bare_tuple_column_label():
+    # Same ambiguity as __getitem__, found while verifying that fix: select=
+    # goes through _resolve_labels, which has its own _is_listlike check.
+    frame = baseDf(
+        _frame().df,
+        freq=8.0,
+        col_meta=pd.DataFrame({"network": ["DMN", "FPN"], "hemi": ["L", "R"]},
+                              index=["c0", "c1"]),
+    )
+    grouped = frame.average_by(["network", "hemi"])
+    label = grouped.columns[0]
+    got = grouped.select(select=label)
+    assert list(got.columns) == [label]
+
+
 # --- copy() must isolate mutable per-column metadata ------------------------
 
 def test_deep_copy_isolates_history_between_original_and_copy():
