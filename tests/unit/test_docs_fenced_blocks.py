@@ -22,6 +22,13 @@ docs/CHANGELOG.md is excluded on purpose: its snippets illustrate what a
 change did, often in the API as it was, and are not documentation of the
 current API.
 
+docs/API_FRAME.md is excluded on purpose too (Task 9 of the baseDf plan,
+2026-09-14): it documents baseDf and is verified by hand against the real
+class instead, the same way this harness's own existence was motivated by
+API.md and USER_GUIDE.md rotting silently - so the exclusion here is a
+deliberate, named choice rather than an oversight the census would
+otherwise have caught.
+
 The root README.md is in the census too: it is the first thing a new
 reader executes, and until now nothing did (review - it had rotted to
 two examples that run cleanly, under warnings-as-errors, while printing
@@ -277,7 +284,7 @@ def test_the_census_is_the_whole_docs_directory():
     """A new doc file has to be listed (or excluded here with a reason)."""
     present = sorted(p.name for p in DOCS.glob("*.md"))
     docs_files = [f for f in FILES if FILE_PATHS[f].parent == DOCS]
-    assert present == sorted(docs_files + ["CHANGELOG.md"])
+    assert present == sorted(docs_files + ["CHANGELOG.md", "API_FRAME.md"])
 
 
 def test_the_root_readme_is_in_the_census():

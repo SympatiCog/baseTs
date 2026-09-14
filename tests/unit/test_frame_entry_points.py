@@ -90,3 +90,10 @@ def test_from_series_refuses_conflicting_offsets():
 def test_from_series_refuses_an_empty_list():
     with pytest.raises(ValidationError, match="at least one"):
         baseDf.from_series([])
+
+
+def test_baseDf_is_exported_from_the_package():
+    import baseTs
+
+    assert baseTs.baseDf is baseDf
+    assert "baseDf" in baseTs.__all__
