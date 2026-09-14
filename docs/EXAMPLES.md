@@ -11,6 +11,7 @@ This document provides practical examples and code recipes for scientific applic
 6. [Enhanced Frequency Analysis](#enhanced-frequency-analysis)
 7. [Performance Optimization](#performance-optimization)
 8. [Integration Examples](#integration-examples)
+9. [Multi-Channel Recipes with baseDf](#multi-channel-recipes-with-basedf)
 
 ---
 
@@ -1906,6 +1907,60 @@ monthly = pandas_analysis['resampled']['monthly_stats']
 print(f"  January mean: {monthly.loc[1, 'mean']:.2f}")
 print(f"  July mean: {monthly.loc[7, 'mean']:.2f}")
 print(f"  December mean: {monthly.loc[12, 'mean']:.2f}")
+```
+
+## Multi-Channel Recipes with baseDf
+
+`baseDf` holds many time series on one shared index - channels, ROIs, or
+electrodes - and applies a `baseTs` transform or measurement to all of them at
+once. See `docs/API_FRAME.md` for the full API; the two recipes below are the
+on-ramps: a wide table (one time column, one column per channel) and a long
+table (one row per timepoint-and-label), the two shapes real datasets show up
+in.
+
+### Wide table
+
+```python
+# Wide table -> baseDf (a parquet file loads exactly the same way)
+import numpy as np
+import pandas as pd
+from baseTs import baseDf
+
+n = 500
+t = np.arange(n) / 250.0
+wide = pd.DataFrame({
+    "time": t,
+    "Cz": np.sin(2 * np.pi * 10 * t) + 0.1 * np.random.randn(n),
+    "Pz": np.sin(2 * np.pi * 12 * t) + 0.1 * np.random.randn(n),
+})
+# In practice: wide = pd.read_parquet("channels.parquet")
+col_meta = pd.DataFrame({"network": ["DMN", "DMN"]}, index=["Cz", "Pz"])
+frame = baseDf.from_df(wide, time_col="time", freq=250.0, col_meta=col_meta)
+cleaned = frame.bandpass_at(1.0, 40.0).filter_outliers()
+dmn_mean = cleaned.average(where="network == 'DMN'")
+```
+
+### Long table
+
+A long table has no per-column shape to hand `from_df` directly - `pivot()` it
+to wide first, one row per timepoint and one column per label:
+
+```python
+# Long table -> baseDf
+import numpy as np
+import pandas as pd
+from baseTs import baseDf
+
+n_time, n_roi = 200, 4
+times = np.arange(n_time) * 2.0
+long = pd.DataFrame({
+    "time": np.repeat(times, n_roi),
+    "roi": np.tile([f"roi{i}" for i in range(n_roi)], n_time),
+    "value": np.random.randn(n_time * n_roi),
+})
+# In practice: long = pd.read_parquet("roi_timeseries.parquet")
+wide = long.pivot(index="time", columns="roi", values="value").reset_index()
+frame = baseDf.from_df(wide, time_col="time", freq=0.5)
 ```
 
 This comprehensive examples document provides practical, real-world usage patterns for baseTs with enhanced pandas Series capabilities, focusing on scientific applications across various domains including biophysical signals, environmental monitoring, experimental data analysis, and advanced frequency analysis techniques.
