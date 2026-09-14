@@ -6,7 +6,7 @@
 
 **Architecture:** `baseDf` is *backed by* a `pd.DataFrame` but does **not** subclass one. It holds three pieces of state: `_df` (values), `_index_meta` (the metadata that belongs to the shared index), and `_col_meta` (a DataFrame with one row per column holding the metadata that belongs to each column, plus arbitrary user attributes). Transforms are broadcast by hydrating each column into a real `baseTs`, calling the existing method, and harvesting the result.
 
-**Tech Stack:** Python 3.12, pandas 3.0.1, numpy 2.5.2, pytest. No new dependencies.
+**Tech Stack:** Python 3.11+ (per `setup.py`'s `python_requires`; this session's dev environment is 3.12.13 — do not use any 3.12-only syntax), pandas 3.0.1, numpy 2.5.2, pytest. No new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-09-13-basedf-multichannel-design.md` — read it first. The plan argues from it; where this plan gives a number the spec also gives, the spec is the authority.
 
@@ -297,11 +297,20 @@ def hydrate_column(
     for field in _CONSTRUCTOR_FIELDS:
         kwargs[field] = row[field]
     kwargs["history"] = list(row["history"] or [])
-    if kwargs.get("signal_name") in (None, ""):
-        kwargs["signal_name"] = str(label)
+    # signal_name is not a constructor keyword here: baseTs.__init__ upper-cases
+    # any signal_name it is *given as a keyword* (series.py, TimeSeriesData.__init__),
+    # but its property setter does not - only __init__ does. col_meta rows carry the
+    # label in whatever case the caller used (from a DataFrame column, from a plain
+    # label, or from an averaged-column name), and hydrating a column must not mangle
+    # it. So the field is left out of kwargs and assigned through the setter below,
+    # the same pattern already used for outlier_filter.
+    signal_name = row.get("signal_name")
+    if signal_name in (None, ""):
+        signal_name = str(label)
 
     ts = baseTs(data=np.asarray(values), times=np.asarray(index, dtype=float), **kwargs)
-    # Not a constructor keyword. Shared by reference deliberately, matching
+    ts.signal_name = signal_name
+    # Not a constructor keyword either. Shared by reference deliberately, matching
     # baseTs.copy(), which shares the filter rather than duplicating it.
     ts.outlier_filter = row["outlier_filter"]
     return ts
@@ -521,7 +530,9 @@ class baseDf:
             if len(index) != len(df):
                 raise ValidationError(
                     f"times has {len(index)} entries but the data has "
-                    f"{len(df)} rows; they must match."
+                    f"{len(df)} rows; they must match. Pass a times array the "
+                    f"same length as the data, or omit times to use the "
+                    f"DataFrame's own index."
                 )
         else:
             index = pd.Index(np.asarray(df.index, dtype=float))
@@ -584,7 +595,9 @@ class baseDf:
             raise ValidationError(
                 f"col_meta rows are out of step with the columns: "
                 f"col_meta.index={list(self._col_meta.index)!r} vs "
-                f"columns={list(columns)!r}"
+                f"columns={list(columns)!r}. Pass col_meta indexed by exactly "
+                f"the data's columns, in the same order, or omit it and let "
+                f"baseDf build the default rows."
             )
         missing = [f for f in COL_META_FIELDS if f not in self._col_meta.columns]
         if missing:
@@ -739,15 +752,20 @@ def test_from_df_sorts_by_time_when_the_table_is_out_of_order():
 
 
 def test_from_series_carries_each_series_own_metadata():
+    # baseTs.__init__ upper-cases a signal_name passed as a keyword (it is a
+    # normalising property; see frame_meta.hydrate_column's comment on this), so
+    # "Cz" is already "CZ" the moment `a` is constructed - before from_series ever
+    # sees it. The frame reads signal_name faithfully; it does not restore a case
+    # baseTs itself never kept.
     times = np.arange(32) / 8.0
     a = baseTs(data=np.arange(32.0), times=times, freq=8.0, signal_name="Cz")
     b = baseTs(data=np.arange(32.0) * 2, times=times, freq=8.0, signal_name="Pz")
     a = a.lowpass_at(2.0)
     frame = baseDf.from_series([a, b])
-    assert list(frame.columns) == ["Cz", "Pz"]
-    assert frame.col_meta.at["Cz", "history"] == list(a.history)
-    assert frame.col_meta.at["Pz", "history"] == []
-    assert frame.col_meta.at["Cz", "is_filtered"] == a.is_filtered
+    assert list(frame.columns) == ["CZ", "PZ"]
+    assert frame.col_meta.at["CZ", "history"] == list(a.history)
+    assert frame.col_meta.at["PZ", "history"] == []
+    assert frame.col_meta.at["CZ", "is_filtered"] == a.is_filtered
 
 
 def test_from_series_refuses_mismatched_indices():
@@ -1129,7 +1147,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Broadcast — the 39 transforms
+### Task 5: Broadcast — the 38 transforms
 
 This is the task the design exists for. Its test is the reason to trust the rest.
 
@@ -1139,7 +1157,7 @@ This is the task the design exists for. Its test is the reason to trust the rest
 
 **Interfaces:**
 - Consumes: `__getitem__`, `harvest_col_meta`, `_IndexMeta.from_series`, `_with`.
-- Produces: `baseDf.TRANSFORMS: tuple[str, ...]` (39 names), `baseDf.NOT_BROADCAST: frozenset[str]`, `baseDf._broadcast(name, args, kwargs)`, and one generated method per name in `TRANSFORMS`.
+- Produces: `baseDf.TRANSFORMS: tuple[str, ...]` (38 names), `baseDf.NOT_BROADCAST: frozenset[str]` (`{"copy", "remove_outliers"}`), `baseDf._broadcast(name, args, kwargs)`, and one generated method per name in `TRANSFORMS`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1222,7 +1240,6 @@ CALLS = [
     ("shift_time", (3,), {}),
     ("set_outlier_filter", (), {}),
     ("filter_outliers", (), {}),
-    ("remove_outliers", (), {}),
     ("apply_function", (np.sqrt,), {}),
     ("dediff_ts", (), {}),
     ("resample", ("1s",), {}),
@@ -1263,12 +1280,21 @@ def test_the_call_table_covers_every_broadcast_transform():
 
 def test_the_transform_inventory_matches_baseTs():
     """State the rule, don't maintain a carve-out list: TRANSFORMS is every
-    baseTs method annotated as returning a baseTs, minus NOT_BROADCAST."""
+    baseTs method annotated as returning a baseTs, minus NOT_BROADCAST.
+
+    core.py has `from __future__ import annotations`, and its methods are
+    written with an already-quoted forward reference (`-> "baseTs":`). PEP 563
+    stringifies the unparsed source, so `inspect.signature(...).return_annotation`
+    comes back as the 8-character string `'baseTs'` - literal single quotes
+    included, not the bare name and not a double-quoted string. Strip whichever
+    quote character survived before comparing.
+    """
     found = set()
     for name, func in inspect.getmembers(baseTs, predicate=inspect.isfunction):
         if name.startswith("_") or func.__qualname__.split(".")[0] != "baseTs":
             continue
-        if inspect.signature(func).return_annotation in ('"baseTs"', "baseTs"):
+        annotation = str(inspect.signature(func).return_annotation).strip("'\"")
+        if annotation == "baseTs":
             found.add(name)
     assert found - baseDf.NOT_BROADCAST == set(baseDf.TRANSFORMS)
 
@@ -1319,7 +1345,17 @@ Add to `class baseDf` in `baseTs/frame.py`:
 ```python
     #: Every baseTs method annotated as returning a baseTs that is *not*
     #: broadcast. `copy` is excluded because the frame has its own.
-    NOT_BROADCAST = frozenset({"copy"})
+    #: `remove_outliers` is excluded because it fails the load-bearing invariant
+    #: (the spec's "no transform's output index depends on its data values"):
+    #: measured live, two series sharing an index but differing only in *where*
+    #: their outlier sits come back with genuinely different indices (one drops
+    #: the sample at 2.5s, the other at 12.5s). Broadcasting it would raise
+    #: _broadcast's index-mismatch refusal on essentially any real multichannel
+    #: dataset, since channels rarely spike at the same sample. Use
+    #: filter_outliers or set_outlier_filter instead - both are LOWESS-based and
+    #: interpolate rather than drop, so they keep every column on the shared
+    #: index (see the spec's "filter_outliers is frame-safe" measurement).
+    NOT_BROADCAST = frozenset({"copy", "remove_outliers"})
 
     #: The methods generated onto this class at import time, one per baseTs
     #: transform. Kept explicit so a reader can see the surface; a test
@@ -1332,7 +1368,7 @@ Add to `class baseDf` in `baseTs/frame.py`:
         "interp_to_uniform_grid", "interpolate_gaps", "interpolate_missing",
         "interpto_hz", "interpto_samples", "lowess_detrend", "lowpass_at",
         "lowpass_filter", "normalize_range", "notch_at", "notch_filter",
-        "remove_outliers", "resample", "rolling_max", "rolling_mean",
+        "resample", "rolling_max", "rolling_mean",
         "rolling_median", "rolling_min", "rolling_std", "scale",
         "set_indices_to_nan_and_interpolate", "set_outlier_filter",
         "sg_filter", "shift_time", "time_slice", "trimto_timepoints",
@@ -1424,7 +1460,7 @@ Note: `harvest_col_meta` and `COL_META_FIELDS` are already imported by Task 2.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/unit/test_frame_broadcast_equals_series.py -v`
-Expected: PASS — 40 parametrized equivalence cases (one per entry in `CALLS`) plus 5 others. Every one of those 40 calls was run against a lone `baseTs` on this fixture before the plan was written; all 40 succeed, so an error here is in the broadcast machinery, not in the arguments.
+Expected: PASS — 39 parametrized equivalence cases (one per entry in `CALLS`) plus 5 others. Every one of those 39 calls was run against a lone `baseTs` on this fixture before the plan was written; all 39 succeed, so an error here is in the broadcast machinery, not in the arguments.
 
 If `test_the_call_table_covers_every_broadcast_transform` ever fails, add the missing name to `CALLS` with arguments that work on a 256-sample 16 Hz series. Do **not** shrink `TRANSFORMS` to make it pass — that is the failure the guard exists to prevent.
 
@@ -1452,9 +1488,11 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `__getitem__`.
-- Produces: `baseDf.measure(name, *args, **kwargs)`; wrappers `get_statistics() -> pd.DataFrame`, `falff(**kw) -> pd.Series`, `relative_band_power(**kw) -> pd.Series`, `detect_outliers(**kw) -> pd.DataFrame`, `get_peaks(**kw) -> pd.Series`, `compute_fft_power(**kw) -> tuple[np.ndarray, pd.DataFrame]`, `get_frequency_content(**kw) -> tuple[np.ndarray, pd.DataFrame]`, `duration() -> float`.
+- Produces: `baseDf.measure(name, *args, **kwargs)`; wrappers `get_statistics() -> pd.DataFrame`, `falff(**kw) -> pd.Series`, `relative_band_power(**kw) -> pd.Series`, `detect_outliers(**kw) -> pd.DataFrame`, `get_peaks(**kw) -> pd.Series`, `get_peak_freq(**kw) -> pd.Series`, `compute_fft_power(**kw) -> tuple[np.ndarray, pd.DataFrame]`, `get_frequency_content(**kw) -> tuple[np.ndarray, pd.DataFrame]`, `duration() -> float`.
 
-Measured return shapes on a 1024-sample series, so the dispatch table is not guesswork: `get_statistics` → `dict` of 11 keys; `falff` → `float`; `relative_band_power` → `float`; `detect_outliers` → `ndarray` of length N; `get_peaks` → `list`; `compute_fft_power` and `get_frequency_content` → 2-tuples whose first element is the shared frequency axis.
+Measured return shapes on a 1024-sample series, so the dispatch table is not guesswork: `get_statistics` → `dict` of 11 keys; `falff` → `float`; `relative_band_power` → `float`; `detect_outliers` → `ndarray` of length N; `get_peaks` → `list`; `get_peak_freq` → `float` when `num_pks=1` (its default) or `list` otherwise, hence `"object"` kind like `get_peaks`; `compute_fft_power` and `get_frequency_content` → 2-tuples whose first element is the shared frequency axis.
+
+`falff` and `relative_band_power` are `"scalar"` only for their default call (`details=False`); passed `details=True` they return a `BandPowerResult` object instead, which cannot fill a `dtype=float` Series. `measure()` refuses that combination explicitly (see its implementation below) rather than letting the `pd.Series(..., dtype=float)` cast fail with a confusing numpy error.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1589,6 +1627,13 @@ Add to `class baseDf` in `baseTs/frame.py`:
                 f"{sorted(self.MEASURE_KINDS)!r}. For anything else, pull the "
                 f"column out with frame[label] and call it there."
             )
+        if name in ("falff", "relative_band_power") and kwargs.get("details"):
+            raise ValidationError(
+                f"{name}(details=True) returns a BandPowerResult, not a "
+                f"number, so it cannot fill a numeric pd.Series across "
+                f"columns. Call frame[label].{name}(details=True) on one "
+                f"column at a time instead."
+            )
         kind = self.MEASURE_KINDS[name]
         results = {label: getattr(self[label], name)(*args, **kwargs)
                    for label in self._df.columns}
@@ -1663,6 +1708,15 @@ Add to `class baseDf` in `baseTs/frame.py`:
         """
         return self.measure("get_peaks", *args, **kwargs)
 
+    def get_peak_freq(self, *args: Any, **kwargs: Any) -> pd.Series:
+        """Peak frequency per column. See ``baseTs.get_peak_freq``.
+
+        Returns:
+            pd.Series: One value per column - a float if ``num_pks=1`` (the
+                default), a list if not.
+        """
+        return self.measure("get_peak_freq", *args, **kwargs)
+
     def compute_fft_power(self, *args: Any,
                           **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
         """FFT power per column over one shared frequency axis.
@@ -1695,7 +1749,7 @@ Add to `class baseDf` in `baseTs/frame.py`:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/unit/test_frame_measurements.py -v`
-Expected: PASS, 8 tests
+Expected: PASS, 9 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1937,6 +1991,10 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Consumes: `_resolve_labels`, `hydrate_column`, `_IndexMeta`, `COL_META_FIELDS`.
 - Produces: `common_prefix(histories) -> list`, `averaged_row(col_meta, labels, skipna, reduced, selection_desc, name) -> dict`; `baseDf.average(select=None, where=None, skipna=False, min_count=None, name=None) -> baseTs`; `baseDf.average_by(by, select=None, where=None, skipna=False, min_count=None) -> baseDf`.
 
+`min_count` defaults to `None`, matching the spec (updated 2026-09-14): `None`
+means "not requested," which is what lets a bare `frame.average()` call succeed
+while still refusing an explicit floor passed alongside the default `skipna=False`.
+
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/unit/test_frame_average_rules.py`:
@@ -2171,7 +2229,13 @@ def averaged_row(
     }
 ```
 
-Add to `class baseDf` in `baseTs/frame.py` (and import `averaged_row` from `.frame_average`):
+Add to the top of `baseTs/frame.py`'s import block:
+
+```python
+from .frame_average import averaged_row, common_prefix
+```
+
+Then add to `class baseDf` in `baseTs/frame.py`:
 
 ```python
     def _average_values(
@@ -2458,6 +2522,22 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Spec coverage.** Object model → Tasks 1–2. Four operation buckets → Tasks 5 (transforms), 6 and 7 (measurements and correlation), 8 (reduction); plots are out of scope per the spec. `average`/`average_by` with flag, history and NaN rules → Task 8. Correlation → Task 7. Indexing exception → Task 4. Three entry points and the persistence deferral → Task 3 and Task 9 (`to_dataframe` is `frame.df`, which the docs say). Error rules 1–8 → rules 1, 2, 4 in Task 2; 5 in Tasks 2 and 3; 7, 8 in Task 3; 3 in Task 5; 6 in Task 4. Testing section → the test file per task, with broadcast equivalence in Task 5.
 
-**Verified before writing.** All 40 entries in Task 5's `CALLS` table were run against a lone `baseTs` on that exact fixture (256 samples, 16 Hz, an outlier at index 40): 40 calls, 0 failures. The table therefore covers all 39 names in `TRANSFORMS` — `diff_ts` appears twice, with and without `zeropad` — and the coverage guard passes on a correct implementation rather than needing to be grown first.
+**Verified before writing.** All 39 entries in Task 5's `CALLS` table were run against a lone `baseTs` on that exact fixture (256 samples, 16 Hz, an outlier at index 40): 39 calls, 0 failures. The table therefore covers all 38 names in `TRANSFORMS` — `diff_ts` appears twice, with and without `zeropad` — and the coverage guard passes on a correct implementation rather than needing to be grown first.
+
+**`remove_outliers` excluded from `TRANSFORMS` (found during plan review, 2026-09-14).** Its output index is data-dependent by construction — it drops whichever samples `detect_outliers` flags, and different columns flag different samples. Measured live: two series sharing an index but spiking at different points came back with genuinely different indices (one missing the sample at 2.5s, the other at 12.5s). Broadcasting it would trip `_broadcast`'s own index-mismatch refusal on essentially any real dataset, so it moved to `NOT_BROADCAST` alongside `copy` rather than shipping a "transform" that reliably raises. `filter_outliers`/`set_outlier_filter` remain broadcast targets — they interpolate rather than drop, so they hold the invariant genuinely, not just on this fixture.
 
 **Correlation (Stan, 2026-09-13).** Resolved into its own task rather than left in `MEASURE_KINDS`: the default is one seed series against every column, and the all-pairs matrix has a separate name so it is never implicit. The matrix path vectorises through `DataFrame.corrwith`, verified identical to per-pair `baseTs.correlation_with` for all three methods with a NaN present.
+
+**Adversarial review round, 2026-09-14 (before any code was written).** Two independent reviewers checked this plan against the codebase and against itself; every finding below was re-verified directly (live construction of `baseTs` objects, AST introspection, or reading the cited line) before being accepted or dismissed:
+
+- `remove_outliers` removed from `TRANSFORMS` into `NOT_BROADCAST` — see the note above. The only finding that changes the public surface (38 transforms, not 39).
+- Task 5's coverage-guard test, `test_the_transform_inventory_matches_baseTs`, compared `inspect.signature(func).return_annotation` against the bare and double-quoted forms of `"baseTs"`. `core.py`'s `from __future__ import annotations` plus its own already-quoted forward references (`-> "baseTs":`) makes that attribute the 8-character string `'baseTs'` — single quotes included — which matches neither, so `found` was always empty and the test could never pass, even against a correct implementation. Fixed to strip whichever quote character survived before comparing.
+- `hydrate_column` passed `signal_name` through the `baseTs` constructor, which upper-cases any signal_name given as a keyword (verified live: `baseTs(..., signal_name="Cz").signal_name == "CZ"`; the property setter alone does not upper-case). That silently re-cased every column's label on the way out of a frame — a column whose col_meta correctly held `"c1"` or an averaged `"DMN mean"` would hydrate back out as `"C1"`/`"DMN MEAN"`. Fixed by assigning `signal_name` through the property setter after construction, the same pattern the code already used for `outlier_filter`. One test (`test_from_series_carries_each_series_own_metadata`) could not be fixed this way — its input `baseTs` objects are upper-cased by their *own* constructor call before `from_series` ever runs — so its expectations were corrected to `["CZ", "PZ"]` instead.
+- The spec's literal `average`/`average_by` signature (`min_count=1`) was unusable: with `skipna=False` as the default, a bare `frame.average()` call would be indistinguishable from a user explicitly requesting a floor of 1, so it could never coexist with the refusal the very next paragraph describes. The plan had already silently resolved this by using `min_count=None` as the sentinel default; the spec is now corrected to match rather than leave a contradiction for the next reader.
+- Two `ValidationError` messages (the `times`-length mismatch in `__init__`, and `col_meta`/`columns` misalignment in `_check_invariants`) stated what was refused but not what to do instead, breaking the plan's own stated rule (Global Constraints). Both now name a remedy.
+- `get_peak_freq` was a live entry in `MEASURE_KINDS` with no forwarding wrapper method, unlike every sibling entry — reachable only through the internal `measure()` dispatcher. Added a `get_peak_freq()` wrapper matching `get_peaks()`.
+- `falff`/`relative_band_power` are `"scalar"` only for their default call; passed `details=True` they return a `BandPowerResult`, which cannot fill a `dtype=float` Series. `measure()` now refuses that combination by name instead of letting the cast fail with a confusing numpy error.
+- Task 8's instructions referenced importing `averaged_row` from `.frame_average` in passing but never showed the import line landing in `frame.py`; made explicit.
+- The Tech Stack line said "Python 3.12"; `setup.py` declares `python_requires=">=3.11"` and CI runs 3.11/3.12/3.13. Corrected, and flagged as a constraint for every implementer: no 3.12-only syntax.
+
+No task's file scope, metadata partition, `ValidationError` inheritance, `correlation_with` behavior, or measured return shapes needed correction — all independently confirmed against the running code.

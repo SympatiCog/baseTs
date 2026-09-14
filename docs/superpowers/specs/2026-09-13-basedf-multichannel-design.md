@@ -187,9 +187,15 @@ the module-level `from_df` is left exactly as it is, rather than taught to
 return a frame sometimes).
 
 ```python
-frame.average(select=None, where=None, skipna=False, min_count=1, name=None) -> baseTs
-frame.average_by(by, select=None, where=None, skipna=False, min_count=1) -> baseDf
+frame.average(select=None, where=None, skipna=False, min_count=None, name=None) -> baseTs
+frame.average_by(by, select=None, where=None, skipna=False, min_count=None) -> baseDf
 ```
+
+`min_count` defaults to `None`, not a number: `None` means "not requested," which
+is what distinguishes a bare call from one that actually asked for a floor. A
+literal default of `1` would be indistinguishable from the user passing `1`, so it
+could never coexist with the refusal two paragraphs below without breaking every
+bare `frame.average()` call.
 
 - `select` — labels or a boolean mask
 - `where` — a query string against `_col_meta`: `where="network == 'DMN' and not bad"`
