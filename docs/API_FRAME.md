@@ -286,17 +286,15 @@ cleaned = frame.filter_outliers()          # interpolates each column's own outl
 frame["Cz"].set_outlier_filter(frac=0.5)   # tune one column's filter before broadcasting filter_outliers()
 ```
 
-`copy` is excluded from the generated list for the same reason as any method
-a frame would want to implement itself rather than inherit from a
-column-wise broadcast: copying a frame's own state (`_df`, `_col_meta`,
-`_index_meta`) directly is a different, cheaper operation than calling
-`baseTs.copy()` on every column and reassembling them. As of this writing
-`baseDf` does not yet define that method of its own, so `frame.copy()`
-raises `AttributeError` — noted here rather than papered over, since the
-source comment states the intent (`NOT_BROADCAST`'s docstring: "`copy` is
-excluded because the frame has its own") ahead of the implementation. Use
-`frame.select(select=list(frame.columns))` for an equivalent frame today, or
-`frame.df.copy()` for just the values.
+`copy` is excluded from the generated list because `baseDf` has its own:
+copying a frame's state (`_df`, `_col_meta`, `_index_meta`) directly is a
+different, cheaper operation than calling `baseTs.copy()` on every column
+and reassembling them.
+
+```python
+frame.copy()          # deep=True (default): independent values and col_meta
+frame.copy(deep=False)  # shares the underlying DataFrames, pandas' own contract
+```
 
 ---
 
@@ -538,4 +536,5 @@ row's history.
 ## Other Methods
 
 See [Broadcast Transforms](#broadcast-transforms) above for why `copy` is
-reserved rather than broadcast, and its current status.
+reserved rather than broadcast, and [there](#broadcast-transforms) for its
+own signature.

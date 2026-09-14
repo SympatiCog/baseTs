@@ -473,6 +473,20 @@ class baseDf:
         return (f"baseDf({self.shape[1]} columns x {self.shape[0]} samples, "
                 f"{rate_text})")
 
+    def copy(self, deep: bool = True) -> "baseDf":
+        """Create an independent copy of this frame.
+
+        Args:
+            deep: If True (the default), the values and column metadata are
+                copied too, so mutating the result cannot affect this frame
+                or vice versa. If False, both share the same underlying
+                DataFrames - mirrors ``pd.DataFrame.copy``'s own contract.
+
+        Returns:
+            baseDf: The copy.
+        """
+        return self._with(self._df.copy(deep=deep), self._col_meta.copy(deep=deep))
+
     #: Every baseTs method annotated as returning a baseTs that is *not*
     #: broadcast. `copy` is excluded because the frame has its own.
     #: `remove_outliers` is excluded because it fails the load-bearing invariant
