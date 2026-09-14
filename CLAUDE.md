@@ -16,6 +16,21 @@ baseTs is now built directly on pandas Series, providing:
 - **Native Pandas Integration**: Access to 270+ pandas methods
 - **Backward Compatibility**: All legacy numpy array operations preserved
 
+### Multi-Channel Container (`baseDf`)
+`baseDf` (`baseTs/frame.py`, `baseTs/frame_meta.py`, `baseTs/frame_average.py`)
+holds many `baseTs` series — channels, ROIs, electrodes — as columns of one
+table sharing a single index:
+- **DataFrame-backed, not DataFrame-subclassed**: deliberately, to avoid the
+  block-manager/`_constructor_sliced`/`__finalize__` surface a `pd.DataFrame`
+  subclass would expose. See `docs/superpowers/specs/2026-09-13-basedf-multichannel-design.md` ("Decision 1").
+- **Three pieces of state**: a plain `pd.DataFrame` of values, a `pd.DataFrame`
+  of per-column metadata (`_col_meta`), and four scalars describing the
+  shared index (`_index_meta`)
+- **Explicit forwarding, not inheritance**: broadcasts `baseTs` transforms
+  and measurements across columns deliberately; `.df` is the escape hatch for
+  a pandas method that isn't forwarded
+- **Full reference**: `docs/API_FRAME.md`
+
 ### Key Design Principles
 1. **Series-First**: All operations leverage pandas Series capabilities
 2. **Metadata Preservation**: Processing history and filter states maintained
@@ -42,11 +57,24 @@ baseTs is now built directly on pandas Series, providing:
 
 ## Development Workflow
 
-### Adding New Methods
+### Adding New Methods (`baseTs`)
 1. **Design**: Consider if pandas has a native method first
 2. **Implementation**: Add to `baseTs/core.py` with proper metadata handling
 3. **Testing**: Add unit tests in `tests/unit/test_core.py`
 4. **Documentation**: Update docstrings and API docs
+
+### Adding New Methods (`baseDf`)
+1. **Design**: Most new behavior should be a broadcast or reduction over
+   existing `baseTs` methods rather than a new primitive — check
+   `_broadcast`/`measure`/`average` in `baseTs/frame.py` first
+2. **Implementation**: Add to `baseTs/frame.py` (or `frame_meta.py`/
+   `frame_average.py` for metadata/averaging-specific logic); validate inputs
+   explicitly rather than letting a bare pandas error leak through
+3. **Testing**: Add unit tests in `tests/unit/test_frame_*.py`; a new public
+   method needs both a happy-path test and a refusal test for its invalid
+   inputs
+4. **Documentation**: Update `docs/API_FRAME.md` and, if the change adds a
+   new on-ramp rather than a new corner case, `docs/EXAMPLES.md`
 
 ### Method Patterns
 ```python
