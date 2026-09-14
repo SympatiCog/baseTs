@@ -8,7 +8,7 @@ the design spec for why that decision was taken.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Hashable, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,11 @@ from .frame_meta import (
     refuse_reserved_columns,
 )
 from .utils import ValidationError
+
+
+def _is_listlike(key: Any) -> bool:
+    """True for a key that selects several columns rather than one."""
+    return isinstance(key, (list, tuple, set, pd.Index, np.ndarray, pd.Series))
 
 
 class baseDf:
@@ -310,6 +315,90 @@ class baseDf:
         new._index_meta = self._index_meta if index_meta is None else index_meta
         new._check_invariants()
         return new
+
+    def _resolve_labels(
+        self,
+        select: Any = None,
+        where: Optional[str] = None,
+    ) -> List[Hashable]:
+        """Turn a selection into an ordered list of existing column labels.
+
+        Args:
+            select: Labels, or a boolean mask the length of ``columns``.
+            where: A pandas query string evaluated against ``col_meta``.
+
+        Returns:
+            list: The chosen labels, in frame order for a query and in the
+                caller's order for an explicit list.
+
+        Raises:
+            ValidationError: On unknown labels, a mask of the wrong length, or
+                a selection matching nothing.
+        """
+        labels: List[Hashable] = list(self._df.columns)
+        if where is not None:
+            labels = list(self._col_meta.query(where).index)
+        if select is not None:
+            values = list(select)
+            if values and all(isinstance(v, (bool, np.bool_)) for v in values):
+                if len(values) != len(self._df.columns):
+                    raise ValidationError(
+                        f"a boolean column mask must have one entry per column: "
+                        f"got {len(values)} for {len(self._df.columns)} columns."
+                    )
+                chosen = [c for c, keep in zip(self._df.columns, values) if keep]
+            else:
+                chosen = values
+                unknown = [c for c in chosen if c not in set(self._df.columns)]
+                if unknown:
+                    raise ValidationError(
+                        f"no such column(s): {unknown!r}. Columns present: "
+                        f"{list(self._df.columns)!r}"
+                    )
+            allowed = set(labels)
+            labels = [c for c in chosen if c in allowed]
+        if not labels:
+            raise ValidationError(
+                "the selection matched no columns. An average or a slice over "
+                "nothing is never what was meant: check the labels, or inspect "
+                "col_meta for the attribute the query named."
+            )
+        return labels
+
+    def select(self, where: Optional[str] = None, select: Any = None) -> "baseDf":
+        """Take a subset of the columns, keeping their metadata.
+
+        Args:
+            where: A query string against ``col_meta``, e.g.
+                ``"network == 'DMN' and not bad"``.
+            select: Labels, or a boolean mask the length of ``columns``.
+
+        Returns:
+            baseDf: A frame holding the chosen columns.
+        """
+        labels = self._resolve_labels(select=select, where=where)
+        return self._with(self._df[labels], self._col_meta.loc[labels])
+
+    def __getitem__(self, key: Any) -> Union["baseDf", Any]:
+        """One column as a baseTs, several as a baseDf.
+
+        This mirrors pandas' own ``__getitem__`` contract deliberately, which
+        is the one place this class returns two different types from one call.
+        """
+        if _is_listlike(key):
+            return self.select(select=list(key))
+        if key not in self._df.columns:
+            raise ValidationError(
+                f"no such column: {key!r}. Columns present: "
+                f"{list(self._df.columns)!r}"
+            )
+        return hydrate_column(
+            np.asarray(self._df[key], dtype=float),
+            [float(v) for v in self._df.index],
+            self._index_meta,
+            self._col_meta.loc[key],
+            key,
+        )
 
     @property
     def df(self) -> pd.DataFrame:
