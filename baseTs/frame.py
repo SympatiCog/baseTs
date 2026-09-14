@@ -659,7 +659,7 @@ class baseDf:
         # construction), so the loop above ran at least once and axis is set.
         assert axis is not None
         return axis, pd.DataFrame(payload, index=pd.Index(axis),
-                                   columns=self._df.columns)
+                                  columns=self._df.columns)
 
     def falff(self, *args: Any, **kwargs: Any) -> pd.Series:
         """fALFF per column. See ``baseTs.falff``.
@@ -711,7 +711,7 @@ class baseDf:
         return cast(pd.Series, self.measure("get_peak_freq", *args, **kwargs))
 
     def compute_fft_power(self, *args: Any,
-                           **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
+                          **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
         """FFT power per column over one shared frequency axis.
 
         Returns:
@@ -721,7 +721,7 @@ class baseDf:
                     self.measure("compute_fft_power", *args, **kwargs))
 
     def get_frequency_content(self, *args: Any,
-                               **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
+                              **kwargs: Any) -> Tuple[np.ndarray, pd.DataFrame]:
         """Frequency content per column over one shared axis.
 
         Returns:
