@@ -8,7 +8,7 @@ the design spec for why that decision was taken.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,9 @@ from .frame_meta import (
     refuse_reserved_columns,
 )
 from .utils import ValidationError
+
+if TYPE_CHECKING:
+    from .core import baseTs
 
 
 def _is_listlike(key: Any) -> bool:
@@ -456,3 +459,117 @@ class baseDf:
         rate_text = "undeclared" if np.isnan(rate) else f"{rate:g} Hz"
         return (f"baseDf({self.shape[1]} columns x {self.shape[0]} samples, "
                 f"{rate_text})")
+
+    #: Every baseTs method annotated as returning a baseTs that is *not*
+    #: broadcast. `copy` is excluded because the frame has its own.
+    #: `remove_outliers` is excluded because it fails the load-bearing invariant
+    #: (the spec's "no transform's output index depends on its data values"):
+    #: measured live, two series sharing an index but differing only in *where*
+    #: their outlier sits come back with genuinely different indices (one drops
+    #: the sample at 2.5s, the other at 12.5s). Broadcasting it would raise
+    #: _broadcast's index-mismatch refusal on essentially any real multichannel
+    #: dataset, since channels rarely spike at the same sample. Use
+    #: filter_outliers or set_outlier_filter instead - both are LOWESS-based and
+    #: interpolate rather than drop, so they keep every column on the shared
+    #: index (see the spec's "filter_outliers is frame-safe" measurement).
+    NOT_BROADCAST = frozenset({"copy", "remove_outliers"})
+
+    #: The methods generated onto this class at import time, one per baseTs
+    #: transform. Kept explicit so a reader can see the surface; a test
+    #: asserts it equals introspection-minus-NOT_BROADCAST, so it cannot
+    #: silently drift.
+    TRANSFORMS = (
+        "abs", "apply_function", "bandpass_at", "bandpass_filter",
+        "butterpass_at", "center", "dediff_ts", "detrend", "diff_ts",
+        "filter_outliers", "gauss_filter", "highpass_at", "highpass_filter",
+        "interp_to_uniform_grid", "interpolate_gaps", "interpolate_missing",
+        "interpto_hz", "interpto_samples", "lowess_detrend", "lowpass_at",
+        "lowpass_filter", "normalize_range", "notch_at", "notch_filter",
+        "resample", "rolling_max", "rolling_mean",
+        "rolling_median", "rolling_min", "rolling_std", "scale",
+        "set_indices_to_nan_and_interpolate", "set_outlier_filter",
+        "sg_filter", "shift_time", "time_slice", "trimto_timepoints",
+        "zscale",
+    )
+
+    def _broadcast(self, name: str, args: tuple, kwargs: dict) -> "baseDf":
+        """Run one baseTs method on every column and reassemble the frame.
+
+        Args:
+            name: The baseTs method to call.
+            args: Positional arguments for it.
+            kwargs: Keyword arguments. ``inplace`` is handled here, at the
+                frame level, and is never forwarded to the column call.
+
+        Returns:
+            baseDf: A new frame, or ``self`` when ``inplace=True``.
+
+        Raises:
+            ValidationError: If the method returns a different index for
+                different columns, which a shared-index frame cannot hold.
+        """
+        inplace = bool(kwargs.pop("inplace", False))
+        index: Optional[pd.Index] = None
+        first_out: Optional["baseTs"] = None
+        values: Dict[Hashable, np.ndarray] = {}
+        rows: Dict[Hashable, Dict[str, Any]] = {}
+
+        for label in self._df.columns:
+            out = getattr(self[label], name)(*args, **kwargs)
+            if index is None:
+                index, first_out = out.index, out
+            elif not index.equals(out.index):
+                raise ValidationError(
+                    f"{name}() returned a different index for column {label!r} "
+                    f"({len(out.index)} samples) than for "
+                    f"{list(self._df.columns)[0]!r} ({len(index)} samples). "
+                    f"baseDf requires every column to share one index, so a "
+                    f"transform whose output index depends on its data values "
+                    f"cannot be broadcast. Pull the columns out with "
+                    f"frame[label] and handle them individually."
+                )
+            values[label] = np.asarray(out.data, dtype=float)
+            rows[label] = harvest_col_meta(out)
+
+        # self._df.columns is never empty (baseDf refuses an empty frame at
+        # construction), so the loop above ran at least once and both are set.
+        assert index is not None and first_out is not None
+        new_df = pd.DataFrame(values, index=index, columns=self._df.columns)
+        harvested = pd.DataFrame.from_dict(rows, orient="index").reindex(self._df.columns)
+        # Copy rather than rebuild, so user attributes ride along untouched.
+        new_col_meta = self._col_meta.copy()
+        for field in COL_META_FIELDS:
+            new_col_meta[field] = harvested[field]
+        new_index_meta = _IndexMeta.from_series(first_out)
+
+        if inplace:
+            self._df = new_df
+            self._col_meta = new_col_meta
+            self._index_meta = new_index_meta
+            self._check_invariants()
+            return self
+        return self._with(new_df, new_col_meta, new_index_meta)
+
+
+def _make_broadcast_method(name: str):
+    """Build the frame-level method that broadcasts one baseTs transform."""
+    def method(self: baseDf, *args: Any, **kwargs: Any) -> baseDf:
+        return self._broadcast(name, args, kwargs)
+
+    from .core import baseTs as _baseTs
+    source_doc = (getattr(_baseTs, name).__doc__ or "").strip()
+    method.__name__ = name
+    method.__qualname__ = f"baseDf.{name}"
+    method.__doc__ = (
+        f"Broadcast ``baseTs.{name}`` over every column.\n\n"
+        f"Each column's history records the operation. ``inplace=True``\n"
+        f"replaces this frame's contents instead of returning a new frame.\n\n"
+        f"Returns:\n    baseDf: The transformed frame.\n\n"
+        f"--- baseTs.{name} ---\n{source_doc}\n"
+    )
+    return method
+
+
+for _transform_name in baseDf.TRANSFORMS:
+    setattr(baseDf, _transform_name, _make_broadcast_method(_transform_name))
+del _transform_name
