@@ -25,6 +25,7 @@ from typing import (
 import numpy as np
 import pandas as pd
 
+from .frame_average import averaged_row, common_prefix  # noqa: F401
 from .frame_meta import (
     COL_META_FIELDS,
     _IndexMeta,
@@ -806,6 +807,121 @@ class baseDf:
         """
         index = np.asarray(self._df.index, dtype=float)
         return float(index[-1] - index[0]) if len(index) else 0.0
+
+    def _average_values(
+        self,
+        labels: Sequence[Hashable],
+        skipna: bool,
+        min_count: Optional[int],
+    ) -> Tuple[np.ndarray, int]:
+        """Mean across the chosen columns, and how many timepoints lost contributors."""
+        block = self._df[list(labels)]
+        if not skipna:
+            if min_count is not None:
+                raise ValidationError(
+                    "min_count is meaningful only with skipna=True: with the "
+                    "default skipna=False a single NaN already propagates, so "
+                    "a floor on the contributor count has nothing to act on. "
+                    "Pass skipna=True, or drop min_count."
+                )
+            return np.asarray(block.mean(axis=1, skipna=False), dtype=float), 0
+        counts = np.asarray(block.notna().sum(axis=1), dtype=int)
+        floor = 1 if min_count is None else int(min_count)
+        values = np.asarray(block.mean(axis=1, skipna=True), dtype=float)
+        values = np.where(counts >= floor, values, np.nan)
+        return values, int((counts < len(labels)).sum())
+
+    def average(
+        self,
+        select: Any = None,
+        where: Optional[str] = None,
+        skipna: bool = False,
+        min_count: Optional[int] = None,
+        name: Optional[str] = None,
+    ) -> "baseTs":
+        """Average a selection of columns into one series.
+
+        Args:
+            select: Labels, or a boolean mask the length of ``columns``.
+            where: A query against ``col_meta``, e.g. ``"network == 'DMN'"``.
+            skipna: If True, average over whatever columns are present at each
+                timepoint. Off by default: skipping means a different set of
+                columns contributes at different timepoints, which silently
+                changes the estimator mid-series.
+            min_count: Minimum contributors for a timepoint to be kept.
+                Only meaningful with ``skipna=True``.
+            name: Signal name for the result.
+
+        Returns:
+            baseTs: The averaged series, on the frame's index.
+
+        Raises:
+            ValidationError: If the selection matches nothing, or ``min_count``
+                is given with ``skipna=False``.
+        """
+        labels = self._resolve_labels(select=select, where=where)
+        description = where if where is not None else ", ".join(str(x) for x in labels)
+        values, reduced = self._average_values(labels, skipna, min_count)
+        row = averaged_row(self._col_meta, labels, skipna, reduced, description, name)
+        return hydrate_column(
+            values,
+            [float(v) for v in self._df.index],
+            self._index_meta,
+            row,
+            row["signal_name"],
+        )
+
+    def average_by(
+        self,
+        by: Union[str, Sequence[str]],
+        select: Any = None,
+        where: Optional[str] = None,
+        skipna: bool = False,
+        min_count: Optional[int] = None,
+    ) -> "baseDf":
+        """Average columns within each group, giving one column per group.
+
+        Args:
+            by: Column name(s) in ``col_meta`` to group on.
+            select: Labels, or a boolean mask, to restrict the input columns.
+            where: A query against ``col_meta`` to restrict the input columns.
+            skipna: As for ``average``.
+            min_count: As for ``average``.
+
+        Returns:
+            baseDf: One column per group, on the frame's index. A group of one
+                column is legal, and its history says so.
+
+        Raises:
+            ValidationError: If a grouping column is absent from ``col_meta``,
+                or the selection matches nothing.
+        """
+        keys = [by] if isinstance(by, str) else list(by)
+        missing = [k for k in keys if k not in self._col_meta.columns]
+        if missing:
+            raise ValidationError(
+                f"no such col_meta column(s) to group by: {missing!r}. "
+                f"Available: {[c for c in self._col_meta.columns]!r}"
+            )
+        labels = self._resolve_labels(select=select, where=where)
+        subset = self._col_meta.loc[labels]
+
+        values: Dict[Hashable, np.ndarray] = {}
+        rows: Dict[Hashable, Dict[str, Any]] = {}
+        for group, members in subset.groupby(keys[0] if len(keys) == 1 else keys,
+                                             sort=True):
+            group_labels = list(members.index)
+            column, reduced = self._average_values(group_labels, skipna, min_count)
+            values[group] = column
+            rows[group] = averaged_row(self._col_meta, group_labels, skipna,
+                                       reduced, f"{keys[0]} == {group!r}",
+                                       name=str(group))
+
+        order = list(values.keys())
+        new_df = pd.DataFrame(values, index=self._df.index, columns=order)
+        new_col_meta = pd.DataFrame.from_dict(rows, orient="index")
+        new_col_meta = new_col_meta.reindex(order)[list(COL_META_FIELDS)]
+        return self._with(new_df, new_col_meta)
 
 
 def _make_broadcast_method(name: str):
