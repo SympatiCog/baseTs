@@ -58,6 +58,12 @@ and never dropped. Regenerate with `python examples/figures.py`.
 - **Metadata Preservation**: Complete processing history and filter state tracking
 - **Memory Efficiency**: Optimized storage without dual array overhead
 
+### 🧬 **Multi-Channel Containers with `baseDf`**
+- **Many Series, One Index**: `baseDf` holds channels, ROIs, or electrodes as columns of one table sharing a single time index
+- **Broadcast Everything**: Any `baseTs` transform or measurement (filters, `falff`, `get_peak_freq`, ...) runs across every column at once
+- **Label-Aware Selection**: Index by label, list, boolean mask, or a `col_meta` query string (`frame.select(where="network == 'DMN'")`)
+- **Grouped Reduction**: `average()` and `average_by()` collapse selected or grouped columns, carrying metadata forward honestly
+
 ## Installation
 
 ```bash
@@ -207,6 +213,36 @@ print(f"Correlation: {correlation:.3f}")
 print(f"Peak frequency: {peak_freq} Hz")
 ```
 
+### Multi-Channel Data with `baseDf`
+
+```python
+import numpy as np
+import pandas as pd
+from baseTs import baseDf
+
+n = 500
+t = np.arange(n) / 250.0
+wide = pd.DataFrame({
+    "time": t,
+    "Cz": np.sin(2 * np.pi * 10 * t) + 0.1 * np.random.randn(n),
+    "Pz": np.sin(2 * np.pi * 12 * t) + 0.1 * np.random.randn(n),
+})
+# In practice: wide = pd.read_parquet("channels.parquet")
+col_meta = pd.DataFrame({"network": ["DMN", "DMN"]}, index=["Cz", "Pz"])
+frame = baseDf.from_df(wide, time_col="time", freq=250.0, col_meta=col_meta)
+
+# Every baseTs transform and measurement broadcasts across columns
+cleaned = frame.bandpass_at(1.0, 40.0).filter_outliers()
+dmn_mean = cleaned.average(where="network == 'DMN'")
+
+# One column back out as a real baseTs, with its own history intact
+cz = cleaned["Cz"]
+```
+
+See [docs/API_FRAME.md](docs/API_FRAME.md) for the full API and
+[docs/EXAMPLES.md](docs/EXAMPLES.md#multi-channel-recipes-with-basedf) for
+wide- and long-table recipes.
+
 ## Key Advantages
 
 | Feature | Previous Version | New Pandas-Based |
@@ -274,12 +310,17 @@ A handful of behaviors that a first-time reader is likely to get wrong. See
   DataFrame column pair and accepts a numeric, datetime, or timedelta time
   column. It is a module-level function (`from baseTs import from_df`), not a
   method on `baseTs`.
+- **`baseDf` does not subclass `pd.DataFrame`**, and so does not inherit the
+  270+ pandas methods `baseTs` gets from subclassing `pd.Series`. It forwards
+  `baseTs` transforms and measurements explicitly; `frame.df` is the escape
+  hatch for a pandas method that isn't forwarded. See docs/API_FRAME.md.
 
 ## Documentation
 
 - **[User Guide](docs/USER_GUIDE.md)**: Comprehensive usage guide with examples
 - **[API Documentation](docs/API.md)**: Complete method reference
 - **[API Series Documentation](docs/API_SERIES.md)**: New pandas-enhanced methods
+- **[API Frame Documentation](docs/API_FRAME.md)**: `baseDf` multi-channel container reference
 - **[Examples](docs/EXAMPLES.md)**: Cookbook of common use cases
 - **[Changelog](docs/CHANGELOG.md)**: Version history and updates
 - **[Migration Guide](MIGRATION_GUIDE.md)**: Upgrading from earlier versions

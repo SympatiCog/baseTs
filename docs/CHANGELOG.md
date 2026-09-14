@@ -5,6 +5,83 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — `baseDf`: many `baseTs` series on one shared index
+
+### Added — the `baseDf` container (`baseTs/frame.py`, `baseTs/frame_meta.py`, `baseTs/frame_average.py`)
+
+The "Multi-dimensional support" line in this file's own unscheduled-ideas list
+(below) is now shipped, not aspirational: `baseDf` holds many time series —
+channels, ROIs, electrodes — as columns of one table sharing a single index,
+and applies any `baseTs` transform or measurement to every column at once.
+`from baseTs import baseDf` (`baseTs/__init__.py`).
+
+**Deliberately DataFrame-*backed*, not DataFrame-*subclassed*.** A
+`pd.DataFrame` subclass exposes a block manager, `_constructor_sliced` firing
+on every column access, and more `__finalize__` entry points than `pd.Series`
+— the exact category of pandas-internals bug `TimeSeriesData`'s metadata
+plumbing already exists to survive on the `Series` side. `baseDf` instead
+holds three plain pieces of state (a `pd.DataFrame` of values, a `pd.DataFrame`
+of one row of metadata per column, and four scalars describing the shared
+index) and forwards to `baseTs` explicitly rather than inheriting 270+ pandas
+methods for free. `.df` is the escape hatch when a caller needs a pandas
+method this file doesn't forward. Full reasoning in
+`docs/superpowers/specs/2026-09-13-basedf-multichannel-design.md`
+("Decision 1"); full method reference in `docs/API_FRAME.md`.
+
+Built as nine TDD tasks against a plan with an eight-finding adversarial pass
+taken *before* implementation started (`fcc6cfa`): entry points (`from_df`,
+`from_series`), indexing (`select()`, `__getitem__` by label/list/mask/query),
+broadcast of every `baseTs` transform and measurement (`falff`,
+`relative_band_power`, `get_statistics`, `detect_outliers`, `get_peaks`,
+`get_peak_freq`, `compute_fft_power`, `get_frequency_content`), correlation
+(`correlation_with` against a seed series, `correlation_matrix`), averaging
+(`average()`, `average_by()` for grouped reduction), and `copy()`.
+
+### Fixed — three adversarial review passes against the running implementation, not just the plan
+
+Two rounds of Anthropic-model review plus one non-Anthropic consensus round
+(two independent panelists from a different model lineage) each traced
+`frame.py` against live code rather than reading it. Confirmed, reproduced
+findings only — Round 1 fixed 10, the consensus round fixed 8 of 13 raised (5
+did not reproduce), each landing 16 new regression tests
+(`f2ca8f6`, `a70543a`). Representative fixes:
+
+- `from_series` compared `ts_offset` but not `has_timestamp_offset` — two
+  series sharing a numeric offset where only one declared it explicitly
+  passed silently, and the frame took the first series' flag for every
+  column.
+- `copy(deep=True)` didn't isolate mutable object-dtype cells (history lists,
+  `outlier_filter`) — pandas' `DataFrame.copy(deep=True)` copies the block
+  manager, not the Python objects inside it. A copy's history mutation leaked
+  back into the original, contradicting `copy()`'s own contract. Now follows
+  `baseTs`'s own `deepcopy_metadata_value` rule.
+- A zero-column frame built without error and crashed three calls later
+  inside `_build_col_meta` with a bare pandas `KeyError` naming internal
+  field names — now refused explicitly at construction.
+- `average_by`'s strict field reindex dropped every user attribute from the
+  result, including the grouping key itself. `min_count` was coerced with a
+  bare `int()`, silently truncating `1.5` to `1`.
+- `average_by` silently dropped rows whose grouping key was `NaN` (pandas'
+  groupby default) instead of the documented empty-selection refusal.
+- `_broadcast` and `average_by` built `col_meta` without `dtype=object`,
+  unlike the two other construction sites — silently narrowing
+  `is_filtered`/`signal_name` to `numpy.bool_`/native `str` and breaking the
+  `is True`/`is False` identity checks the suite relies on.
+
+A fourth pass after merge (`f2ca8f6` → `24d675a`, found while verifying the
+`__getitem__` fix): `_is_listlike` includes `tuple`, so a tuple that is
+*itself* an existing column label — `average_by`'s own multi-key grouping
+labels result columns `("DMN", "L")` — was iterated as a two-item selector
+instead of read as one label. `frame[("DMN", "L")]` raised `"no such
+column(s): ['DMN', 'L']"` instead of returning that column. Fixed in both
+`__getitem__` and `_resolve_labels` (which `select()`, `average()` and
+`average_by()`'s `select=` all go through) by checking the tuple as a scalar
+label first when it exists as one.
+
+Full suite: 2494 passed after Round 1, 2510 after the consensus round, 2511
+passed as of this entry (2319 at the last full-suite count, before `baseDf`).
+flake8 and mypy clean on every changed file throughout.
+
 ## [Unreleased] — two cpCST figures: the staircase trap, and a test-retest outcome
 
 ### Added — `staircase_trap.png` and `test_retest.png`
@@ -4387,7 +4464,8 @@ a 2.0.0 that never shipped; none of it is scheduled and no dates are promised.
 - **Batch processing**: tools for processing multiple time series
 
 ### Further out
-- **Multi-dimensional support**: multi-channel time series
+- ~~**Multi-dimensional support**: multi-channel time series~~ — shipped as
+  `baseDf`, see the entry above.
 - **Machine learning integration**: built-in feature extraction and anomaly detection
 - **Advanced resampling**: non-uniform resampling and gap-filling algorithms
 - **Streaming support**: real-time time series processing
