@@ -17,6 +17,7 @@ from .frame_meta import (
     COL_META_FIELDS,
     _IndexMeta,
     default_col_meta_row,
+    harvest_col_meta,
     hydrate_column,
     refuse_reserved_columns,
 )
@@ -99,6 +100,153 @@ class baseDf:
         )
         self._col_meta = self._build_col_meta(col_meta)
         self._check_invariants()
+
+    @classmethod
+    def from_df(
+        cls,
+        df: pd.DataFrame,
+        time_col: str = "time",
+        value_cols: Optional[Sequence[Hashable]] = None,
+        freq: float = np.nan,
+        ts_offset: float = np.nan,
+        col_meta: Optional[pd.DataFrame] = None,
+    ) -> "baseDf":
+        """Build a frame from a wide table: one time column, many value columns.
+
+        Args:
+            df: The wide table.
+            time_col: Column holding the time values, in seconds.
+            value_cols: Columns to take. Defaults to every numeric column
+                except ``time_col``.
+            freq: Declared sampling rate in Hz.
+            ts_offset: Origin the index seconds are counted from.
+            col_meta: Per-column user attributes.
+
+        Returns:
+            baseDf: The frame.
+
+        Raises:
+            ValidationError: If ``time_col`` is absent, or a requested value
+                column is absent or non-numeric.
+        """
+        if time_col not in df.columns:
+            raise ValidationError(
+                f"no time column {time_col!r} in the table. Columns present: "
+                f"{list(df.columns)!r}; pass time_col= to name the right one."
+            )
+        if value_cols is None:
+            chosen: list = [c for c in df.columns
+                            if c != time_col and pd.api.types.is_numeric_dtype(df[c])]
+            refused = [c for c in df.columns
+                       if c != time_col and not pd.api.types.is_numeric_dtype(df[c])]
+            if refused:
+                raise ValidationError(
+                    f"these columns are not numeric and cannot be time series: "
+                    f"{refused!r}. Pass value_cols= to choose explicitly, or "
+                    f"drop them first."
+                )
+        else:
+            chosen = list(value_cols)
+            missing = [c for c in chosen if c not in df.columns]
+            if missing:
+                raise ValidationError(
+                    f"no such column(s): {missing!r}. Columns present: "
+                    f"{list(df.columns)!r}"
+                )
+        if not df[time_col].is_monotonic_increasing:
+            df = df.sort_values(time_col)
+        return cls(
+            df[chosen],
+            times=np.asarray(df[time_col], dtype=float).tolist(),
+            freq=freq,
+            ts_offset=ts_offset,
+            col_meta=col_meta,
+        )
+
+    @classmethod
+    def from_series(
+        cls,
+        series: Sequence[Any],
+        labels: Optional[Sequence[Hashable]] = None,
+    ) -> "baseDf":
+        """Build a frame from existing baseTs objects sharing one index.
+
+        Each series' own metadata becomes its col_meta row, so nothing is lost
+        on the way in.
+
+        Args:
+            series: The baseTs objects, all on the same index.
+            labels: Column labels. Defaults to each series' ``signal_name``,
+                falling back to its position.
+
+        Returns:
+            baseDf: The frame.
+
+        Raises:
+            ValidationError: On an empty list, mismatched indices, or
+                conflicting freq/ts_offset declarations.
+        """
+        items = list(series)
+        if not items:
+            raise ValidationError(
+                "from_series needs at least one baseTs; there is nothing to "
+                "put on a shared index."
+            )
+        first = items[0]
+        names = (list(labels) if labels is not None
+                 else [(ts.signal_name or f"c{i}") for i, ts in enumerate(items)])
+        if len(names) != len(items):
+            raise ValidationError(
+                f"got {len(names)} label(s) for {len(items)} series."
+            )
+
+        index_meta = _IndexMeta.from_series(first)
+        for label, ts in zip(names, items):
+            if not first.index.equals(ts.index):
+                raise ValidationError(
+                    f"{label!r} is on a different index from {names[0]!r}; "
+                    f"baseDf needs one shared index. Use baseTs.align_with() "
+                    f"to put them on a common index first."
+                )
+            other = _IndexMeta.from_series(ts)
+            if other.ts_offset != index_meta.ts_offset:
+                raise ValidationError(
+                    f"{label!r} declares ts_offset={other.ts_offset!r} but "
+                    f"{names[0]!r} declares {index_meta.ts_offset!r}; one "
+                    f"frame has one origin."
+                )
+            same_freq = (
+                (np.isnan(other.declared_freq) and np.isnan(index_meta.declared_freq))
+                or other.declared_freq == index_meta.declared_freq
+            )
+            if not same_freq:
+                raise ValidationError(
+                    f"{label!r} declares freq={other.declared_freq!r} but "
+                    f"{names[0]!r} declares {index_meta.declared_freq!r}; one "
+                    f"frame has one sampling rate."
+                )
+
+        values = pd.DataFrame(
+            {label: np.asarray(ts.data, dtype=float)
+             for label, ts in zip(names, items)},
+            index=pd.Index(np.asarray(first.index, dtype=float)),
+            columns=list(names),
+        )
+        rows = {label: harvest_col_meta(ts) for label, ts in zip(names, items)}
+        # dtype=object, matching _build_col_meta: several fields are
+        # non-scalar, and letting pandas infer a narrow dtype for a column
+        # that happens to be uniform (e.g. every is_filtered starts False)
+        # would silently promote a Python bool to numpy.bool_, breaking
+        # identity/equality checks callers make against it.
+        table = pd.DataFrame.from_dict(rows, orient="index", dtype=object)
+        table = table.reindex(list(names))[list(COL_META_FIELDS)]
+
+        frame = object.__new__(cls)
+        frame._df = values
+        frame._col_meta = table
+        frame._index_meta = index_meta
+        frame._check_invariants()
+        return frame
 
     def _build_col_meta(self, user: Optional[pd.DataFrame]) -> pd.DataFrame:
         """Compose the maintained fields with any user attributes."""
