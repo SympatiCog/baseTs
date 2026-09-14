@@ -8,6 +8,7 @@ the design spec for why that decision was taken.
 """
 from __future__ import annotations
 
+import copy as _copy_module
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -45,6 +46,22 @@ def _is_listlike(key: Any) -> bool:
     return isinstance(key, (list, tuple, set, pd.Index, np.ndarray, pd.Series))
 
 
+def _deepcopy_if_mutable(value: Any) -> Any:
+    """Deep-copy a mutable metadata value, sharing everything else.
+
+    Used by ``baseDf.copy()``: matches ``baseTs``'s own
+    ``deepcopy_metadata_value`` rule (deep-copy a list/dict/ndarray, share
+    everything else, e.g. an ``outlier_filter`` instance). A named function
+    rather than an inline lambda so its return type isn't inferred down to
+    pandas-stubs' narrow ``Series.apply`` scalar union, which a list/dict
+    genuinely violates even though the object-dtype column holds them fine
+    at runtime.
+    """
+    if isinstance(value, (list, dict, np.ndarray)):
+        return _copy_module.deepcopy(value)
+    return value
+
+
 class baseDf:
     """A set of time series sharing one index.
 
@@ -79,6 +96,20 @@ class baseDf:
                 reserved ``col_meta`` names, or labels not present in the data.
         """
         df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
+
+        if df.shape[1] == 0:
+            # Without this, a zero-column frame builds fine here and then
+            # fails deep inside _build_col_meta with a bare pandas KeyError
+            # naming internal field names, not this data - the invariant
+            # "self._df.columns is never empty" that _broadcast's own
+            # comment already assumes was true only by accident of that
+            # crash, not by a deliberate refusal. Found in
+            # post-implementation review.
+            raise ValidationError(
+                "baseDf needs at least one column: an empty frame has "
+                "nothing to broadcast a transform or an average over. "
+                "Pass data with at least one value column."
+            )
 
         if df.columns.has_duplicates:
             duplicated = sorted({str(c) for c in df.columns[df.columns.duplicated()]})
@@ -240,11 +271,20 @@ class baseDf:
                     f"to put them on a common index first."
                 )
             other = _IndexMeta.from_series(ts)
-            if other.ts_offset != index_meta.ts_offset:
+            # ts_offset alone is not enough: two series can share a numeric
+            # ts_offset (e.g. both 0.0) while one declared it explicitly and
+            # the other never set an origin at all - checking only the value
+            # let a real difference through, and the frame then took the
+            # first series' has_timestamp_offset for every column, silently
+            # misreporting the other's. Found in post-implementation review.
+            if (other.ts_offset != index_meta.ts_offset
+                    or other.has_timestamp_offset != index_meta.has_timestamp_offset):
                 raise ValidationError(
-                    f"{label!r} declares ts_offset={other.ts_offset!r} but "
-                    f"{names[0]!r} declares {index_meta.ts_offset!r}; one "
-                    f"frame has one origin. Reconcile the two series' "
+                    f"{label!r} declares ts_offset={other.ts_offset!r} "
+                    f"(has_timestamp_offset={other.has_timestamp_offset}) but "
+                    f"{names[0]!r} declares {index_meta.ts_offset!r} "
+                    f"(has_timestamp_offset={index_meta.has_timestamp_offset}); "
+                    f"one frame has one origin. Reconcile the two series' "
                     f"ts_offset before combining them, or drop it from "
                     f"whichever one set it in error."
                 )
@@ -455,7 +495,18 @@ class baseDf:
         This mirrors pandas' own ``__getitem__`` contract deliberately, which
         is the one place this class returns two different types from one call.
         """
-        if _is_listlike(key):
+        # A tuple is list-like by _is_listlike's own definition, but
+        # average_by's multi-key grouping labels its result columns with
+        # tuples (e.g. ("DMN", "L")) - so a tuple that IS an existing column
+        # must read as that one column, not as a two-label selector. Checked
+        # only for tuples: every other listlike type (list, set, ndarray,
+        # Series, Index) is unhashable, so `in` on it would itself raise
+        # TypeError rather than answer False. Found in post-implementation
+        # review: frame[("DMN", "L")] on an average_by(["network","hemi"])
+        # result raised "no such column(s): ['DMN', 'L']" instead of
+        # returning that column.
+        is_existing_tuple_label = isinstance(key, tuple) and key in self._df.columns
+        if _is_listlike(key) and not is_existing_tuple_label:
             return self.select(select=list(key))
         if key not in self._df.columns:
             raise ValidationError(
@@ -539,7 +590,20 @@ class baseDf:
         Returns:
             baseDf: The copy.
         """
-        return self._with(self._df.copy(deep=deep), self._col_meta.copy(deep=deep))
+        new_col_meta = self._col_meta.copy(deep=deep)
+        if deep:
+            # pd.DataFrame.copy(deep=True) copies the block manager, not the
+            # Python objects living in its object-dtype cells - so without
+            # this, a copy's history list is the SAME list object as the
+            # original's, and appending to one appends to both. Follows
+            # baseTs's own established rule (deepcopy_metadata_value):
+            # deep-copy a list/dict/ndarray, share everything else.
+            # outlier_filter is deliberately left shared, matching
+            # hydrate_column's comment on baseTs.copy() doing the same.
+            # Found in post-implementation review.
+            for field in ("history", "outlier_indices", "lowess_fit"):
+                new_col_meta[field] = new_col_meta[field].apply(_deepcopy_if_mutable)
+        return self._with(self._df.copy(deep=deep), new_col_meta)
 
     #: Every baseTs method annotated as returning a baseTs that is *not*
     #: broadcast. `copy` is excluded because the frame has its own.
@@ -870,6 +934,17 @@ class baseDf:
             ValidationError: If ``other`` is not a baseDf, or the two frames
                 share no timepoints.
         """
+        if method not in ("pearson", "kendall", "spearman"):
+            # Unlike correlation_with, which delegates to baseTs.correlation_
+            # with per column and so already inherits that method's own
+            # validation, this method calls DataFrame.corrwith directly - a
+            # separate code path with no validation of its own, that would
+            # otherwise leak pandas' own bare ValueError. Found in post-
+            # implementation review.
+            raise ValidationError(
+                f"method must be 'pearson', 'kendall' or 'spearman', got "
+                f"{method!r}."
+            )
         if other is None:
             other = self
         if not isinstance(other, baseDf):
@@ -921,13 +996,31 @@ class baseDf:
                 )
             return np.asarray(block.mean(axis=1, skipna=False), dtype=float), 0
         counts = np.asarray(block.notna().sum(axis=1), dtype=int)
-        if min_count is not None and int(min_count) < 1:
-            raise ValidationError(
-                f"min_count must be at least 1 contributor, got {min_count!r}. "
-                f"A floor below 1 would keep timepoints with zero "
-                f"contributors, which have nothing to average - drop "
-                f"min_count to use the default floor of 1, or pass 1 or more."
+        if min_count is not None:
+            # A bare int(min_count) below silently truncated 1.5 to 1 and
+            # gave a result whose meaning depended on an invalid input with
+            # no complaint, and let a string or NaN reach it and leak a bare
+            # ValueError instead of this module's own contract. Validate the
+            # type before touching it. Found in post-implementation review.
+            is_whole_number = (
+                isinstance(min_count, (int, np.integer))
+                or (isinstance(min_count, (float, np.floating))
+                    and not np.isnan(min_count) and float(min_count).is_integer())
             )
+            if isinstance(min_count, bool) or not is_whole_number:
+                raise ValidationError(
+                    f"min_count must be a whole number, got {min_count!r} "
+                    f"({type(min_count).__name__}). Pass an integer "
+                    f"contributor count, or drop min_count."
+                )
+            if int(min_count) < 1:
+                raise ValidationError(
+                    f"min_count must be at least 1 contributor, got "
+                    f"{min_count!r}. A floor below 1 would keep timepoints "
+                    f"with zero contributors, which have nothing to average "
+                    f"- drop min_count to use the default floor of 1, or "
+                    f"pass 1 or more."
+                )
         floor = 1 if min_count is None else int(min_count)
         values = np.asarray(block.mean(axis=1, skipna=True), dtype=float)
         values = np.where(counts >= floor, values, np.nan)
@@ -1007,7 +1100,18 @@ class baseDf:
         # with `TypeError: unhashable type: 'list'`.
         _UNGROUPABLE_FIELDS = ("history", "outlier_indices", "lowess_fit",
                                "outlier_filter")
+        if not isinstance(by, str) and not _is_listlike(by):
+            raise ValidationError(
+                f"by must be a col_meta column name or a list of names, not "
+                f"a bare {type(by).__name__} ({by!r}). Pass a string, or a "
+                f"list of one or more column names."
+            )
         keys = [by] if isinstance(by, str) else list(by)
+        if not keys:
+            raise ValidationError(
+                "by is empty: there is nothing to group on. Pass a col_meta "
+                "column name, or a list of one or more names."
+            )
         missing = [k for k in keys if k not in self._col_meta.columns]
         if missing:
             raise ValidationError(
@@ -1063,6 +1167,20 @@ class baseDf:
         # on this path too during post-implementation review.
         new_col_meta = pd.DataFrame.from_dict(rows, orient="index", dtype=object)
         new_col_meta = new_col_meta.reindex(order)[list(COL_META_FIELDS)]
+        # The strict reindex above drops every user attribute, including the
+        # grouping key(s) themselves - the one attribute that IS still
+        # well-defined per group (every member shares it by construction,
+        # unlike an arbitrary other user column, which could disagree across
+        # members with no obvious rule for picking a winner). Carry those
+        # back so `got.col_meta.at["DMN", "network"]` still answers "DMN"
+        # rather than vanishing with no trace. Found in post-implementation
+        # review.
+        for i, key_name in enumerate(keys):
+            if len(keys) > 1:
+                new_col_meta[key_name] = np.asarray(
+                    [cast(tuple, g)[i] for g in order], dtype=object)
+            else:
+                new_col_meta[key_name] = np.asarray(order, dtype=object)
         return self._with(new_df, new_col_meta)
 
 
