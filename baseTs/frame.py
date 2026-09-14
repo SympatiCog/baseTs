@@ -155,6 +155,13 @@ class baseDf:
                 f"no time column {time_col!r} in the table. Columns present: "
                 f"{list(df.columns)!r}; pass time_col= to name the right one."
             )
+        if not pd.api.types.is_numeric_dtype(df[time_col]):
+            raise ValidationError(
+                f"time column {time_col!r} is not numeric (dtype "
+                f"{df[time_col].dtype}), so it cannot become an index of "
+                f"seconds. Pass time_col= to name the right column, or "
+                f"convert it to seconds first."
+            )
         if value_cols is None:
             chosen: list = [c for c in df.columns
                             if c != time_col and pd.api.types.is_numeric_dtype(df[c])]
@@ -218,7 +225,10 @@ class baseDf:
                  else [(ts.signal_name or f"c{i}") for i, ts in enumerate(items)])
         if len(names) != len(items):
             raise ValidationError(
-                f"got {len(names)} label(s) for {len(items)} series."
+                f"got {len(names)} label(s) for {len(items)} series; they "
+                f"must match one-to-one. Pass exactly one label per series, "
+                f"or omit labels= to derive them from each series' "
+                f"signal_name."
             )
 
         index_meta = _IndexMeta.from_series(first)
@@ -234,7 +244,9 @@ class baseDf:
                 raise ValidationError(
                     f"{label!r} declares ts_offset={other.ts_offset!r} but "
                     f"{names[0]!r} declares {index_meta.ts_offset!r}; one "
-                    f"frame has one origin."
+                    f"frame has one origin. Reconcile the two series' "
+                    f"ts_offset before combining them, or drop it from "
+                    f"whichever one set it in error."
                 )
             same_freq = (
                 (np.isnan(other.declared_freq) and np.isnan(index_meta.declared_freq))
@@ -244,7 +256,9 @@ class baseDf:
                 raise ValidationError(
                     f"{label!r} declares freq={other.declared_freq!r} but "
                     f"{names[0]!r} declares {index_meta.declared_freq!r}; one "
-                    f"frame has one sampling rate."
+                    f"frame has one sampling rate. Pass the same freq to "
+                    f"both series' constructors, or leave it undeclared on "
+                    f"whichever one shouldn't set it."
                 )
 
         values = pd.DataFrame(
@@ -281,6 +295,14 @@ class baseDf:
         table = pd.DataFrame.from_dict(rows, orient="index", dtype=object)
         table = table.reindex(self._df.columns)[list(COL_META_FIELDS)]
         if user is not None:
+            if user.index.has_duplicates:
+                duplicated = sorted({str(i) for i in
+                                     user.index[user.index.duplicated()]})
+                raise ValidationError(
+                    f"col_meta has duplicate row label(s) {duplicated}: a "
+                    f"column can only have one row of metadata. De-duplicate "
+                    f"the col_meta index before passing it."
+                )
             unknown = [i for i in user.index if i not in set(self._df.columns)]
             if unknown:
                 raise ValidationError(
@@ -348,19 +370,43 @@ class baseDf:
                 caller's order for an explicit list.
 
         Raises:
-            ValidationError: On unknown labels, a mask of the wrong length, or
-                a selection matching nothing.
+            ValidationError: On unknown labels, a mask of the wrong length,
+                a repeated label, an invalid ``where`` query, a ``select``
+                that isn't list-like, or a selection matching nothing.
         """
         labels: List[Hashable] = list(self._df.columns)
         if where is not None:
-            labels = list(self._col_meta.query(where).index)
+            try:
+                labels = list(self._col_meta.query(where).index)
+            except ValidationError:
+                raise
+            except Exception as exc:
+                # col_meta.query() runs pandas' own expression engine, which
+                # raises its own SyntaxError/UndefinedVariableError/etc. for a
+                # typo or an unknown column - a routine mistake on a
+                # documented, first-class parameter, not an edge case. Found
+                # in post-implementation review: both leaked uncaught.
+                raise ValidationError(
+                    f"where={where!r} is not a valid query against col_meta: "
+                    f"{exc}. col_meta's columns are "
+                    f"{list(self._col_meta.columns)!r} - check the column "
+                    f"name and the query syntax."
+                ) from exc
         if select is not None:
+            if not _is_listlike(select):
+                raise ValidationError(
+                    f"select must be a list of labels or a boolean mask, not "
+                    f"a bare {type(select).__name__} ({select!r}). Wrap a "
+                    f"single label in a list: select=[{select!r}]."
+                )
             values = list(select)
             if values and all(isinstance(v, (bool, np.bool_)) for v in values):
                 if len(values) != len(self._df.columns):
                     raise ValidationError(
                         f"a boolean column mask must have one entry per column: "
-                        f"got {len(values)} for {len(self._df.columns)} columns."
+                        f"got {len(values)} for {len(self._df.columns)} "
+                        f"columns. Pass exactly one True/False per column, "
+                        f"or a list of labels instead."
                     )
                 chosen = [c for c, keep in zip(self._df.columns, values) if keep]
             else:
@@ -370,6 +416,14 @@ class baseDf:
                     raise ValidationError(
                         f"no such column(s): {unknown!r}. Columns present: "
                         f"{list(self._df.columns)!r}"
+                    )
+                duplicated = sorted({c for c in chosen if chosen.count(c) > 1})
+                if duplicated:
+                    raise ValidationError(
+                        f"select repeats column(s) {duplicated!r}. A "
+                        f"repeated label would be counted twice in an "
+                        f"average, or produce a frame with a duplicate "
+                        f"column - list each label once."
                     )
             allowed = set(labels)
             labels = [c for c in chosen if c in allowed]
@@ -546,14 +600,33 @@ class baseDf:
             if index is None:
                 index, first_out = out.index, out
             elif not index.equals(out.index):
+                first_label = list(self._df.columns)[0]
+                if len(out.index) != len(index):
+                    # Different sample counts: that alone is the whole story.
+                    divergence = (f"{len(out.index)} samples vs "
+                                  f"{len(index)} samples")
+                else:
+                    # Same count, different values - reporting "N samples"
+                    # for both sides would say nothing, so name where and by
+                    # how much they actually diverge. Found in
+                    # post-implementation review: the length-only message
+                    # gave identical numbers for both columns here.
+                    mismatched = np.asarray(index, dtype=float) != np.asarray(
+                        out.index, dtype=float)
+                    first_bad = int(np.argmax(mismatched))
+                    divergence = (
+                        f"same length ({len(index)} samples) but "
+                        f"{int(mismatched.sum())} differing value(s), first "
+                        f"at position {first_bad} ({out.index[first_bad]!r} "
+                        f"vs {index[first_bad]!r})"
+                    )
                 raise ValidationError(
                     f"{name}() returned a different index for column {label!r} "
-                    f"({len(out.index)} samples) than for "
-                    f"{list(self._df.columns)[0]!r} ({len(index)} samples). "
-                    f"baseDf requires every column to share one index, so a "
-                    f"transform whose output index depends on its data values "
-                    f"cannot be broadcast. Pull the columns out with "
-                    f"frame[label] and handle them individually."
+                    f"than for {first_label!r}: {divergence}. baseDf requires "
+                    f"every column to share one index, so a transform whose "
+                    f"output index depends on its data values cannot be "
+                    f"broadcast. Pull the columns out with frame[label] and "
+                    f"handle them individually."
                 )
             values[label] = np.asarray(out.data, dtype=float)
             rows[label] = harvest_col_meta(out)
@@ -562,7 +635,15 @@ class baseDf:
         # construction), so the loop above ran at least once and both are set.
         assert index is not None and first_out is not None
         new_df = pd.DataFrame(values, index=index, columns=self._df.columns)
-        harvested = pd.DataFrame.from_dict(rows, orient="index").reindex(self._df.columns)
+        # dtype=object, matching _build_col_meta/from_series: without it, a
+        # column that happens to be uniform (e.g. every is_filtered now False)
+        # gets narrowed to numpy.bool_/native str on assignment below, silently
+        # breaking the `is True`/`is False` identity checks baseTs and this
+        # test suite make against it. Found in post-implementation review -
+        # confirmed live that a broadcast column's is_filtered came back
+        # numpy.bool_ rather than the Python bool it started as.
+        harvested = pd.DataFrame.from_dict(
+            rows, orient="index", dtype=object).reindex(self._df.columns)
         # Copy rather than rebuild, so user attributes ride along untouched.
         new_col_meta = self._col_meta.copy()
         for field in COL_META_FIELDS:
@@ -840,6 +921,13 @@ class baseDf:
                 )
             return np.asarray(block.mean(axis=1, skipna=False), dtype=float), 0
         counts = np.asarray(block.notna().sum(axis=1), dtype=int)
+        if min_count is not None and int(min_count) < 1:
+            raise ValidationError(
+                f"min_count must be at least 1 contributor, got {min_count!r}. "
+                f"A floor below 1 would keep timepoints with zero "
+                f"contributors, which have nothing to average - drop "
+                f"min_count to use the default floor of 1, or pass 1 or more."
+            )
         floor = 1 if min_count is None else int(min_count)
         values = np.asarray(block.mean(axis=1, skipna=True), dtype=float)
         values = np.where(counts >= floor, values, np.nan)
@@ -908,8 +996,17 @@ class baseDf:
 
         Raises:
             ValidationError: If a grouping column is absent from ``col_meta``,
-                or the selection matches nothing.
+                the selection matches nothing, or a selected column has no
+                value for the grouping key(s).
         """
+        # Not scalar (a list, an array-or-None, or a per-column filter
+        # instance), so pandas' groupby cannot hash them as a key - it fails
+        # with a bare TypeError deep inside groupby, naming neither the
+        # field nor a remedy. Refuse explicitly instead. Found in
+        # post-implementation review: `average_by(by="history")` crashed
+        # with `TypeError: unhashable type: 'list'`.
+        _UNGROUPABLE_FIELDS = ("history", "outlier_indices", "lowess_fit",
+                               "outlier_filter")
         keys = [by] if isinstance(by, str) else list(by)
         missing = [k for k in keys if k not in self._col_meta.columns]
         if missing:
@@ -917,13 +1014,41 @@ class baseDf:
                 f"no such col_meta column(s) to group by: {missing!r}. "
                 f"Available: {[c for c in self._col_meta.columns]!r}"
             )
+        ungroupable = [k for k in keys if k in _UNGROUPABLE_FIELDS]
+        if ungroupable:
+            raise ValidationError(
+                f"col_meta field(s) {ungroupable!r} cannot be grouped by: "
+                f"each holds a non-scalar or per-column object, not a "
+                f"comparable value. Group by a scalar field instead, such as "
+                f"a user attribute like 'network', or 'signal_name'."
+            )
         labels = self._resolve_labels(select=select, where=where)
         subset = self._col_meta.loc[labels]
 
+        # pandas' groupby drops a NaN key by default, which would silently
+        # drop the column from the result with no error, warning, or history
+        # entry - and if EVERY selected column's key were NaN, the loop below
+        # would run zero times and the reindex after it would raise a raw
+        # pandas KeyError instead of the ValidationError every other empty
+        # outcome in this module gets. Refuse explicitly instead: a group a
+        # column cannot be assigned to is a decision for the caller, not a
+        # column to make disappear. Found in post-implementation review.
+        no_key = subset[keys].isna().any(axis=1)
+        if no_key.any():
+            bad = [label for label, missing_key in zip(labels, no_key) if missing_key]
+            raise ValidationError(
+                f"column(s) {bad!r} have no value for grouping key(s) "
+                f"{keys!r}, so they cannot be assigned to a group. Give them "
+                f"a value in col_meta, or exclude them first with select= or "
+                f"where=."
+            )
+
         values: Dict[Hashable, np.ndarray] = {}
         rows: Dict[Hashable, Dict[str, Any]] = {}
-        for group, members in subset.groupby(keys[0] if len(keys) == 1 else keys,
-                                             sort=True):
+        # dropna=False is now documentation, not a behavior change: the
+        # refusal above already ruled out every NaN key among these labels.
+        for group, members in subset.groupby(
+                keys[0] if len(keys) == 1 else keys, sort=True, dropna=False):
             group_labels = list(members.index)
             column, reduced = self._average_values(group_labels, skipna, min_count)
             values[group] = column
@@ -933,7 +1058,10 @@ class baseDf:
 
         order = list(values.keys())
         new_df = pd.DataFrame(values, index=self._df.index, columns=order)
-        new_col_meta = pd.DataFrame.from_dict(rows, orient="index")
+        # dtype=object, matching _build_col_meta/from_series/_broadcast: see
+        # those comments - the same numpy.bool_ narrowing was confirmed live
+        # on this path too during post-implementation review.
+        new_col_meta = pd.DataFrame.from_dict(rows, orient="index", dtype=object)
         new_col_meta = new_col_meta.reindex(order)[list(COL_META_FIELDS)]
         return self._with(new_df, new_col_meta)
 
