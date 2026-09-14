@@ -1200,8 +1200,18 @@ def _frame() -> baseDf:
 
 
 def _lone(label: str) -> baseTs:
+    # history=[] explicitly, matching how hydrate_column builds a frame's
+    # column: passing an explicit list (even empty) takes baseTs.__init__'s
+    # "else" branch, not the "history unset" branch that mints a "Created
+    # baseTs object with N samples" entry (core.py, TimeSeriesData.__init__).
+    # Without this, _lone would carry that entry and frame_out[label] would
+    # not (the frame deliberately suppresses it - a hydrated column is an
+    # internal view, not a fresh user construction), so an otherwise-identical
+    # transform call would produce histories differing only by that phantom
+    # entry, failing the equality check below for every single case. Verified
+    # live before writing this comment.
     return baseTs(data=_columns()[label], times=TIMES.copy(), freq=16.0,
-                  signal_name=label)
+                  signal_name=label, history=[])
 
 
 # (method name, positional args, keyword args)
@@ -2541,3 +2551,5 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - The Tech Stack line said "Python 3.12"; `setup.py` declares `python_requires=">=3.11"` and CI runs 3.11/3.12/3.13. Corrected, and flagged as a constraint for every implementer: no 3.12-only syntax.
 
 No task's file scope, metadata partition, `ValidationError` inheritance, `correlation_with` behavior, or measured return shapes needed correction — all independently confirmed against the running code.
+
+**Task 5's `_lone` fixture, found during pre-dispatch verification (2026-09-14, after Tasks 1-4 shipped).** `hydrate_column` passes `history` as an explicit list, even when empty, so a hydrated column takes `baseTs.__init__`'s "history given" branch and never gets the "Created baseTs object with N samples" entry the "history unset" branch mints - verified live. `_lone`, as originally written, did not pass `history=`, so it took the other branch and always carried that entry. Every one of the 39 parametrized equivalence tests would have failed on the final `history` assertion, not because the broadcast machinery was wrong, but because the two sides of the comparison were built through different construction paths. Fixed by having `_lone` also pass `history=[]`, matching the frame's own hydration convention - confirmed live that both sides then produce identical history after the same transform call.
