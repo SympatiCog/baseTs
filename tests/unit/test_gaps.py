@@ -77,6 +77,13 @@ class TestGaps:
         assert len(ts.gaps(max_gap=1.0)) == 10
         assert len(ts.gaps(max_gap=3.0)) == 0
 
+    def test_an_interval_exactly_max_gap_wide_is_not_a_gap(self):
+        """'Wider than max_gap' is strict: the boundary belongs to the data."""
+        t = np.array([0.0, 1.0, 2.0, 4.0, 5.0])   # one 2.0 s interval
+        ts = baseTs(np.arange(5.0), t)
+        assert len(ts.gaps(max_gap=2.0)) == 0
+        assert len(ts.gaps(max_gap=1.999)) == 1
+
     def test_start_and_end_are_the_bracketing_samples(self):
         ts = _crash_session(n_gaps=1)
         t = np.asarray(ts.times, float)
