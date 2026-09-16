@@ -2034,7 +2034,7 @@ print(session.gaps())                       # three rows, width 2.6 s, n_missing
 # session.lowpass_at(2.0, max_gap=0.5)      # would refuse with the same message
 
 runs = session.segments()                   # four contiguous runs, freq 30 Hz each
-grid = np.arange(0.0, 15.0, 1 / fs)         # common trial-time grid
+grid = np.arange(0.0, 20.0, 1 / fs)         # common trial-time grid, longer than any run
 stacked = []
 for run in runs:
     t0 = float(run.times[0])
@@ -2045,9 +2045,10 @@ for run in runs:
                                                 inplace=False))
 frame = baseDf.from_series(stacked, labels=[f"run{i}" for i in range(len(stacked))])
 recovery = frame.average(skipna=True, min_count=2)
-# recovery is NaN past the second-longest run; trim to the covered span before
-# any further filtering, since the filters refuse NaN gaps:
-covered = recovery.trimto_timepoints(0.0, 12.0)
+# The runs are 13.3, 16.6, 15.0 and 7.2 s long, so recovery is NaN from 15.0 s,
+# where fewer than two runs remain. Trim to the covered span before any
+# further filtering, since the filters refuse NaN gaps:
+covered = recovery.trimto_timepoints(0.0, 15.0)
 ```
 
 This comprehensive examples document provides practical, real-world usage patterns for baseTs with enhanced pandas Series capabilities, focusing on scientific applications across various domains including biophysical signals, environmental monitoring, experimental data analysis, and advanced frequency analysis techniques.

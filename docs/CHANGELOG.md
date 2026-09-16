@@ -48,9 +48,29 @@ that is the kind every event-structured recording produces.
 - `max_gap` validation is one function, `_validate_max_gap`, shared with
   `interp_to_uniform_grid`.
 
-Tests: `tests/unit/test_gaps.py` (83 cases, including every filter entry
-point with and without `max_gap`, the frame broadcast, and
-segment-then-filter as the remedy). Docs: `docs/API.md` (entries for
+Adversarial review of the first cut (a Claude reviewer with scratch-copy
+mutation testing, plus an external codex/agy panel) found and this PR fixes:
+`segments()` split at the first copy of a duplicated timestamp, putting the
+gap inside the next segment (it now splits on positions, not a searchsorted
+on the start value); an empty series or a decreasing index raised a bare
+`IndexError` (empty is now `[]`, decreasing is a `ValidationError`); a NaN
+timestamp made the median NaN and `gaps()` silently empty, so the filters
+ran across a real hole with no warning (`gaps()` and every filter now refuse
+a non-finite index, and `get_statistics()`/`info()` report the count as
+unavailable rather than raising); `n_missing` could be negative with a small
+explicit `max_gap` and rounded half-to-even (clamped, half-up); the warning
+pointed into `core.py` for the legacy aliases and into `frame.py` for a
+broadcast (the stacklevel is now counted to the first frame outside the
+package); a broadcast's identical per-column warnings were collapsed by
+Python's default filter and the refusal could not say which column (both
+now carry `signal_name`); the warning did not say how to silence timing
+jitter (it does). Mutation testing also showed `>` vs `>=` on the threshold
+survived; pinned.
+
+Tests: `tests/unit/test_gaps.py` (106 cases, including every filter entry
+point with and without `max_gap`, the frame broadcast, warning location and
+column naming, the index edge cases above, and segment-then-filter as the
+remedy). Docs: `docs/API.md` (entries for
 `gaps`, `segments`, the `max_gap` parameter on each filter, the new
 statistics keys), `docs/API_SERIES.md`, `docs/EXAMPLES.md`.
 

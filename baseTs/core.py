@@ -7,6 +7,8 @@ Created on Oct 19 2024
 from __future__ import annotations
 import math
 import numbers
+import os
+import sys
 import warnings
 
 import numpy as np
@@ -266,6 +268,27 @@ def _validate_max_gap(max_gap: Any) -> Optional[float]:
             f"got {max_gap!r}."
         )
     return float(max_gap)
+
+
+def _stacklevel_outside_package() -> int:
+    """The warnings.warn stacklevel that lands on the first caller outside
+    this package.
+
+    A fixed stacklevel pointed at core.py for the legacy aliases (one extra
+    frame) and at frame.py for a baseDf broadcast (two). Counting frames
+    until the filename leaves the package puts the warning on the user's
+    line in every case.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    level = 1
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if not filename.startswith(here + os.sep):
+            return level
+        frame = frame.f_back
+        level += 1
+    return level
 
 
 def _median_interval(times: np.ndarray) -> float:
@@ -1341,17 +1364,14 @@ class baseTs(TimeSeriesData):
         Raises:
             ValidationError: If ``max_gap`` is not a positive finite number.
         """
-        max_gap = _validate_max_gap(max_gap)
-        times = np.asarray(self.times, dtype=float)
+        times, widths, where, median_dt = self._gap_positions(max_gap)
         columns = ["start", "end", "width", "n_missing"]
-        if len(times) < 2:
-            return pd.DataFrame(columns=columns).astype(
-                {"start": float, "end": float, "width": float, "n_missing": int})
-        widths = np.diff(times)
-        median_dt = _median_interval(times)
-        where = np.flatnonzero(widths > self._gap_threshold(max_gap))
         if median_dt > 0:
-            n_missing = np.rint(widths[where] / median_dt).astype(int) - 1
+            # Half-up, not np.rint's half-to-even: 2.5 and 3.5 frames went
+            # opposite ways. Clamped at zero: an explicit max_gap below the
+            # median interval otherwise produced n_missing = -1.
+            n_missing = np.maximum(
+                np.floor(widths[where] / median_dt + 0.5).astype(int) - 1, 0)
         else:
             n_missing = np.zeros(len(where), dtype=int)
         return pd.DataFrame({
@@ -1360,6 +1380,53 @@ class baseTs(TimeSeriesData):
             "width": widths[where],
             "n_missing": n_missing,
         }, columns=columns)
+
+    def _gap_positions(self, max_gap: Optional[float]) -> tuple:
+        """The interval positions gaps() and segments() both work from.
+
+        One place for the index rules: every timestamp finite, and
+        non-decreasing. A NaN timestamp made the median NaN, every
+        comparison False, and gaps() silently empty - the filters then ran
+        across a real hole with no warning, the exact failure this exists
+        to prevent. A decreasing index has negative widths, all of which
+        exceed a negative threshold.
+
+        Args:
+            max_gap: As for gaps(), already validated or None.
+
+        Returns:
+            tuple: (times, widths, where, median_dt) - times as float, the
+            consecutive differences, the positions i whose interval
+            times[i]..times[i + 1] is a gap, and the median interval.
+            Below two samples where is empty and median_dt NaN.
+
+        Raises:
+            ValidationError: If the index has a non-finite timestamp or is
+                not non-decreasing.
+        """
+        max_gap = _validate_max_gap(max_gap)
+        times = np.asarray(self.times, dtype=float)
+        if not np.all(np.isfinite(times)):
+            bad = int(np.count_nonzero(~np.isfinite(times)))
+            raise ValidationError(
+                f"index has {bad} non-finite timestamp(s); an interval next to "
+                f"one has no width, so gaps cannot be found. Drop or repair "
+                f"those samples first."
+            )
+        widths = np.diff(times)
+        if len(widths) and np.any(widths < 0):
+            first = int(np.argmax(widths < 0))
+            raise ValidationError(
+                f"index must be non-decreasing to have gaps; it steps back at "
+                f"position {first + 1} ({times[first]!r} -> {times[first + 1]!r}). "
+                f"Sort the series first."
+            )
+        median_dt = _median_interval(times)
+        if len(times) < 2:
+            return times, widths, np.zeros(0, dtype=int), median_dt
+        threshold = max_gap if max_gap is not None else GAP_FACTOR * median_dt
+        where = np.flatnonzero(widths > threshold)
+        return times, widths, where, median_dt
 
     def segments(self, max_gap: Optional[float] = None) -> List["baseTs"]:
         """The contiguous runs between gaps, each as its own baseTs.
@@ -1383,11 +1450,14 @@ class baseTs(TimeSeriesData):
             ValidationError: If ``max_gap`` is not a positive finite number.
         """
         max_gap = _validate_max_gap(max_gap)
-        times = np.asarray(self.times, dtype=float)
+        times, _, where, _ = self._gap_positions(max_gap)
         data = np.asarray(self.data)
-        found = self.gaps(max_gap)
-        # A gap row's start is times[i]; the next segment begins at i + 1.
-        cuts = np.searchsorted(times, found["start"].to_numpy()) + 1
+        if len(times) == 0:
+            return []
+        # Positions, not a searchsorted on the start value: with a duplicated
+        # timestamp at a gap's start, searchsorted found the first copy and
+        # put the gap inside the next segment (adversarial review).
+        cuts = where + 1
         bounds = [0, *cuts.tolist(), len(times)]
         n = len(bounds) - 1
         threshold = self._gap_threshold(max_gap)
@@ -1431,7 +1501,12 @@ class baseTs(TimeSeriesData):
             return
         widest = found.iloc[int(np.argmax(found["width"].to_numpy()))]
         threshold = self._gap_threshold(max_gap)
-        where = (f"index has {len(found)} gap(s) wider than {threshold:.3g} s "
+        # The name, when there is one: a baseDf broadcast raises or warns
+        # from inside frame.py for every column, and without it the refusal
+        # could not say which column, while identical warning texts were
+        # collapsed to one by Python's default filter.
+        name = f"{self.signal_name!r}: " if self.signal_name else ""
+        where = (f"{name}index has {len(found)} gap(s) wider than {threshold:.3g} s "
                  f"(widest {widest['width']:.3g} s, {int(widest['n_missing'])} "
                  f"missing frame(s), starting at {widest['start']:.6g} s)")
         remedy = ("Split with segments() and filter each run, or regrid with "
@@ -1445,9 +1520,10 @@ class baseTs(TimeSeriesData):
         warnings.warn(
             f"{where}; {what} at {self.freq:.6g} Hz runs across them as if "
             f"they were single frames. Pass max_gap=<seconds> to refuse "
-            f"instead. {remedy}",
+            f"instead, or max_gap=<seconds wider than your timing jitter> to "
+            f"check only for real holes. {remedy}",
             UserWarning,
-            stacklevel=3,
+            stacklevel=_stacklevel_outside_package(),
         )
 
     def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False,
@@ -2380,10 +2456,17 @@ class baseTs(TimeSeriesData):
         }
         # The rate above is blind to the interior of the index; these say
         # whether it can be trusted. See gaps().
-        found = self.gaps()
         stats['median_dt'] = _median_interval(np.asarray(self.times, dtype=float))
-        stats['n_gaps'] = int(len(found))
-        stats['gapped_duration'] = float(found['width'].sum()) if len(found) else 0.0
+        try:
+            found = self.gaps()
+        except ValidationError:
+            # A non-finite or decreasing index: gaps() refuses, and a summary
+            # should still come back. NaN says "could not be counted".
+            stats['n_gaps'] = float('nan')
+            stats['gapped_duration'] = float('nan')
+        else:
+            stats['n_gaps'] = int(len(found))
+            stats['gapped_duration'] = float(found['width'].sum()) if len(found) else 0.0
         
         return stats
     
@@ -3264,7 +3347,14 @@ class baseTs(TimeSeriesData):
         for key, value in data_info.items():
             data_info[key] = round_values(value)
         
-        found = self.gaps()
+        try:
+            found = self.gaps()
+        except ValidationError as exc:
+            gap_count: Any = f"unavailable ({str(exc).split(';')[0]})"
+            gapped: Any = "unavailable"
+        else:
+            gap_count = int(len(found))
+            gapped = float(found["width"].sum()) if len(found) else 0.0
         times_info = {
             "Start": self.times[0],
             "End": self.times[-1],
@@ -3272,8 +3362,8 @@ class baseTs(TimeSeriesData):
             "Effective Frequency": self.freq,
             # Next to the rate, because the rate is blind to these and a
             # reader should see the 26.5-vs-30 Hz discrepancy with its cause.
-            f"Gaps (> {GAP_FACTOR}x median interval)": int(len(found)),
-            "Gapped Duration": float(found["width"].sum()) if len(found) else 0.0,
+            f"Gaps (> {GAP_FACTOR}x median interval)": gap_count,
+            "Gapped Duration": gapped,
             "Timestamp Offset": self.ts_offset
         }
         

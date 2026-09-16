@@ -101,6 +101,76 @@ class TestGaps:
             _uniform().gaps(max_gap=bad)
 
 
+class TestIndexEdgeCases:
+    """Findings from adversarial review of the first cut."""
+
+    def test_empty_series_has_no_gaps_and_no_segments(self):
+        ts = baseTs(np.array([]), np.array([]))
+        assert len(ts.gaps()) == 0
+        assert ts.segments() == []
+
+    def test_duplicate_timestamp_at_a_gap_start_splits_after_the_last_copy(self):
+        """searchsorted on the start value found the first copy, putting the
+        gap inside the next segment."""
+        t = np.array([0.0, 1.0, 1.0, 5.0, 6.0])
+        segs = baseTs(np.arange(5.0), t).segments(max_gap=2.0)
+        assert [list(np.asarray(s.times, float)) for s in segs] == [[0.0, 1.0, 1.0], [5.0, 6.0]]
+
+    def test_decreasing_index_is_refused(self):
+        ts = baseTs(np.arange(4.0), np.array([3.0, 2.0, 1.0, 0.0]))
+        with pytest.raises(ValidationError, match="non-decreasing"):
+            ts.gaps()
+        with pytest.raises(ValidationError, match="non-decreasing"):
+            ts.segments()
+
+    def test_nan_timestamp_is_refused_not_silently_gap_free(self):
+        """A NaN in the index made the median NaN, every comparison False,
+        and the filters ran across a real hole with no warning."""
+        t = np.arange(100) / FS
+        t = np.delete(t, np.arange(50, 60))
+        t[5] = np.nan
+        ts = baseTs(np.sin(np.arange(len(t))), t)
+        with pytest.raises(ValidationError, match="finite"):
+            ts.gaps()
+        with pytest.raises(ValidationError, match="finite"):
+            ts.lowpass_at(2.0)
+        with pytest.raises(ValidationError, match="finite"):
+            ts.gauss_filter(2.0)
+
+    def test_reporting_survives_a_bad_index(self, capsys):
+        t = np.arange(10.0)
+        t[3] = np.nan
+        ts = baseTs(np.arange(10.0), t)
+        stats = ts.get_statistics()
+        assert np.isnan(stats["n_gaps"]) and np.isnan(stats["gapped_duration"])
+        ts.info()
+        assert "unavailable" in capsys.readouterr().out
+
+    def test_n_missing_is_never_negative(self):
+        t = np.array([0.0, 1.0, 2.0, 2.2, 3.2, 4.2])
+        got = baseTs(np.arange(6.0), t).gaps(max_gap=0.1)   # every interval qualifies
+        assert len(got) == 5
+        assert (got["n_missing"] >= 0).all()
+        assert int(got.loc[got["width"] < 0.5, "n_missing"].iloc[0]) == 0
+
+    def test_half_frame_widths_round_up(self):
+        """np.rint rounds half to even, so 2.5 and 3.5 frames went opposite ways."""
+        t = np.concatenate([np.arange(0, 10.0), [11.5], np.arange(12.0, 20.0)])   # 9 -> 11.5
+        assert int(baseTs(np.arange(len(t)), t).gaps()["n_missing"].iloc[0]) == 2
+        t = np.concatenate([np.arange(0, 10.0), [12.5], np.arange(13.0, 20.0)])   # 9 -> 12.5
+        assert int(baseTs(np.arange(len(t)), t).gaps()["n_missing"].iloc[0]) == 3
+
+    def test_timing_jitter_does_not_count_as_gaps(self):
+        """Software-timestamped streams jitter; +/-30% must stay silent."""
+        rng = np.random.default_rng(1)
+        t = np.cumsum(DT * rng.uniform(0.7, 1.3, 3000))
+        ts = baseTs(np.sin(t), t)
+        assert len(ts.gaps()) == 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            ts.lowpass_at(2.0)
+
+
 class TestSegments:
     def test_one_more_segment_than_gaps(self):
         segs = _crash_session().segments()
@@ -245,3 +315,38 @@ class TestReporting:
         out = capsys.readouterr().out
         assert "Gaps" in out and "10" in out
         assert "Gapped Duration" in out
+
+
+class TestWarningIdentity:
+    @pytest.mark.parametrize("name, run", FILTERS, ids=IDS)
+    def test_warning_points_at_the_caller_for_every_entry_point(self, name, run):
+        with pytest.warns(UserWarning) as rec:
+            run(_crash_session())
+        assert rec[0].filename == __file__
+
+    def test_frame_warning_points_at_the_caller_and_names_the_column(self):
+        ts = _crash_session()
+        import pandas as pd
+        wide = pd.DataFrame({"time": np.asarray(ts.times, float),
+                             "Cz": np.asarray(ts.data, float),
+                             "Pz": np.asarray(ts.data, float)})
+        frame = baseDf.from_df(wide, time_col="time")
+        with pytest.warns(UserWarning) as rec:
+            frame.lowpass_at(2.0)
+        assert all(w.filename == __file__ for w in rec)
+        messages = [str(w.message) for w in rec]
+        assert any("'Cz'" in m for m in messages) and any("'Pz'" in m for m in messages)
+
+    def test_frame_refusal_names_the_column(self):
+        ts = _crash_session()
+        import pandas as pd
+        wide = pd.DataFrame({"time": np.asarray(ts.times, float),
+                             "Cz": np.asarray(ts.data, float)})
+        frame = baseDf.from_df(wide, time_col="time")
+        with pytest.raises(InvalidParameterError, match="'Cz'"):
+            frame.lowpass_at(2.0, max_gap=0.5)
+
+    def test_warning_says_how_to_silence_it(self):
+        with pytest.warns(UserWarning, match="max_gap=") as rec:
+            _crash_session().lowpass_at(2.0)
+        assert "jitter" in str(rec[0].message)
