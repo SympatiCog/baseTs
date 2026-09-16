@@ -16,7 +16,7 @@ from pandas.plotting import PlotAccessor
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import Optional, TYPE_CHECKING, Union, List, Tuple
+from typing import Any, Optional, TYPE_CHECKING, Union, List, Tuple
 
 # Import modules - now using relative imports
 from .filters import (InvalidParameterError,
