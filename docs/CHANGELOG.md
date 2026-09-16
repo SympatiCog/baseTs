@@ -5,6 +5,42 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — `interp_to_uniform_grid` can pad ragged trials and refuse to bridge holes
+
+### Added — `fill_value` and `max_gap` keywords (`baseTs/core.py`)
+
+Reported by an initial tester averaging cpCST crash epochs: the trials are of
+different lengths, and `interp_to_uniform_grid(new_grid=grid)` raised as soon
+as the common grid reached past a short trial, because scipy's `interp1d`
+defaults to `bounds_error=True`. The detour was to pad numpy arrays by hand
+and wrap them, losing the `is_interpolated` flag and the history entry on
+the way.
+
+- `fill_value=None` (default) still raises. `fill_value=np.nan` passes
+  `bounds_error=False, fill_value=nan` through to scipy, so a short trial
+  comes back on the full grid with a NaN tail. Those trials share an index,
+  `baseDf.from_series` accepts them, and `average(skipna=True, min_count=k)`
+  already does the right thing with the tail. One line per trial, inside the
+  library. Any real number is accepted; scipy's `'extrapolate'` is refused
+  because extrapolated samples would be indistinguishable from measured ones.
+- `max_gap=None` (default) still bridges every interval between consecutive
+  samples. `max_gap=seconds` leaves grid points strictly inside a wider
+  interval as NaN. This is the part the tester's own caveat pointed at: the
+  period right after a crash carries a ~2.6 s hole, and a linear bridge
+  across it would put a fabricated ramp into the average exactly where the
+  recovery response lives. A point landing exactly on a sample keeps that
+  sample. This is the opposite of `interpolate_gaps()`, which fills holes.
+- The history entry counts what happened: `; N grid point(s) outside the
+  data padded with nan` and `; M grid point(s) inside gap(s) wider than Xs
+  left as NaN`, each only when non-zero.
+- `ValidationError` for a non-numeric `fill_value` or a non-positive,
+  non-finite `max_gap`.
+
+Both keywords apply on the `inplace=True` and `inplace=False` paths and with
+`new_grid=None`. Tests: `tests/unit/test_interp_ragged_stack.py`, including
+the end-to-end pad -> `from_series` -> `average` path. Docs:
+`docs/API_SERIES.md` (method entry), `docs/EXAMPLES.md` ("Ragged trials").
+
 ## [Unreleased] — load a `baseTs`/`baseDf` straight from a CSV or Parquet file
 
 ### Added — `from_csv`/`from_parquet` (`baseTs/core.py`, `baseTs/frame.py`)
