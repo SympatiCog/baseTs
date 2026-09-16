@@ -2002,37 +2002,52 @@ frame = baseDf.from_df(wide, time_col="time", freq=0.5)
 # already wide.
 ```
 
-### Ragged trials
+### Ragged trials from a session with holes
 
-Trials of one condition rarely share a length, and a hole in the middle of a
-trial (the ~2.6 s after a cpCST crash, say) is an absence of recording, not
-something to draw a line across. `interp_to_uniform_grid` puts each trial on
-one common grid: `fill_value=np.nan` pads the short ones, `max_gap` leaves the
-hole as NaN rather than bridging it. They then share an index, so
-`from_series` stacks them and `average(skipna=True, min_count=k)` reports the
-mean over however many trials are present at each timepoint, writing the count
-of reduced-n timepoints into history.
+A crash session is one long recording with a hole in the index after every
+crash (~2.6 s in cpCST) and epochs of different lengths between them. Three
+things go wrong if that is filtered as it stands: `freq` is the mean rate and
+under-reports, the filters run across the holes as if they were single frames,
+and nothing warns unless you ask. `gaps()` is where to ask. `segments()` then
+splits the session into its contiguous runs, each with an honest rate;
+`set_timestamp_offset` and a re-zeroed index put every run on trial time;
+`interp_to_uniform_grid` puts them on one common grid, with `fill_value=np.nan`
+padding the short ones and `max_gap` refusing to bridge any hole that remains
+inside a run; `from_series` stacks them; and `average(skipna=True,
+min_count=k)` reports the mean over however many runs are present at each
+timepoint, writing the count of reduced-n timepoints into history.
 
 ```python
-# Ragged trials -> one grid -> baseDf -> average with per-timepoint n
+# Session with holes -> segments -> one grid -> baseDf -> average with per-timepoint n
 import numpy as np
 from baseTs import baseTs, baseDf
 
 rng = np.random.default_rng(0)
-grid = np.arange(0.0, 8.0, 0.02)            # 50 Hz, 8 s common grid
-trials = []
-for length in (5.0, 6.5, 8.0, 7.2):         # crash epochs of different lengths
-    t = np.arange(0.0, length, 0.02)
-    t = t[(t <= 1.0) | (t >= 3.6)]           # ~2.6 s hole right after the crash
-    trials.append(baseTs(np.exp(-t / 2.0) + 0.05 * rng.standard_normal(len(t)), t))
+fs = 30.0
+t = np.arange(0.0, 60.0, 1 / fs)
+for k in (400, 900, 1350):                  # a crash every so often: drop 77 frames
+    t = np.delete(t, np.arange(k + 1, k + 78))
+session = baseTs(np.exp(-(t % 15.0) / 4.0) + 0.05 * rng.standard_normal(len(t)), t, freq=fs)
 
-stacked = [tr.interp_to_uniform_grid(grid, fill_value=np.nan, max_gap=0.5,
-                                     inplace=False) for tr in trials]
-frame = baseDf.from_series(stacked, labels=[f"trial{i}" for i in range(4)])
+print(session.gaps())                       # three rows, width 2.6 s, n_missing 77
+# session.lowpass_at(2.0)                   # would warn: "index has 3 gap(s) ..."
+# session.lowpass_at(2.0, max_gap=0.5)      # would refuse with the same message
+
+runs = session.segments()                   # four contiguous runs, freq 30 Hz each
+grid = np.arange(0.0, 15.0, 1 / fs)         # common trial-time grid
+stacked = []
+for run in runs:
+    t0 = float(run.times[0])
+    trial = baseTs(np.asarray(run.data, float), np.asarray(run.times, float) - t0,
+                   freq=fs, signal_name=run.signal_name)
+    stacked.append(trial.lowpass_at(2.0, max_gap=0.5)
+                        .interp_to_uniform_grid(grid, fill_value=np.nan, max_gap=0.5,
+                                                inplace=False))
+frame = baseDf.from_series(stacked, labels=[f"run{i}" for i in range(len(stacked))])
 recovery = frame.average(skipna=True, min_count=2)
-# recovery is NaN across the hole and past the second-longest trial;
-# trim to the covered span before filtering it, since the filters refuse gaps:
-covered = recovery.trimto_timepoints(3.6, 7.2)
+# recovery is NaN past the second-longest run; trim to the covered span before
+# any further filtering, since the filters refuse NaN gaps:
+covered = recovery.trimto_timepoints(0.0, 12.0)
 ```
 
 This comprehensive examples document provides practical, real-world usage patterns for baseTs with enhanced pandas Series capabilities, focusing on scientific applications across various domains including biophysical signals, environmental monitoring, experimental data analysis, and advanced frequency analysis techniques.
