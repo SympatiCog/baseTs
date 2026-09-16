@@ -412,7 +412,9 @@ Apply low-pass Butterworth filter. Alias for `lowpass_at()`.
 
 **Raises:**
 - `InvalidParameterError`: If the cutoff is not between 0 and Nyquist, the order is not a positive
-  integer, the data contains NaN or Inf, or `max_gap` is given and the index has a wider gap
+  integer, the data contains NaN or Inf, `max_gap` is not a positive finite number, the index
+  breaks a rule of `gaps()` (a non-finite timestamp, a step backwards, duplicate timestamps in at
+  least half its intervals), or `max_gap` is given and the index has a wider gap
 
 **Example:**
 ```python
@@ -779,7 +781,9 @@ what every event-structured recording produces.
   with no gaps or fewer than two samples.
 
 **Raises:**
-- `ValidationError`: If `max_gap` is not a positive finite number
+- `ValidationError`: If `max_gap` is not a positive finite number, or the index breaks a rule gaps
+  need: a non-finite timestamp, a step backwards (it must be non-decreasing), or duplicate
+  timestamps in at least half its intervals (a zero median interval)
 
 **Example:**
 ```python
@@ -808,7 +812,9 @@ gap refusal names, and the first step of the ragged-trial path in `docs/EXAMPLES
   Each carries a history entry naming the split and its place in it.
 
 **Raises:**
-- `ValidationError`: If `max_gap` is not a positive finite number
+- `ValidationError`: If `max_gap` is not a positive finite number, or the index breaks a rule gaps
+  need: a non-finite timestamp, a step backwards (it must be non-decreasing), or duplicate
+  timestamps in at least half its intervals (a zero median interval)
 
 **Example:**
 ```python

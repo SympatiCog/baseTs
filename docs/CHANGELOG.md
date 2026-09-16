@@ -67,7 +67,23 @@ now carry `signal_name`); the warning did not say how to silence timing
 jitter (it does). Mutation testing also showed `>` vs `>=` on the threshold
 survived; pinned.
 
-Tests: `tests/unit/test_gaps.py` (106 cases, including every filter entry
+The external panel (codex and agy, both confirming) then found against the
+fixed code: an index with duplicate timestamps in at least half its intervals
+drove the median to 0, so every normal step became a "gap wider than 0 s"
+(now the third index rule: `gaps()` refuses with a `ValidationError` naming
+the duplicate count, and a filter re-raises it as its own
+`InvalidParameterError`, checking the rate first so a degenerate time base
+still reports "Invalid sampling frequency"); `get_statistics()` reported a confident `median_dt` beside
+NaN gap counts for the same invalid index (all three now NaN together); the
+filter docstrings did not mention the new `ValidationError` (they and the
+API entries do); and the per-column `signal_name` in the warning defeated
+Python's default dedup, so a 64-channel frame printed 64 lines. That last
+one is resolved at the frame rather than the series: the warning no longer
+carries the name (the refusal still does), and `baseDf._broadcast` records
+the column calls' warnings and re-emits each distinct one once from the
+caller's line through `warnings.warn`, so `-W error` still raises.
+
+Tests: `tests/unit/test_gaps.py` (122 cases, including every filter entry
 point with and without `max_gap`, the frame broadcast, warning location and
 column naming, the index edge cases above, and segment-then-filter as the
 remedy). Docs: `docs/API.md` (entries for

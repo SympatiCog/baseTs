@@ -132,9 +132,11 @@ class TestIndexEdgeCases:
         ts = baseTs(np.sin(np.arange(len(t))), t)
         with pytest.raises(ValidationError, match="finite"):
             ts.gaps()
-        with pytest.raises(ValidationError, match="finite"):
+        # Filters keep their own exception type, so a caller catching
+        # InvalidParameterError keeps catching it.
+        with pytest.raises(InvalidParameterError, match="finite"):
             ts.lowpass_at(2.0)
-        with pytest.raises(ValidationError, match="finite"):
+        with pytest.raises(InvalidParameterError, match="finite"):
             ts.gauss_filter(2.0)
 
     def test_reporting_survives_a_bad_index(self, capsys):
@@ -145,6 +147,34 @@ class TestIndexEdgeCases:
         assert np.isnan(stats["n_gaps"]) and np.isnan(stats["gapped_duration"])
         ts.info()
         assert "unavailable" in capsys.readouterr().out
+
+    def test_mostly_duplicated_timestamps_are_refused(self):
+        """Half the steps zero-width drove the median to 0, so every normal
+        step became a 'gap wider than 0 s' with n_missing=0 (external panel)."""
+        t = np.arange(150) * DT
+        t[::2] = t[1::2][:len(t[::2])]
+        ts = baseTs(np.sin(t), t)
+        with pytest.raises(ValidationError, match="duplicate"):
+            ts.gaps()
+        with pytest.raises(InvalidParameterError, match="duplicate"):
+            ts.lowpass_at(2.0)
+
+    def test_degenerate_time_base_still_reports_the_rate_first(self):
+        """All timestamps equal breaks the duplicate rule too, but the
+        existing contract is 'Invalid sampling frequency' (filters check the
+        rate before scanning the data)."""
+        ts = baseTs(np.sin(np.arange(200) / 10.0), np.zeros(200))
+        with pytest.raises(InvalidParameterError, match="Invalid sampling frequency"):
+            ts.lowpass_at(0.1)
+        with pytest.raises(InvalidParameterError, match="duplicate"):
+            ts.gauss_filter(2.0)   # no rate to check, so the index rule speaks
+
+    def test_statistics_do_not_report_a_median_for_an_index_they_cannot_count(self):
+        """median_dt was computed outside the validated path, so a decreasing
+        index showed a confident 1.0 next to NaN gap counts."""
+        ts = baseTs(np.arange(6.0), np.array([0.0, 1.0, 2.0, 1.5, 3.0, 4.0]))
+        stats = ts.get_statistics()
+        assert np.isnan(stats["median_dt"]) and np.isnan(stats["n_gaps"])
 
     def test_n_missing_is_never_negative(self):
         t = np.array([0.0, 1.0, 2.0, 2.2, 3.2, 4.2])
@@ -283,7 +313,7 @@ class TestFiltersRefuseIndexGaps:
 
     @pytest.mark.parametrize("bad", [0, -1.0, "1", np.nan, np.inf, True])
     def test_refuses_non_positive_max_gap(self, bad):
-        with pytest.raises(ValidationError, match="max_gap"):
+        with pytest.raises(InvalidParameterError, match="max_gap"):
             _uniform().lowpass_at(2.0, max_gap=bad)
 
     def test_frame_broadcast_forwards_max_gap(self):
@@ -324,18 +354,27 @@ class TestWarningIdentity:
             run(_crash_session())
         assert rec[0].filename == __file__
 
-    def test_frame_warning_points_at_the_caller_and_names_the_column(self):
+    def test_frame_broadcast_warns_once_and_points_at_the_caller(self):
+        """Every column shares one index, so the gap warning is the same for
+        all of them; 64 channels must not mean 64 lines (external panel)."""
         ts = _crash_session()
         import pandas as pd
         wide = pd.DataFrame({"time": np.asarray(ts.times, float),
-                             "Cz": np.asarray(ts.data, float),
-                             "Pz": np.asarray(ts.data, float)})
+                             **{c: np.asarray(ts.data, float) for c in ("Cz", "Pz", "Oz")}})
         frame = baseDf.from_df(wide, time_col="time")
-        with pytest.warns(UserWarning) as rec:
+        with pytest.warns(UserWarning, match=r"3 gap\(s\)|10 gap\(s\)") as rec:
             frame.lowpass_at(2.0)
-        assert all(w.filename == __file__ for w in rec)
-        messages = [str(w.message) for w in rec]
-        assert any("'Cz'" in m for m in messages) and any("'Pz'" in m for m in messages)
+        gap_warnings = [w for w in rec if "gap(s)" in str(w.message)]
+        assert len(gap_warnings) == 1
+        assert gap_warnings[0].filename == __file__
+
+    def test_frame_broadcast_honours_warnings_as_errors(self):
+        ts = _crash_session()
+        frame = baseDf.from_series([ts, ts.copy()], labels=["a", "b"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(UserWarning, match=r"gap\(s\)"):
+                frame.lowpass_at(2.0)
 
     def test_frame_refusal_names_the_column(self):
         ts = _crash_session()
@@ -350,3 +389,16 @@ class TestWarningIdentity:
         with pytest.warns(UserWarning, match="max_gap=") as rec:
             _crash_session().lowpass_at(2.0)
         assert "jitter" in str(rec[0].message)
+
+
+
+class TestDocstrings:
+    @pytest.mark.parametrize("name", IDS)
+    def test_every_filter_documents_the_index_rules(self, name):
+        doc = getattr(baseTs, name).__doc__
+        assert "InvalidParameterError" in doc and "duplicate" in doc and "max_gap" in doc
+
+    @pytest.mark.parametrize("name", ["gaps", "segments"])
+    def test_gap_methods_document_the_index_rules(self, name):
+        doc = getattr(baseTs, name).__doc__
+        assert "non-finite" in doc and "non-decreasing" in doc and "duplicate" in doc
