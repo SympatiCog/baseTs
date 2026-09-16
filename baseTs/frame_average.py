@@ -20,8 +20,37 @@ import pandas as pd
 from .LowessOutlierFilter import LowessOutlierFilter
 
 
+#: Separates what an operation did from what happened to this one series.
+DETAIL_SEP = "; "
+DETAILS_DIFFER = "per-input details differ"
+
+
+def operation_head(entry: str) -> str:
+    """The part of a history entry that names the operation and its parameters.
+
+    A history entry is ``"<operation and parameters>; <what happened to this
+    series>"``: the head before the first ``"; "`` is the step, and anything
+    after it is a per-series outcome, such as how many grid points were
+    padded or how many gap samples were left alone. Two entries with the
+    same head are the same step.
+
+    Args:
+        entry: One history entry.
+
+    Returns:
+        str: The entry up to the first ``"; "``, or the whole entry.
+    """
+    return entry.split(DETAIL_SEP, 1)[0]
+
+
 def common_prefix(histories: Sequence[Sequence[str]]) -> List[str]:
-    """The leading entries every history shares.
+    """The leading steps every history shares.
+
+    Entries are compared by :func:`operation_head`, so the same call with a
+    different per-series outcome (``"...; 10 padded"`` against
+    ``"...; 20 padded"``) is one shared step, kept as the head plus
+    ``"; per-input details differ"``. An entry every history has verbatim is
+    kept verbatim.
 
     Args:
         histories: One history per contributing column.
@@ -36,6 +65,8 @@ def common_prefix(histories: Sequence[Sequence[str]]) -> List[str]:
         first = entries[0]
         if all(entry == first for entry in entries):
             shared.append(first)
+        elif all(operation_head(entry) == operation_head(first) for entry in entries):
+            shared.append(f"{operation_head(first)}{DETAIL_SEP}{DETAILS_DIFFER}")
         else:
             break
     return shared
@@ -68,11 +99,15 @@ def averaged_row(
     shared = common_prefix(histories)
     diverged = sum(1 for h in histories if len(h) > len(shared))
 
-    message = f"Averaged {n} column(s) [{selection_desc}]"
+    # skipna is a parameter, so it belongs in the operation head (before the
+    # first "; ") where common_prefix compares steps: an average of averages
+    # taken under different NaN policies is a real divergence. The counts
+    # after it are what happened to this one series.
+    message = f"Averaged {n} column(s) [{selection_desc}], skipna={skipna}"
     if skipna:
-        message += f"; skipna=True, {reduced} timepoint(s) at reduced n"
+        message += f"; {reduced} timepoint(s) at reduced n"
     else:
-        message += "; skipna=False, any NaN propagates"
+        message += "; any NaN propagates"
     if diverged:
         message += (f"; inputs diverged after step {len(shared)}: {diverged} of "
                     f"{n} carried further processing")

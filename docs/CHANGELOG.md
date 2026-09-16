@@ -5,6 +5,44 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — `baseDf.average` no longer reports "inputs diverged" for trials padded by different amounts
+
+### Changed — history entries compare by operation head (`baseTs/frame_average.py`, `baseTs/core.py`)
+
+Follow-up to the ragged-trials change below. Trials padded onto one grid by
+`interp_to_uniform_grid(fill_value=np.nan)` carried history entries that
+differed only in their counts (`; 150 grid point(s) ... padded` against
+`; 100 ...`), and so did their constructor entries (`Created baseTs object
+with 250 samples` against `... 300 samples`). `common_prefix` compared whole
+strings, so an average over them said `inputs diverged after step 0: 4 of 4
+carried further processing` when every trial had had exactly the same
+operations. Misleading, not wrong, and the kind of line a reader stops on.
+
+The rule, stated rather than carved out: **a history entry is
+`"<operation and parameters>; <what happened to this series>"`, and steps
+compare by the part before the first `"; "`** (`frame_average.operation_head`).
+Entries that share a head but differ after it are one shared step, kept in
+the prefix as the head plus `; per-input details differ`; an entry every
+input has verbatim is kept verbatim; a differing head is a real divergence.
+To make the existing messages obey the rule:
+
+- `interp_to_uniform_grid` puts `fill_value=`/`max_gap=` in the head (so
+  different `max_gap` values diverge for real) and the padded/blanked counts
+  after the separator; the rate in the head is rounded to six places, because
+  a derived rate carried float noise (`9.999999999999998Hz`) while a surviving
+  declaration on a same-shape trial read `10.0Hz`, splitting identical steps.
+- The averaged entry itself moves `skipna=` into the head:
+  `Averaged 4 column(s) [t0, t1, t2, t3], skipna=True; 279 timepoint(s) at
+  reduced n`, so an average of averages taken under different NaN policies
+  still diverges.
+- The constructor entry becomes `Created baseTs object; 200 samples`, so
+  trials of different lengths share step 0. Three tests that pinned the old
+  wording are updated.
+
+Tests: `tests/unit/test_frame_average_rules.py` (the merge rule, verbatim
+retention, and the head/detail split for `skipna`), plus the end-to-end
+ragged-stack test now asserts no divergence. Docs: `docs/API_FRAME.md`.
+
 ## [Unreleased] — `interp_to_uniform_grid` can pad ragged trials and refuse to bridge holes
 
 ### Added — `fill_value` and `max_gap` keywords (`baseTs/core.py`)

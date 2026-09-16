@@ -74,6 +74,35 @@ def test_history_keeps_the_common_prefix_and_summarises_divergence():
     assert "Averaged 3" in history[-1]
 
 
+def test_history_treats_per_input_detail_as_the_same_step():
+    """Entries differing only after '; ' are one operation with per-input
+    outcomes (padded counts, gap counts), not a divergence."""
+    frame = _frame()
+    for label, tail in (("c0", "10 padded"), ("c1", "20 padded"), ("c2", "30 padded")):
+        frame._col_meta.at[label, "history"] = [f"Regridded n=40; {tail}"]
+    history = frame.average().history
+    assert history[0] == "Regridded n=40; per-input details differ"
+    assert "diverged" not in history[-1]
+    assert "Averaged 3" in history[-1]
+
+
+def test_history_keeps_a_fully_shared_entry_verbatim():
+    frame = _frame()
+    for label in ("c0", "c1", "c2"):
+        frame._col_meta.at[label, "history"] = ["Regridded n=40; 10 padded"]
+    assert frame.average().history[0] == "Regridded n=40; 10 padded"
+
+
+def test_history_puts_the_nan_policy_in_the_operation_head():
+    """skipna is a parameter, so it lives before the '; ' - an average of
+    averages with different policies must count as a real divergence."""
+    frame = _frame()
+    head = frame.average(skipna=True).history[-1].split("; ")[0]
+    assert "skipna=True" in head
+    head = frame.average(skipna=False).history[-1].split("; ")[0]
+    assert "skipna=False" in head
+
+
 def test_history_records_the_dropped_per_column_artifacts():
     assert "dropped" in _frame().average().history[-1]
 
@@ -119,3 +148,12 @@ def test_common_prefix_stops_at_the_first_difference():
     assert common_prefix([["a", "b", "c"], ["a", "b"], ["a", "x"]]) == ["a"]
     assert common_prefix([]) == []
     assert common_prefix([["a"], ["a"]]) == ["a"]
+
+
+def test_common_prefix_merges_entries_that_differ_only_in_detail():
+    assert common_prefix([["op; a"], ["op; b"]]) == ["op; per-input details differ"]
+    assert common_prefix([["op; a"], ["op; a"]]) == ["op; a"]
+    assert common_prefix([["op; a"], ["op2; a"]]) == []
+    assert common_prefix([["op"], ["op; a"]]) == ["op; per-input details differ"]
+    assert common_prefix([["op; a", "z"], ["op; b", "z"]]) == [
+        "op; per-input details differ", "z"]
