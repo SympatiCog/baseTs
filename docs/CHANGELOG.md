@@ -5,6 +5,91 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — `gaps()`, `segments()`, and filters that refuse or warn about holes in the index
+
+### Added — index-gap detection and refusal (`baseTs/core.py`)
+
+Reported by an initial tester on a cpCST crash session: 5788 samples over
+218.4 s at a declared 30 Hz, with ten ~2.6 s holes in the index right after
+each crash. `freq` is the mean rate `(n - 1) / duration`, or a declaration
+that survives while the `(n, first, last)` token matches, and neither looks
+at the interior of the index - by design, and documented. But the filters
+consume `freq` as if it claimed uniformity: `lowpass_at(2.0)` designed a
+Butterworth at 30 Hz and ran it across ten 2.6 s jumps as though they were
+single frames, producing a smeared pre-crash dip. Nothing warned. The NaN
+guard (#76) catches a hole that is marked; an index jump is not marked, and
+that is the kind every event-structured recording produces.
+
+- **`gaps(max_gap=None)`** returns a DataFrame of the intervals between
+  consecutive samples wider than `max_gap`: `start`, `end`, `width`,
+  `n_missing`. Default threshold `GAP_FACTOR` (1.5) times the **median**
+  interval, not `1.5 / freq` as first suggested: the mean rate is dragged
+  down by the very holes being looked for (26.5 Hz on the session above),
+  while the median interval is still the true frame period.
+- **`segments(max_gap=None)`** returns the contiguous runs between gaps as
+  separate `baseTs`, each deriving its own rate from its own span. It is the
+  "filter per segment" remedy the refusal names, and the first step of the
+  ragged-trial path (segment, re-zero, regrid with `fill_value=np.nan`,
+  stack, average) now shown end to end in `docs/EXAMPLES.md`.
+- **Every filter takes `max_gap`** (`lowpass_at`, `highpass_at`,
+  `bandpass_at`, `notch_at`, `butterpass_at`, `gauss_filter`, `sg_filter`,
+  and the four legacy aliases). Given, a wider interval is refused with
+  `InvalidParameterError`, the type the NaN case raises, naming the count,
+  the widest gap, the rate the filter would have been designed at, and both
+  remedies. Left `None`, the median-based default is checked and a
+  `UserWarning` names the same things: opt-in refusal alone would have left
+  a first-time user exactly where this tester was, with nothing telling them
+  to ask. The check runs before the filter, so an `inplace=True` refusal
+  leaves the series untouched. `baseDf` forwards keyword arguments verbatim,
+  so `frame.lowpass_at(2.0, max_gap=0.5)` refuses too.
+- **`get_statistics()`** gains `median_dt`, `n_gaps` and `gapped_duration`;
+  **`info()`** prints the gap count and gapped duration next to the rate, so
+  a 26.5-versus-30 Hz discrepancy arrives with its explanation.
+- `max_gap` validation is one function, `_validate_max_gap`, shared with
+  `interp_to_uniform_grid`.
+
+Adversarial review of the first cut (a Claude reviewer with scratch-copy
+mutation testing, plus an external codex/agy panel) found and this PR fixes:
+`segments()` split at the first copy of a duplicated timestamp, putting the
+gap inside the next segment (it now splits on positions, not a searchsorted
+on the start value); an empty series or a decreasing index raised a bare
+`IndexError` (empty is now `[]`, decreasing is a `ValidationError`); a NaN
+timestamp made the median NaN and `gaps()` silently empty, so the filters
+ran across a real hole with no warning (`gaps()` and every filter now refuse
+a non-finite index, and `get_statistics()`/`info()` report the count as
+unavailable rather than raising); `n_missing` could be negative with a small
+explicit `max_gap` and rounded half-to-even (clamped, half-up); the warning
+pointed into `core.py` for the legacy aliases and into `frame.py` for a
+broadcast (the stacklevel is now counted to the first frame outside the
+package); a broadcast's identical per-column warnings were collapsed by
+Python's default filter and the refusal could not say which column (both
+now carry `signal_name`); the warning did not say how to silence timing
+jitter (it does). Mutation testing also showed `>` vs `>=` on the threshold
+survived; pinned.
+
+The external panel (codex and agy, both confirming) then found against the
+fixed code: an index with duplicate timestamps in at least half its intervals
+drove the median to 0, so every normal step became a "gap wider than 0 s"
+(now the third index rule: `gaps()` refuses with a `ValidationError` naming
+the duplicate count, and a filter re-raises it as its own
+`InvalidParameterError`, checking the rate first so a degenerate time base
+still reports "Invalid sampling frequency"); `get_statistics()` reported a confident `median_dt` beside
+NaN gap counts for the same invalid index (all three now NaN together); the
+filter docstrings did not mention the new `ValidationError` (they and the
+API entries do); and the per-column `signal_name` in the warning defeated
+Python's default dedup, so a 64-channel frame printed 64 lines. That last
+one is resolved at the frame rather than the series: the warning no longer
+carries the name (the refusal still does), and `baseDf._broadcast` records
+the column calls' warnings and re-emits each distinct one once from the
+caller's line through `warnings.warn`, so `-W error` still raises.
+
+Tests: `tests/unit/test_gaps.py` (122 cases, including every filter entry
+point with and without `max_gap`, the frame broadcast, warning location and
+column naming, the index edge cases above, and segment-then-filter as the
+remedy). Docs: `docs/API.md` (entries for
+`gaps`, `segments`, the `max_gap` parameter on each filter, the new
+statistics keys), `docs/API_SERIES.md`, `docs/EXAMPLES.md`.
+
 ## [Unreleased] — `baseDf.average` no longer reports "inputs diverged" for trials padded by different amounts
 
 ### Changed — history entries compare by operation head (`baseTs/frame_average.py`, `baseTs/core.py`)

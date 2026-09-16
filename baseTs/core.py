@@ -7,6 +7,8 @@ Created on Oct 19 2024
 from __future__ import annotations
 import math
 import numbers
+import os
+import sys
 import warnings
 
 import numpy as np
@@ -16,10 +18,11 @@ from pandas.plotting import PlotAccessor
 import copy
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-from typing import Optional, TYPE_CHECKING, Union, List, Tuple
+from typing import Any, Optional, TYPE_CHECKING, Union, List, Tuple
 
 # Import modules - now using relative imports
-from .filters import (bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter,
+from .filters import (InvalidParameterError,
+                      bandpass_filter, sg_filter, interpolate_missing_values, lowpass_filter,
                       highpass_filter, notch_filter, _require_int)
 from .LowessOutlierFilter import LowessOutlierFilter, TailType, FilterConfig
 from dataclasses import replace
@@ -235,6 +238,64 @@ class _PlotAccessor:
     def __repr__(self) -> str:
         name = getattr(self._ts, "signal_name", "") or "unnamed"
         return f"<baseTs plot accessor for {name!r}>"
+
+
+#: A gap is an interval between consecutive samples this many times wider
+#: than the median interval. The median, not the mean rate: on a session
+#: with ten 2.6 s holes the mean rate is dragged down by the holes
+#: themselves, while the median interval is still the true frame period.
+GAP_FACTOR = 1.5
+
+
+def _validate_max_gap(max_gap: Any) -> Optional[float]:
+    """One definition of a usable max_gap for every method that takes one.
+
+    Args:
+        max_gap: None, or a positive finite number of seconds.
+
+    Returns:
+        float or None: The value, coerced to float when given.
+
+    Raises:
+        ValidationError: If it is a bool, non-numeric, non-finite, or <= 0.
+    """
+    if max_gap is None:
+        return None
+    if (isinstance(max_gap, bool) or not isinstance(max_gap, numbers.Real)
+            or not math.isfinite(max_gap) or max_gap <= 0):
+        raise ValidationError(
+            f"max_gap must be a positive finite number of seconds, or None; "
+            f"got {max_gap!r}."
+        )
+    return float(max_gap)
+
+
+def _stacklevel_outside_package() -> int:
+    """The warnings.warn stacklevel that lands on the first caller outside
+    this package.
+
+    A fixed stacklevel pointed at core.py for the legacy aliases (one extra
+    frame) and at frame.py for a baseDf broadcast (two). Counting frames
+    until the filename leaves the package puts the warning on the user's
+    line in every case.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    level = 1
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if not filename.startswith(here + os.sep):
+            return level
+        frame = frame.f_back
+        level += 1
+    return level
+
+
+def _median_interval(times: np.ndarray) -> float:
+    """The median spacing between consecutive samples, or NaN below two."""
+    if len(times) < 2:
+        return float("nan")
+    return float(np.median(np.diff(times)))
 
 
 class baseTs(TimeSeriesData):
@@ -1165,16 +1226,7 @@ class baseTs(TimeSeriesData):
                 f"scipy's 'extrapolate' is deliberately not accepted: extrapolated "
                 f"samples would be indistinguishable from measured ones."
             )
-        if max_gap is not None and (
-            isinstance(max_gap, bool)
-            or not isinstance(max_gap, numbers.Real)
-            or not math.isfinite(max_gap)
-            or max_gap <= 0
-        ):
-            raise ValidationError(
-                f"max_gap must be a positive finite number of seconds, or None to "
-                f"bridge every interval; got {max_gap!r}."
-            )
+        max_gap = _validate_max_gap(max_gap)
         if new_grid is None:
             # create new evenly spaced grid at the effective sample rate
             new_grid = np.linspace(self.times[0], self.times[-1], len(self.data))
@@ -1276,7 +1328,246 @@ class baseTs(TimeSeriesData):
         values[blank] = np.nan
         return int(np.count_nonzero(blank))
 
-    def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
+    def _gap_threshold(self, max_gap: Optional[float]) -> float:
+        """The width above which an interval counts as a gap, in seconds.
+
+        ``max_gap`` when given; otherwise ``GAP_FACTOR`` times the median
+        interval, i.e. anything wider than a dropped frame.
+        """
+        if max_gap is not None:
+            return max_gap
+        return GAP_FACTOR * _median_interval(np.asarray(self.times, dtype=float))
+
+    def gaps(self, max_gap: Optional[float] = None) -> pd.DataFrame:
+        """Intervals between consecutive samples wider than ``max_gap`` seconds.
+
+        ``freq`` is the mean rate over the whole span (or a declaration that
+        survives while the sample count and endpoints match), and neither
+        looks at the interior of the index. A recording with holes in it -
+        every event-structured recording - therefore reports a plausible rate
+        while the filters run across the holes as if they were single
+        frames. This is where to find out.
+
+        Args:
+            max_gap: Width above which an interval is a gap, in seconds.
+                Default None: ``GAP_FACTOR`` (1.5) times the median interval,
+                so a single dropped frame counts. The median rather than
+                ``1 / freq`` because the mean rate is dragged down by the
+                very holes being looked for.
+
+        Returns:
+            pd.DataFrame: One row per gap, columns ``start`` and ``end`` (the
+            bracketing sample times), ``width`` (seconds) and ``n_missing``
+            (frames the hole would hold at the median interval). Empty with
+            fewer than two samples or no gaps.
+
+        Raises:
+            ValidationError: If ``max_gap`` is not a positive finite number,
+                or the index breaks a rule gaps need: a non-finite
+                timestamp, a step backwards (the index must be
+                non-decreasing), or duplicate timestamps in at least half
+                its intervals (a zero median interval).
+        """
+        times, widths, where, median_dt = self._gap_positions(max_gap)
+        columns = ["start", "end", "width", "n_missing"]
+        if median_dt > 0:
+            # Half-up, not np.rint's half-to-even: 2.5 and 3.5 frames went
+            # opposite ways. Clamped at zero: an explicit max_gap below the
+            # median interval otherwise produced n_missing = -1.
+            n_missing = np.maximum(
+                np.floor(widths[where] / median_dt + 0.5).astype(int) - 1, 0)
+        else:
+            n_missing = np.zeros(len(where), dtype=int)
+        return pd.DataFrame({
+            "start": times[where],
+            "end": times[where + 1],
+            "width": widths[where],
+            "n_missing": n_missing,
+        }, columns=columns)
+
+    def _gap_positions(self, max_gap: Optional[float]) -> tuple:
+        """The interval positions gaps() and segments() both work from.
+
+        One place for the index rules: every timestamp finite,
+        non-decreasing, and fewer than half the intervals zero-width. A NaN
+        timestamp made the median NaN, every comparison False, and gaps()
+        silently empty - the filters then ran across a real hole with no
+        warning, the exact failure this exists to prevent. A decreasing
+        index has negative widths, all of which exceed a negative threshold.
+        A median interval of 0 made every normal step a "gap wider than
+        0 s" (external review).
+
+        Args:
+            max_gap: As for gaps(), already validated or None.
+
+        Returns:
+            tuple: (times, widths, where, median_dt) - times as float, the
+            consecutive differences, the positions i whose interval
+            times[i]..times[i + 1] is a gap, and the median interval.
+            Below two samples where is empty and median_dt NaN.
+
+        Raises:
+            ValidationError: If the index has a non-finite timestamp, is not
+                non-decreasing, or has a zero median interval.
+        """
+        max_gap = _validate_max_gap(max_gap)
+        times = np.asarray(self.times, dtype=float)
+        if not np.all(np.isfinite(times)):
+            bad = int(np.count_nonzero(~np.isfinite(times)))
+            raise ValidationError(
+                f"index has {bad} non-finite timestamp(s); an interval next to "
+                f"one has no width, so gaps cannot be found. Drop or repair "
+                f"those samples first."
+            )
+        widths = np.diff(times)
+        if len(widths) and np.any(widths < 0):
+            first = int(np.argmax(widths < 0))
+            raise ValidationError(
+                f"index must be non-decreasing to have gaps; it steps back at "
+                f"position {first + 1} ({times[first]!r} -> {times[first + 1]!r}). "
+                f"Sort the series first."
+            )
+        median_dt = _median_interval(times)
+        if len(times) < 2:
+            return times, widths, np.zeros(0, dtype=int), median_dt
+        if median_dt <= 0:
+            dup = int(np.count_nonzero(widths == 0))
+            raise ValidationError(
+                f"index has {dup} duplicate consecutive timestamp(s), at least "
+                f"half of its {len(widths)} intervals, so the median interval "
+                f"is 0 s and there is no frame period to find gaps against. "
+                f"Deduplicate the index first."
+            )
+        threshold = max_gap if max_gap is not None else GAP_FACTOR * median_dt
+        where = np.flatnonzero(widths > threshold)
+        return times, widths, where, median_dt
+
+    def segments(self, max_gap: Optional[float] = None) -> List["baseTs"]:
+        """The contiguous runs between gaps, each as its own baseTs.
+
+        The companion to :meth:`gaps`: the same split, returned as data. Each
+        segment derives its own rate from its own span, so a segment's
+        ``freq`` is honest where the parent's mean rate was not. This is the
+        "filter per segment" remedy the filters' gap refusal names, and the
+        first step of the ragged-trial path: segment, set a per-trial
+        origin, regrid with ``interp_to_uniform_grid(fill_value=np.nan)``,
+        stack with ``baseDf.from_series``, average.
+
+        Args:
+            max_gap: As for :meth:`gaps`.
+
+        Returns:
+            list of baseTs: One per run, in order; a series with no gaps
+            comes back as a list of one copy.
+
+        Raises:
+            ValidationError: If ``max_gap`` is not a positive finite number,
+                or the index breaks a rule gaps need: a non-finite
+                timestamp, a step backwards (the index must be
+                non-decreasing), or duplicate timestamps in at least half
+                its intervals. See :meth:`gaps`.
+        """
+        max_gap = _validate_max_gap(max_gap)
+        times, _, where, _ = self._gap_positions(max_gap)
+        data = np.asarray(self.data)
+        if len(times) == 0:
+            return []
+        # Positions, not a searchsorted on the start value: with a duplicated
+        # timestamp at a gap's start, searchsorted found the first copy and
+        # put the gap inside the next segment (adversarial review).
+        cuts = where + 1
+        bounds = [0, *cuts.tolist(), len(times)]
+        n = len(bounds) - 1
+        threshold = self._gap_threshold(max_gap)
+        head = (f"Split into {n} segment(s) at gaps wider than "
+                f"{threshold:.6g}s, max_gap={max_gap}s" if max_gap is not None else
+                f"Split into {n} segment(s) at gaps wider than "
+                f"{threshold:.6g}s, max_gap=None ({GAP_FACTOR}x median interval)")
+        out: List["baseTs"] = []
+        for i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:]), start=1):
+            seg = self._create_new_with_data(data[a:b], times[a:b])
+            seg._update_history_and_process(
+                f"{head}; Segment {i} of {n}, {times[a]:.6g}..{times[b - 1]:.6g} s, "
+                f"{b - a} sample(s)",
+                "_segment",
+            )
+            out.append(seg)
+        return out
+
+    def _check_index_gaps(self, max_gap: Optional[float], what: str,
+                          needs_rate: bool = True) -> None:
+        """Refuse, or warn about, a gapped index before a filter runs.
+
+        The NaN guard in ``filters`` catches a hole that is marked; this
+        catches one that is not. With ``max_gap`` given, any wider interval
+        is a typed refusal like the NaN case. With ``max_gap=None`` the
+        median-based default is checked and a warning names what it found,
+        so a first-time user learns the index has structure without having
+        to know to ask.
+
+        Everything a filter refuses is an ``InvalidParameterError``, the
+        ``filters`` module's own type, so a caller catching that keeps
+        catching it: a bad ``max_gap`` and an index :meth:`gaps` cannot work
+        on are re-raised as such. The order is the one ``filters`` already
+        states - the rate before the data scan - so a degenerate time base
+        (all timestamps equal) still reports "Invalid sampling frequency"
+        rather than the duplicate-timestamp rule it also breaks.
+
+        Args:
+            max_gap: None to warn, or the widest bridgeable interval in
+                seconds to refuse above.
+            what: The filter, for the message.
+            needs_rate: Whether the filter is designed at ``freq``; a
+                sample-domain filter (Gaussian, Savitzky-Golay) passes
+                False and skips the rate check.
+
+        Raises:
+            InvalidParameterError: If the rate is unusable, ``max_gap`` is
+                not a positive finite number, the index breaks a rule gaps
+                need, or ``max_gap`` is given and exceeded.
+        """
+        if needs_rate:
+            try:
+                validate_sampling_freq(self.freq)
+            except ValueError as exc:
+                raise InvalidParameterError(str(exc)) from exc
+        try:
+            max_gap = _validate_max_gap(max_gap)
+            found = self.gaps(max_gap)
+        except ValidationError as exc:
+            raise InvalidParameterError(str(exc)) from exc
+        if found.empty:
+            return
+        widest = found.iloc[int(np.argmax(found["width"].to_numpy()))]
+        threshold = self._gap_threshold(max_gap)
+        # The refusal carries the name, when there is one: a baseDf broadcast
+        # raises from inside frame.py and could not otherwise say which
+        # column. The warning deliberately does not: a frame's columns share
+        # one index, so their warnings are identical, and baseDf._broadcast
+        # emits each distinct warning once rather than once per channel.
+        name = f"{self.signal_name!r}: " if self.signal_name else ""
+        where = (f"index has {len(found)} gap(s) wider than {threshold:.3g} s "
+                 f"(widest {widest['width']:.3g} s, {int(widest['n_missing'])} "
+                 f"missing frame(s), starting at {widest['start']:.6g} s)")
+        remedy = ("Split with segments() and filter each run, or regrid with "
+                  "interp_to_uniform_grid(fill_value=np.nan, max_gap=...) "
+                  "first; see gaps() for the full list.")
+        if max_gap is not None:
+            raise InvalidParameterError(
+                f"{name}{where}; a {what} at {self.freq:.6g} Hz would run across "
+                f"them as if they were single frames. {remedy}"
+            )
+        warnings.warn(
+            f"{where}; {what} at {self.freq:.6g} Hz runs across them as if "
+            f"they were single frames. Pass max_gap=<seconds> to refuse "
+            f"instead, or max_gap=<seconds wider than your timing jitter> to "
+            f"check only for real holes. {remedy}",
+            UserWarning,
+            stacklevel=_stacklevel_outside_package(),
+        )
+
+    def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False,
+                 max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a notch filter at the specified frequency.
 
@@ -1288,14 +1579,24 @@ class baseTs(TimeSeriesData):
             cutoff_hz: Notch frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Notch filtered baseTs object
 
         Raises:
             InvalidParameterError: If the notch lies within the half-width of
-                either end, the rate is unusable, or the data has gaps (#76).
+                either end, the rate is unusable, the data has gaps (#76),
+                ``max_gap`` is not a positive finite number, the index breaks a
+                rule of :meth:`gaps` (a non-finite timestamp, a step backwards,
+                duplicate timestamps in at least half its intervals), or
+                ``max_gap`` is given and the index has a wider gap. With
+                ``max_gap=None`` a gapped index warns instead.
         """
+        self._check_index_gaps(max_gap, f"notch at {cutoff_hz} Hz")
+
         def notch_func(data):
             return notch_filter(data, cutoff_hz, self.freq, order)
             
@@ -1307,7 +1608,8 @@ class baseTs(TimeSeriesData):
             is_filtered=True
         )
 
-    def notch_filter(self, freq: float, order: int = 4, inplace: bool = False) -> "baseTs":
+    def notch_filter(self, freq: float, order: int = 4, inplace: bool = False,
+                     max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a notch filter at the specified frequency (alias for notch_at).
 
@@ -1315,13 +1617,25 @@ class baseTs(TimeSeriesData):
             freq: Notch frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
 
         Returns:
             Notch filtered baseTs object
-        """
-        return self.notch_at(freq, order, inplace)
 
-    def highpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
+        """
+        return self.notch_at(freq, order, inplace, max_gap=max_gap)
+
+    def highpass_at(self, cutoff: float, order: int = 5, inplace: bool = False,
+                    max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a highpass filter at the specified cutoff frequency.
         
@@ -1329,10 +1643,23 @@ class baseTs(TimeSeriesData):
             cutoff: Highpass cutoff frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Highpass filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
+        self._check_index_gaps(max_gap, f"highpass at {cutoff} Hz")
+
         def highpass_func(data):
             return highpass_filter(data, cutoff, self.freq, order)
             
@@ -1344,7 +1671,8 @@ class baseTs(TimeSeriesData):
             is_filtered=True
         )
 
-    def highpass_filter(self, cutoff: float, order: int = 4, inplace: bool = False) -> "baseTs":
+    def highpass_filter(self, cutoff: float, order: int = 4, inplace: bool = False,
+                        max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a highpass filter at the specified cutoff frequency (alias for highpass_at).
 
@@ -1352,13 +1680,25 @@ class baseTs(TimeSeriesData):
             cutoff: Highpass cutoff frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
 
         Returns:
             Highpass filtered baseTs object
-        """
-        return self.highpass_at(cutoff, order, inplace)
 
-    def lowpass_at(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
+        """
+        return self.highpass_at(cutoff, order, inplace, max_gap=max_gap)
+
+    def lowpass_at(self, cutoff: float, order: int = 5, inplace: bool = False,
+                   max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a lowpass filter at the specified cutoff frequency.
         
@@ -1366,10 +1706,23 @@ class baseTs(TimeSeriesData):
             cutoff: Lowpass cutoff frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Lowpass filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
+        self._check_index_gaps(max_gap, f"lowpass at {cutoff} Hz")
+
         def lowpass_func(data):
             return lowpass_filter(data, cutoff, self.freq, order)
             
@@ -1381,7 +1734,8 @@ class baseTs(TimeSeriesData):
             is_filtered=True
         )
 
-    def lowpass_filter(self, cutoff: float, order: int = 5, inplace: bool = False) -> "baseTs":
+    def lowpass_filter(self, cutoff: float, order: int = 5, inplace: bool = False,
+                       max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a lowpass filter to the data.
         
@@ -1389,22 +1743,37 @@ class baseTs(TimeSeriesData):
             cutoff: Lowpass cutoff frequency in Hz
             order: Filter order
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Lowpass filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
         
-        return self.lowpass_at(cutoff, order, inplace)
+        return self.lowpass_at(cutoff, order, inplace, max_gap=max_gap)
         
 
 
-    def gauss_filter(self, sigma: float = 1, inplace: bool = False) -> "baseTs":
+    def gauss_filter(self, sigma: float = 1, inplace: bool = False,
+                     max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a Gaussian filter to the data.
         
         Args:
             sigma: Standard deviation for Gaussian kernel
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Gaussian filtered baseTs object. An object-dtype series of reals
@@ -1413,6 +1782,12 @@ class baseTs(TimeSeriesData):
             (integers in, integers out).
 
         Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
             ValueError: If the data is not numeric (text, `Decimal`, ...) or
                 holds datetimes or durations - the shared data guard's
                 messages. NaN is not an error here: a windowed convolution
@@ -1422,6 +1797,8 @@ class baseTs(TimeSeriesData):
                 take - float16 is the one in practice. Cast to float32 or
                 float64 first.
         """
+        self._check_index_gaps(max_gap, f"gaussian filter with sigma={sigma}", needs_rate=False)
+
         def gauss_func(data):
             # The dtype half of the shared guard only (#93): gaussian_filter
             # refuses an object array with a bare RuntimeError, and this
@@ -1443,7 +1820,8 @@ class baseTs(TimeSeriesData):
                     hp_hz: float = 0.01,
                     lp_hz: float = 0.1,
                     inplace: bool = False,
-                    reset_mean: bool = True) -> "baseTs":
+                    reset_mean: bool = True,
+                    max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a bandpass filter to the signal at specified low-pass and high-pass frequencies.
 
@@ -1451,11 +1829,24 @@ class baseTs(TimeSeriesData):
             hp_hz: High-pass cutoff frequency in Hz
             lp_hz: Low-pass cutoff frequency in Hz
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             reset_mean: If True, resets the mean of the filtered data to the mean of the original data
 
         Returns:
             Bandpass filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
+        self._check_index_gaps(max_gap, f"bandpass at {hp_hz}-{lp_hz} Hz")
+
         def bandpass_func(data):
             return bandpass_filter(
                 data,
@@ -1474,7 +1865,7 @@ class baseTs(TimeSeriesData):
         )
 
     def bandpass_filter(self, low_cutoff: float, high_cutoff: float, order: int = 4,
-                         inplace: bool = False) -> "baseTs":
+                         inplace: bool = False, max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a bandpass filter between two cutoff frequencies (alias for bandpass_at).
 
@@ -1484,13 +1875,26 @@ class baseTs(TimeSeriesData):
             order: Accepted for signature compatibility; the underlying filter has no
                 order parameter, so this is currently unused.
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
 
         Returns:
             Bandpass filtered baseTs object
-        """
-        return self.bandpass_at(hp_hz=low_cutoff, lp_hz=high_cutoff, inplace=inplace)
 
-    def butterpass_at(self, hp_freq: float, lp_freq: float, inplace: bool = False) -> "baseTs":
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
+        """
+        return self.bandpass_at(hp_hz=low_cutoff, lp_hz=high_cutoff, inplace=inplace,
+                                max_gap=max_gap)
+
+    def butterpass_at(self, hp_freq: float, lp_freq: float, inplace: bool = False,
+                      max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a Butterworth bandpass filter (alias for bandpass_at).
 
@@ -1498,6 +1902,9 @@ class baseTs(TimeSeriesData):
             hp_freq: High-pass cutoff frequency in Hz (maps to bandpass_at's hp_hz)
             lp_freq: Low-pass cutoff frequency in Hz (maps to bandpass_at's lp_hz)
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
 
         Returns:
             Bandpass filtered baseTs object
@@ -1510,8 +1917,16 @@ class baseTs(TimeSeriesData):
             and the sibling bandpass_filter alias already records itself this
             way. See docs/CHANGELOG.md for the one contrived way the old token
             was reachable.
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
-        return self.bandpass_at(hp_hz=hp_freq, lp_hz=lp_freq, inplace=inplace)
+        return self.bandpass_at(hp_hz=hp_freq, lp_hz=lp_freq, inplace=inplace, max_gap=max_gap)
 
     def set_outlier_filter(self,
                         params: dict = None,
@@ -1787,7 +2202,8 @@ class baseTs(TimeSeriesData):
         
         return result
             
-    def sg_filter(self, window_length: int = 11, polyorder: int = 2, inplace: bool = False) -> "baseTs":
+    def sg_filter(self, window_length: int = 11, polyorder: int = 2, inplace: bool = False,
+                  max_gap: Optional[float] = None) -> "baseTs":
         """
         Apply a Savitzky-Golay filter to the signal.
         
@@ -1795,10 +2211,23 @@ class baseTs(TimeSeriesData):
             window_length: Length of the filter window (must be odd)
             polyorder: Order of the polynomial fit
             inplace: If True, modifies existing object. Otherwise returns new object.
+            max_gap: Widest interval between consecutive samples, in seconds,
+                the filter may run across. Given, a wider gap refuses; None
+                (default) warns when :meth:`gaps` finds any.
             
         Returns:
             Savitzky-Golay filtered baseTs object
+
+        Raises:
+            InvalidParameterError: If the filter parameters are unusable; if
+                ``max_gap`` is not a positive finite number; if the index has a
+                non-finite timestamp, steps backwards, or has duplicate
+                timestamps in at least half its intervals (the rules of
+                :meth:`gaps`); or if ``max_gap`` is given and the index has a
+                wider gap. With ``max_gap=None`` a gapped index warns instead.
         """
+        self._check_index_gaps(max_gap, f"Savitzky-Golay filter wl={window_length}", needs_rate=False)
+
         def sg_func(data):
             return sg_filter(data, window_length, polyorder)
             
@@ -2181,6 +2610,23 @@ class baseTs(TimeSeriesData):
             # n samples span n-1 intervals - see _calculate_effective_frequency.
             'sample_rate': (len(self) - 1) / self.duration() if self.duration() > 0 else 0
         }
+        # The rate above is blind to the interior of the index; these say
+        # whether it can be trusted. See gaps().
+        try:
+            found = self.gaps()
+        except ValidationError:
+            # A non-finite, decreasing or mostly-duplicated index: gaps()
+            # refuses, and a summary should still come back. NaN says
+            # "could not be counted" - for the median too, which otherwise
+            # read as a confident number beside two NaNs describing the
+            # same defect (external review).
+            stats['median_dt'] = float('nan')
+            stats['n_gaps'] = float('nan')
+            stats['gapped_duration'] = float('nan')
+        else:
+            stats['median_dt'] = _median_interval(np.asarray(self.times, dtype=float))
+            stats['n_gaps'] = int(len(found))
+            stats['gapped_duration'] = float(found['width'].sum()) if len(found) else 0.0
         
         return stats
     
@@ -3061,11 +3507,23 @@ class baseTs(TimeSeriesData):
         for key, value in data_info.items():
             data_info[key] = round_values(value)
         
+        try:
+            found = self.gaps()
+        except ValidationError as exc:
+            gap_count: Any = f"unavailable ({str(exc).split(';')[0]})"
+            gapped: Any = "unavailable"
+        else:
+            gap_count = int(len(found))
+            gapped = float(found["width"].sum()) if len(found) else 0.0
         times_info = {
             "Start": self.times[0],
             "End": self.times[-1],
             "Duration": self.duration(),
             "Effective Frequency": self.freq,
+            # Next to the rate, because the rate is blind to these and a
+            # reader should see the 26.5-vs-30 Hz discrepancy with its cause.
+            f"Gaps (> {GAP_FACTOR}x median interval)": gap_count,
+            "Gapped Duration": gapped,
             "Timestamp Offset": self.ts_offset
         }
         

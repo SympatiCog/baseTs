@@ -63,6 +63,18 @@ when it replaced an outlier or filled an input gap. A call that estimated
 nothing leaves the flag as it found it, and nothing resets it: a series
 derived from interpolated values is still built on estimates.
 
+Two kinds of gap, two tools. A gap **in the data** is a NaN: `interpolate_gaps`
+fills it, and the filters refuse to run over one. A gap **in the index** is a
+jump between consecutive sample times with nothing marked, which is what every
+event-structured recording produces, and `freq` cannot see it: the mean rate
+over the whole span stays plausible while a filter designed at that rate runs
+across the hole as if it were a single frame. `gaps(max_gap=None)` lists those
+jumps (`start`, `end`, `width`, `n_missing`), `segments(max_gap=None)` returns
+the contiguous runs between them as separate series, and every filter takes
+`max_gap`: given, a wider jump is a typed refusal; left `None`, the median-based
+default is checked and a warning names what it found. Full entries in
+`docs/API.md`.
+
 #### `interp_to_uniform_grid(new_grid=None, kind='linear', inplace=True, fill_value=None, max_gap=None)`
 
 Interpolate onto a uniform grid, by default the series' own span at its

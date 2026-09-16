@@ -393,7 +393,7 @@ ts_copy.iloc[0] = 999  # Doesn't affect original ts
   `bandpass_filter`'s `order` argument is accepted and unused, as its own entry says. Parameter
   and data rejections raise `InvalidParameterError`, which is also a `ValueError`.
 
-### `lowpass_filter(cutoff, order=5, inplace=False)`
+### `lowpass_filter(cutoff, order=5, inplace=False, max_gap=None)`
 
 Apply low-pass Butterworth filter. Alias for `lowpass_at()`.
 
@@ -401,12 +401,20 @@ Apply low-pass Butterworth filter. Alias for `lowpass_at()`.
 - `cutoff` (float): Cutoff frequency in Hz (0 < cutoff < Nyquist)
 - `order` (int, optional): Filter order. Default: 4
 
+- `max_gap` (float, optional): Widest interval between consecutive samples, in seconds, the
+  filter may run across. Given, a wider interval in the index is refused with
+  `InvalidParameterError` naming the gaps and the remedy. Default `None`: the median-based
+  default of `gaps()` is checked and a `UserWarning` names what it found, so a recording
+  with holes in it is never filtered silently. See `gaps()` and `segments()`.
+
 **Returns:**
 - `baseTs`: New filtered baseTs object
 
 **Raises:**
 - `InvalidParameterError`: If the cutoff is not between 0 and Nyquist, the order is not a positive
-  integer, or the data contains NaN or Inf
+  integer, the data contains NaN or Inf, `max_gap` is not a positive finite number, the index
+  breaks a rule of `gaps()` (a non-finite timestamp, a step backwards, duplicate timestamps in at
+  least half its intervals), or `max_gap` is given and the index has a wider gap
 
 **Example:**
 ```python
@@ -417,13 +425,19 @@ filtered = ts.lowpass_filter(cutoff=0.3)
 heavily_filtered = ts.lowpass_filter(cutoff=0.1, order=6)
 ```
 
-### `highpass_filter(cutoff, order=4, inplace=False)`
+### `highpass_filter(cutoff, order=4, inplace=False, max_gap=None)`
 
 Apply high-pass Butterworth filter. Alias for `highpass_at()`.
 
 **Parameters:**
 - `cutoff` (float): Cutoff frequency in Hz
 - `order` (int, optional): Filter order. Default: 4
+
+- `max_gap` (float, optional): Widest interval between consecutive samples, in seconds, the
+  filter may run across. Given, a wider interval in the index is refused with
+  `InvalidParameterError` naming the gaps and the remedy. Default `None`: the median-based
+  default of `gaps()` is checked and a `UserWarning` names what it found, so a recording
+  with holes in it is never filtered silently. See `gaps()` and `segments()`.
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -434,7 +448,7 @@ Apply high-pass Butterworth filter. Alias for `highpass_at()`.
 detrended = ts.highpass_filter(cutoff=0.05)
 ```
 
-### `bandpass_filter(low_cutoff, high_cutoff, order=4, inplace=False)`
+### `bandpass_filter(low_cutoff, high_cutoff, order=4, inplace=False, max_gap=None)`
 
 Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 
@@ -443,6 +457,12 @@ Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 - `high_cutoff` (float): Low-pass cutoff frequency in Hz (passed to `bandpass_at` as `lp_hz`)
 - `order` (int, optional): Accepted for signature compatibility only - the underlying
   bandpass implementation has no order parameter, so this is currently unused.
+
+- `max_gap` (float, optional): Widest interval between consecutive samples, in seconds, the
+  filter may run across. Given, a wider interval in the index is refused with
+  `InvalidParameterError` naming the gaps and the remedy. Default `None`: the median-based
+  default of `gaps()` is checked and a `UserWarning` names what it found, so a recording
+  with holes in it is never filtered silently. See `gaps()` and `segments()`.
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -458,7 +478,7 @@ Apply band-pass Butterworth filter. Alias for `bandpass_at()`.
 bandpassed = ts.bandpass_filter(low_cutoff=0.1, high_cutoff=0.4)
 ```
 
-### `butterpass_at(hp_freq, lp_freq, inplace=False)`
+### `butterpass_at(hp_freq, lp_freq, inplace=False, max_gap=None)`
 
 Apply a band-pass Butterworth filter. Alias for `bandpass_at()`.
 
@@ -466,6 +486,12 @@ Apply a band-pass Butterworth filter. Alias for `bandpass_at()`.
 - `hp_freq` (float): High-pass cutoff frequency in Hz (passed to `bandpass_at` as `hp_hz`)
 - `lp_freq` (float): Low-pass cutoff frequency in Hz (passed to `bandpass_at` as `lp_hz`)
 - `inplace` (bool, optional): If True, modifies the existing object. Default: False
+
+- `max_gap` (float, optional): Widest interval between consecutive samples, in seconds, the
+  filter may run across. Given, a wider interval in the index is refused with
+  `InvalidParameterError` naming the gaps and the remedy. Default `None`: the median-based
+  default of `gaps()` is checked and a `UserWarning` names what it found, so a recording
+  with holes in it is never filtered silently. See `gaps()` and `segments()`.
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -479,13 +505,19 @@ banded = ts.butterpass_at(hp_freq=1.0, lp_freq=10.0)
 **Note:** Prior to the #27 fix this method raised `TypeError` on every call, so
 it has no legacy behavior to preserve. History records the `bandpass_at` entry.
 
-### `notch_filter(freq, order=4, inplace=False)`
+### `notch_filter(freq, order=4, inplace=False, max_gap=None)`
 
 Apply notch filter to remove specific frequency. Alias for `notch_at()`.
 
 **Parameters:**
 - `freq` (float): Frequency to remove, in Hz
 - `order` (int, optional): Filter order. Default: 4
+
+- `max_gap` (float, optional): Widest interval between consecutive samples, in seconds, the
+  filter may run across. Given, a wider interval in the index is refused with
+  `InvalidParameterError` naming the gaps and the remedy. Default `None`: the median-based
+  default of `gaps()` is checked and a `UserWarning` names what it found, so a recording
+  with holes in it is never filtered silently. See `gaps()` and `segments()`.
 
 **Returns:**
 - `baseTs`: New filtered baseTs object
@@ -727,6 +759,70 @@ spline_interp = ts.interpolate_gaps(method='spline', order=2, limit=10)
 time_interp = ts.interpolate_gaps(method='time')
 ```
 
+### `gaps(max_gap=None)`
+
+Intervals between consecutive samples wider than `max_gap` seconds: the holes in the index.
+
+`freq` is the mean rate over the whole span, or a declaration that survives while the sample
+count and endpoints match. Neither looks at the interior of the index, so a recording with holes
+in it reports a plausible rate while the filters run across the holes as if they were single
+frames. The NaN guard catches a hole that is marked; this finds the ones that are not, which is
+what every event-structured recording produces.
+
+**Parameters:**
+- `max_gap` (float, optional): Width above which an interval is a gap, in seconds. Default
+  `None`: 1.5 times the median interval (`baseTs.core.GAP_FACTOR`), so a single dropped frame
+  counts. The median rather than `1 / freq`, because the mean rate is dragged down by the very
+  holes being looked for.
+
+**Returns:**
+- `pd.DataFrame`: One row per gap with columns `start` and `end` (the bracketing sample times),
+  `width` (seconds) and `n_missing` (frames the hole would hold at the median interval). Empty
+  with no gaps or fewer than two samples.
+
+**Raises:**
+- `ValidationError`: If `max_gap` is not a positive finite number, or the index breaks a rule gaps
+  need: a non-finite timestamp, a step backwards (it must be non-decreasing), or duplicate
+  timestamps in at least half its intervals (a zero median interval)
+
+**Example:**
+```python
+import numpy as np
+from baseTs import baseTs
+
+t = np.arange(0.0, 60.0, 1 / 30)
+t = np.delete(t, np.r_[601:678, 1201:1278])   # two holes of 77 frames (2.6 s)
+session = baseTs(np.sin(t), t, freq=30.0)
+holes = session.gaps()
+print(len(holes), int(holes["n_missing"].iloc[0]))   # 2 77
+```
+
+### `segments(max_gap=None)`
+
+The contiguous runs between gaps, each as its own `baseTs`. The companion to `gaps()`: the same
+split, returned as data. Each segment derives its own rate from its own span, so its `freq` is
+honest where the parent's mean rate was not. This is the "filter per segment" remedy the filters'
+gap refusal names, and the first step of the ragged-trial path in `docs/EXAMPLES.md`.
+
+**Parameters:**
+- `max_gap` (float, optional): As for `gaps()`
+
+**Returns:**
+- `list[baseTs]`: One per run, in order. A series with no gaps comes back as a list of one copy.
+  Each carries a history entry naming the split and its place in it.
+
+**Raises:**
+- `ValidationError`: If `max_gap` is not a positive finite number, or the index breaks a rule gaps
+  need: a non-finite timestamp, a step backwards (it must be non-decreasing), or duplicate
+  timestamps in at least half its intervals (a zero median interval)
+
+**Example:**
+```python
+runs = session.segments()
+filtered = [run.lowpass_at(2.0, max_gap=0.5) for run in runs]   # no gap inside any run
+print(len(runs), all(r.is_filtered for r in filtered))          # 3 True
+```
+
 ### `resample(freq, method='mean', **kwargs)`
 
 Resample the time series to a different sampling rate.
@@ -916,6 +1012,9 @@ first_two_seconds = ts.time_slice(end_time=2.0)
 
 Get comprehensive statistical summary.
 
+The rate is blind to the interior of the index; `n_gaps` and `gapped_duration` say whether
+it can be trusted.
+
 **Returns:**
 - `dict`: Dictionary containing statistical measures
 
@@ -931,6 +1030,10 @@ Get comprehensive statistical summary.
 - `frequency`: `ts.freq`, the declared rate if one is declared, else the derived one
 - `sample_rate`: The rate derived from the time base, `(n - 1) / duration`; it differs from
   `frequency` when a declared rate does not match the index's spacing
+- `median_dt`: The median interval between consecutive samples, in seconds
+- `n_gaps`: How many intervals `gaps()` finds at its default threshold
+- `gapped_duration`: Their total width in seconds; with `n_gaps` this explains a
+  `sample_rate` that is lower than `frequency`
 
 **Example:**
 ```python
@@ -1283,7 +1386,7 @@ These methods are maintained for backward compatibility.
 
 ```python no-run
 # Legacy bandpass method
-def bandpass_at(self, hp_hz=0.01, lp_hz=0.1, inplace=False, reset_mean=True):
+def bandpass_at(self, hp_hz=0.01, lp_hz=0.1, inplace=False, reset_mean=True, max_gap=None):
     """Butterworth band-pass between hp_hz and lp_hz, in Hz."""
 
 # Legacy outlier filtering. Every parameter is optional; an omitted one keeps

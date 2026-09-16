@@ -280,7 +280,15 @@ def <name>(self, *args, inplace: bool = False, **kwargs) -> "baseDf":
 
 Calling `frame.lowpass_at(2.0)` calls `frame["c0"].lowpass_at(2.0)`,
 `frame["c1"].lowpass_at(2.0)`, etc., and reassembles the results into a new
-frame. Each column's `history` records the operation individually, and
+frame. Keyword arguments pass through verbatim, so
+`frame.lowpass_at(2.0, max_gap=0.5)` refuses on the first column whose index
+has a wider gap, naming that column. With the default `max_gap=None` every
+column would warn, and since they all share one index the warnings would be
+identical: the broadcast records them and re-emits each distinct warning once,
+from the calling line, so 64 channels mean one line, not 64. The re-emission
+goes through `warnings.warn`, so a `-W error` or `simplefilter("error")`
+setting still raises.
+Each column's `history` records the operation individually, and
 `last_process`/`is_filtered` update per column, exactly as they would on a
 `baseTs` called directly. `inplace=True` replaces this frame's contents
 instead of returning a new one.

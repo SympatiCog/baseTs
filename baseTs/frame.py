@@ -23,6 +23,8 @@ from typing import (
     cast,
 )
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -750,41 +752,58 @@ class baseDf:
         values: Dict[Hashable, np.ndarray] = {}
         rows: Dict[Hashable, Dict[str, Any]] = {}
 
-        for label in self._df.columns:
-            out = getattr(self[label], name)(*args, **kwargs)
-            if index is None:
-                index, first_out = out.index, out
-            elif not index.equals(out.index):
-                first_label = list(self._df.columns)[0]
-                if len(out.index) != len(index):
-                    # Different sample counts: that alone is the whole story.
-                    divergence = (f"{len(out.index)} samples vs "
-                                  f"{len(index)} samples")
-                else:
-                    # Same count, different values - reporting "N samples"
-                    # for both sides would say nothing, so name where and by
-                    # how much they actually diverge. Found in
-                    # post-implementation review: the length-only message
-                    # gave identical numbers for both columns here.
-                    mismatched = np.asarray(index, dtype=float) != np.asarray(
-                        out.index, dtype=float)
-                    first_bad = int(np.argmax(mismatched))
-                    divergence = (
-                        f"same length ({len(index)} samples) but "
-                        f"{int(mismatched.sum())} differing value(s), first "
-                        f"at position {first_bad} ({out.index[first_bad]!r} "
-                        f"vs {index[first_bad]!r})"
+        # Every column shares one index, so an index-shaped warning (a gapped
+        # index under a filter's default max_gap=None) is identical for all
+        # of them; 64 channels must not mean 64 lines. Record the column
+        # calls' warnings and re-emit each distinct one once, from the
+        # caller's line. Re-emitting through warnings.warn keeps the user's
+        # own filters in force, so "error" still raises (external review).
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for label in self._df.columns:
+                out = getattr(self[label], name)(*args, **kwargs)
+                if index is None:
+                    index, first_out = out.index, out
+                elif not index.equals(out.index):
+                    first_label = list(self._df.columns)[0]
+                    if len(out.index) != len(index):
+                        # Different sample counts: that alone is the whole story.
+                        divergence = (f"{len(out.index)} samples vs "
+                                      f"{len(index)} samples")
+                    else:
+                        # Same count, different values - reporting "N samples"
+                        # for both sides would say nothing, so name where and by
+                        # how much they actually diverge. Found in
+                        # post-implementation review: the length-only message
+                        # gave identical numbers for both columns here.
+                        mismatched = np.asarray(index, dtype=float) != np.asarray(
+                            out.index, dtype=float)
+                        first_bad = int(np.argmax(mismatched))
+                        divergence = (
+                            f"same length ({len(index)} samples) but "
+                            f"{int(mismatched.sum())} differing value(s), first "
+                            f"at position {first_bad} ({out.index[first_bad]!r} "
+                            f"vs {index[first_bad]!r})"
+                        )
+                    raise ValidationError(
+                        f"{name}() returned a different index for column {label!r} "
+                        f"than for {first_label!r}: {divergence}. baseDf requires "
+                        f"every column to share one index, so a transform whose "
+                        f"output index depends on its data values cannot be "
+                        f"broadcast. Pull the columns out with frame[label] and "
+                        f"handle them individually."
                     )
-                raise ValidationError(
-                    f"{name}() returned a different index for column {label!r} "
-                    f"than for {first_label!r}: {divergence}. baseDf requires "
-                    f"every column to share one index, so a transform whose "
-                    f"output index depends on its data values cannot be "
-                    f"broadcast. Pull the columns out with frame[label] and "
-                    f"handle them individually."
-                )
-            values[label] = np.asarray(out.data, dtype=float)
-            rows[label] = harvest_col_meta(out)
+                values[label] = np.asarray(out.data, dtype=float)
+                rows[label] = harvest_col_meta(out)
+        from .core import _stacklevel_outside_package  # local: core imports frame's siblings
+
+        seen = set()
+        for w in caught:
+            key = (w.category, str(w.message))
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings.warn(w.message, w.category, stacklevel=_stacklevel_outside_package())
 
         # self._df.columns is never empty (baseDf refuses an empty frame at
         # construction), so the loop above ran at least once and both are set.
