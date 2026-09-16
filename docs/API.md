@@ -126,6 +126,64 @@ ts_from_frame = from_df(df, time_col='seconds', data_col='sensor_value', freq=10
 
 ---
 
+### `from_csv(path, time_col='time', data_col='value', signal_name=None, freq=None, ts_offset=None, **read_csv_kwargs)`
+
+Create a baseTs object from a CSV file. A module-level function
+(`from baseTs import from_csv`), not a classmethod. Thin wrapper:
+`pd.read_csv(path, **read_csv_kwargs)` then [`from_df`](#from_dfdf-time_coltime-data_colvalue-signal_namenone-freqnone-ts_offsetnone).
+
+**Parameters:**
+- `path`: Path (or any object `pandas.read_csv` accepts) to the CSV file
+- `time_col`, `data_col`, `signal_name`, `freq`, `ts_offset`: Same as `from_df`
+- `**read_csv_kwargs`: Forwarded to `pandas.read_csv` (e.g. `sep`, `parse_dates`)
+
+**Returns:**
+- `baseTs`: New baseTs instance
+
+**Example:**
+```python
+import tempfile
+from pathlib import Path
+from baseTs import from_csv
+
+with tempfile.TemporaryDirectory() as tmp:
+    csv_path = Path(tmp) / 'signal.csv'
+    df.to_csv(csv_path, index=False)  # df from the from_df example above
+    ts = from_csv(csv_path, time_col='seconds', data_col='sensor_value', freq=10.0)
+```
+
+---
+
+### `from_parquet(path, time_col='time', data_col='value', signal_name=None, freq=None, ts_offset=None, **read_parquet_kwargs)`
+
+Create a baseTs object from a Parquet file. A module-level function
+(`from baseTs import from_parquet`), not a classmethod. Thin wrapper:
+`pd.read_parquet(path, **read_parquet_kwargs)` then [`from_df`](#from_dfdf-time_coltime-data_colvalue-signal_namenone-freqnone-ts_offsetnone).
+Requires a parquet engine (`pyarrow` or `fastparquet`) — install with the
+`parquet` extra: `pip install "baseTs[parquet]"`.
+
+**Parameters:**
+- `path`: Path (or any object `pandas.read_parquet` accepts) to the Parquet file
+- `time_col`, `data_col`, `signal_name`, `freq`, `ts_offset`: Same as `from_df`
+- `**read_parquet_kwargs`: Forwarded to `pandas.read_parquet` (e.g. `columns`, `engine`)
+
+**Returns:**
+- `baseTs`: New baseTs instance
+
+**Example:**
+```python
+import tempfile
+from pathlib import Path
+from baseTs import from_parquet
+
+with tempfile.TemporaryDirectory() as tmp:
+    parquet_path = Path(tmp) / 'signal.parquet'
+    df.to_parquet(parquet_path, index=False)  # df from the from_df example above
+    ts = from_parquet(parquet_path, time_col='seconds', data_col='sensor_value')
+```
+
+---
+
 ## Properties
 
 ### Core Properties

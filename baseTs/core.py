@@ -115,6 +115,75 @@ def from_df(df: pd.DataFrame,
     return ts
 
 
+def from_csv(path,
+             time_col: str = "time",
+             data_col: str = "value",
+             signal_name: Optional[str] = None,
+             freq: Optional[float] = None,
+             ts_offset: Optional[float] = None,
+             **read_csv_kwargs) -> "baseTs":
+    """
+    Create a baseTs object from a CSV file.
+
+    Thin wrapper: ``pd.read_csv(path, **read_csv_kwargs)`` then :func:`from_df`.
+
+    Args:
+        path: Path (or any object ``pandas.read_csv`` accepts) to the CSV file
+        time_col: Name of the column containing time values: seconds, or a
+            datetime or timedelta column
+        data_col: Name of the column containing data values
+        signal_name: Name of the signal (defaults to data_col if None)
+        freq: Sampling frequency in Hz (optional)
+        ts_offset: The origin the time column's seconds are counted from,
+            in epoch seconds (optional; refused alongside a datetime column,
+            which carries its own)
+        **read_csv_kwargs: Forwarded to ``pandas.read_csv`` (e.g. ``sep``,
+            ``parse_dates``)
+
+    Returns:
+        baseTs: A new baseTs object initialized with the file's data
+    """
+    return from_df(pd.read_csv(path, **read_csv_kwargs),
+                   time_col=time_col, data_col=data_col,
+                   signal_name=signal_name, freq=freq, ts_offset=ts_offset)
+
+
+def from_parquet(path,
+                  time_col: str = "time",
+                  data_col: str = "value",
+                  signal_name: Optional[str] = None,
+                  freq: Optional[float] = None,
+                  ts_offset: Optional[float] = None,
+                  **read_parquet_kwargs) -> "baseTs":
+    """
+    Create a baseTs object from a Parquet file.
+
+    Thin wrapper: ``pd.read_parquet(path, **read_parquet_kwargs)`` then
+    :func:`from_df`. Requires a parquet engine (``pyarrow`` or
+    ``fastparquet``) to be installed.
+
+    Args:
+        path: Path (or any object ``pandas.read_parquet`` accepts) to the
+            Parquet file
+        time_col: Name of the column containing time values: seconds, or a
+            datetime or timedelta column
+        data_col: Name of the column containing data values
+        signal_name: Name of the signal (defaults to data_col if None)
+        freq: Sampling frequency in Hz (optional)
+        ts_offset: The origin the time column's seconds are counted from,
+            in epoch seconds (optional; refused alongside a datetime column,
+            which carries its own)
+        **read_parquet_kwargs: Forwarded to ``pandas.read_parquet`` (e.g.
+            ``columns``, ``engine``)
+
+    Returns:
+        baseTs: A new baseTs object initialized with the file's data
+    """
+    return from_df(pd.read_parquet(path, **read_parquet_kwargs),
+                   time_col=time_col, data_col=data_col,
+                   signal_name=signal_name, freq=freq, ts_offset=ts_offset)
+
+
 def _is_unset(value) -> bool:
     """
     True if a numeric argument was not supplied.

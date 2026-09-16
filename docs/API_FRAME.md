@@ -144,6 +144,28 @@ wide = long.pivot(index="time", columns="roi", values="value").reset_index()
 frame = baseDf.from_df(wide, time_col="time", freq=0.5)
 ```
 
+### `baseDf.from_csv(path, time_col="time", value_cols=None, freq=np.nan, ts_offset=np.nan, col_meta=None, **read_csv_kwargs)`
+
+Build a frame from a wide CSV file: one time column, many value columns.
+Thin wrapper: `pd.read_csv(path, **read_csv_kwargs)` then `from_df` above —
+same parameters, returns, and raises.
+
+```python
+frame = baseDf.from_csv("channels.csv", time_col="time", freq=0.5)
+```
+
+### `baseDf.from_parquet(path, time_col="time", value_cols=None, freq=np.nan, ts_offset=np.nan, col_meta=None, **read_parquet_kwargs)`
+
+Build a frame from a wide Parquet file: one time column, many value columns.
+Thin wrapper: `pd.read_parquet(path, **read_parquet_kwargs)` then `from_df`
+above — same parameters, returns, and raises. Requires a parquet engine
+(`pyarrow` or `fastparquet`) — install with the `parquet` extra:
+`pip install "baseTs[parquet]"`.
+
+```python
+frame = baseDf.from_parquet("channels.parquet", time_col="time", freq=0.5)
+```
+
 ### `baseDf.from_series(series, labels=None)`
 
 Build a frame from existing `baseTs` objects that already share one index.

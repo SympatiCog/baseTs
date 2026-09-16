@@ -4,6 +4,7 @@ This document provides practical examples and code recipes for scientific applic
 
 ## Table of Contents
 1. [Getting Started Examples](#getting-started-examples)
+   - [Loading from a File](#loading-from-a-file)
 2. [Signal Processing Workflows](#signal-processing-workflows)
 3. [Scientific Data Processing](#scientific-data-processing)
 4. [Biophysical Signal Analysis](#biophysical-signal-analysis)
@@ -71,6 +72,40 @@ print(f"Normalized mean: {np.mean(normalized.data):.6f}")
 print(f"Normalized std: {np.std(normalized.data):.6f}")
 print(f"Peak frequency: {peak_freq:.2f} Hz")
 ```
+
+### Loading from a File
+
+`from_csv`/`from_parquet` are thin wrappers around `pd.read_csv`/
+`pd.read_parquet` followed by `from_df` - use them instead of loading the
+file yourself. Parquet needs a parquet engine installed: `pip install
+"baseTs[parquet]"`.
+
+```python
+import tempfile
+from pathlib import Path
+from baseTs import from_csv, from_parquet
+
+# (writing the files here so this example is self-contained; in practice
+# they already exist on disk)
+with tempfile.TemporaryDirectory() as _tmp:
+    _tmp = Path(_tmp)
+    _df = pd.DataFrame({
+        "seconds": np.arange(50) / 10.0,
+        "sensor_value": np.random.randn(50),
+    })
+    _df.to_csv(_tmp / "signal.csv", index=False)
+    _df.to_parquet(_tmp / "signal.parquet", index=False)
+    _df.to_csv(_tmp / "signal.tsv", index=False, sep="\t")
+
+    ts = from_csv(_tmp / "signal.csv", time_col="seconds", data_col="sensor_value", freq=10.0)
+    ts = from_parquet(_tmp / "signal.parquet", time_col="seconds", data_col="sensor_value")
+
+    # Extra keyword arguments are forwarded to the underlying pandas reader
+    ts = from_csv(_tmp / "signal.tsv", time_col="seconds", data_col="sensor_value", sep="\t")
+```
+
+`baseDf.from_csv`/`baseDf.from_parquet` do the same for a wide, multi-channel
+table - see [Multi-Channel Recipes with baseDf](#multi-channel-recipes-with-basedf).
 
 ### Enhanced Pandas Series Capabilities
 
@@ -1933,7 +1968,8 @@ wide = pd.DataFrame({
     "Cz": np.sin(2 * np.pi * 10 * t) + 0.1 * np.random.randn(n),
     "Pz": np.sin(2 * np.pi * 12 * t) + 0.1 * np.random.randn(n),
 })
-# In practice: wide = pd.read_parquet("channels.parquet")
+# In practice: frame = baseDf.from_parquet("channels.parquet", time_col="time",
+#                                           freq=250.0, col_meta=col_meta)
 col_meta = pd.DataFrame({"network": ["DMN", "DMN"]}, index=["Cz", "Pz"])
 frame = baseDf.from_df(wide, time_col="time", freq=250.0, col_meta=col_meta)
 cleaned = frame.bandpass_at(1.0, 40.0).filter_outliers()
@@ -1961,6 +1997,9 @@ long = pd.DataFrame({
 # In practice: long = pd.read_parquet("roi_timeseries.parquet")
 wide = long.pivot(index="time", columns="roi", values="value").reset_index()
 frame = baseDf.from_df(wide, time_col="time", freq=0.5)
+# A long table has to be pivoted, so from_df is the entry point here rather
+# than from_csv/from_parquet - those wrap read + from_df for a table that is
+# already wide.
 ```
 
 This comprehensive examples document provides practical, real-world usage patterns for baseTs with enhanced pandas Series capabilities, focusing on scientific applications across various domains including biophysical signals, environmental monitoring, experimental data analysis, and advanced frequency analysis techniques.

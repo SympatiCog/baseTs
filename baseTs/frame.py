@@ -223,6 +223,86 @@ class baseDf:
         )
 
     @classmethod
+    def from_csv(
+        cls,
+        path,
+        time_col: str = "time",
+        value_cols: Optional[Sequence[Hashable]] = None,
+        freq: float = np.nan,
+        ts_offset: float = np.nan,
+        col_meta: Optional[pd.DataFrame] = None,
+        **read_csv_kwargs,
+    ) -> "baseDf":
+        """Build a frame from a wide CSV file: one time column, many value columns.
+
+        Thin wrapper: ``pd.read_csv(path, **read_csv_kwargs)`` then :meth:`from_df`.
+
+        Args:
+            path: Path (or any object ``pandas.read_csv`` accepts) to the CSV file.
+            time_col: Column holding the time values, in seconds.
+            value_cols: Columns to take. Defaults to every numeric column
+                except ``time_col``.
+            freq: Declared sampling rate in Hz.
+            ts_offset: Origin the index seconds are counted from.
+            col_meta: Per-column user attributes.
+            **read_csv_kwargs: Forwarded to ``pandas.read_csv`` (e.g. ``sep``).
+
+        Returns:
+            baseDf: The frame.
+
+        Raises:
+            ValidationError: If ``time_col`` is absent, or a requested value
+                column is absent or non-numeric.
+        """
+        return cls.from_df(
+            pd.read_csv(path, **read_csv_kwargs),
+            time_col=time_col, value_cols=value_cols,
+            freq=freq, ts_offset=ts_offset, col_meta=col_meta,
+        )
+
+    @classmethod
+    def from_parquet(
+        cls,
+        path,
+        time_col: str = "time",
+        value_cols: Optional[Sequence[Hashable]] = None,
+        freq: float = np.nan,
+        ts_offset: float = np.nan,
+        col_meta: Optional[pd.DataFrame] = None,
+        **read_parquet_kwargs,
+    ) -> "baseDf":
+        """Build a frame from a wide Parquet file: one time column, many value columns.
+
+        Thin wrapper: ``pd.read_parquet(path, **read_parquet_kwargs)`` then
+        :meth:`from_df`. Requires a parquet engine (``pyarrow`` or
+        ``fastparquet``) to be installed.
+
+        Args:
+            path: Path (or any object ``pandas.read_parquet`` accepts) to the
+                Parquet file.
+            time_col: Column holding the time values, in seconds.
+            value_cols: Columns to take. Defaults to every numeric column
+                except ``time_col``.
+            freq: Declared sampling rate in Hz.
+            ts_offset: Origin the index seconds are counted from.
+            col_meta: Per-column user attributes.
+            **read_parquet_kwargs: Forwarded to ``pandas.read_parquet`` (e.g.
+                ``columns``, ``engine``).
+
+        Returns:
+            baseDf: The frame.
+
+        Raises:
+            ValidationError: If ``time_col`` is absent, or a requested value
+                column is absent or non-numeric.
+        """
+        return cls.from_df(
+            pd.read_parquet(path, **read_parquet_kwargs),
+            time_col=time_col, value_cols=value_cols,
+            freq=freq, ts_offset=ts_offset, col_meta=col_meta,
+        )
+
+    @classmethod
     def from_series(
         cls,
         series: Sequence[Any],
