@@ -6,3 +6,4 @@ statsmodels
 pytest
 hypothesis
 psutil
+pyarrow>=14.0

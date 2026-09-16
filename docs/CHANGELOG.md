@@ -5,6 +5,28 @@ All notable changes to the baseTs project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — load a `baseTs`/`baseDf` straight from a CSV or Parquet file
+
+### Added — `from_csv`/`from_parquet` (`baseTs/core.py`, `baseTs/frame.py`)
+
+Loading a file used to mean `pd.read_csv`/`pd.read_parquet` yourself, then
+`from_df`. `from_csv`/`from_parquet` are now thin wrappers doing exactly that
+— `pd.read_{csv,parquet}(path, **kwargs)` then the existing `from_df` — for
+both `baseTs` (module-level functions, `from baseTs import from_csv,
+from_parquet`, matching `from_df`'s existing pattern) and `baseDf`
+(classmethods, `baseDf.from_csv`/`baseDf.from_parquet`, matching
+`baseDf.from_df`). Extra keyword arguments are forwarded to the pandas
+reader (`sep=`, `parse_dates=`, `columns=`, `engine=`, ...); all the
+existing `from_df` validation (missing/non-numeric columns, unsorted time)
+runs unchanged since these call straight into it.
+
+Parquet needs a parquet engine installed — `pyarrow` is now the `parquet`
+extra (`pip install "baseTs[parquet]"`) and is in `dev` and
+`requirements.txt` so the test suite can exercise it; it stays optional for
+non-parquet users. Tests: `tests/unit/test_file_io.py`. Docs:
+`docs/API.md`, `docs/API_FRAME.md`, `docs/EXAMPLES.md` ("Loading from a
+File").
+
 ## [Unreleased] — `baseDf`: many `baseTs` series on one shared index
 
 ### Added — the `baseDf` container (`baseTs/frame.py`, `baseTs/frame_meta.py`, `baseTs/frame_average.py`)
