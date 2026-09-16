@@ -67,17 +67,23 @@ and never dropped. Regenerate with `python examples/figures.py`.
 ## Installation
 
 ```bash
-# Install from PyPI (when available)
-pip install baseTs
+# Install straight from GitHub
+pip install git+https://github.com/SympatiCog/baseTs
 
-# Or install from source
+# With parquet support (from_parquet needs pyarrow; a plain install skips it)
+pip install "baseTs[parquet] @ git+https://github.com/SympatiCog/baseTs"
+
+# Or install from a local clone
 git clone https://github.com/SympatiCog/baseTs.git
 cd baseTs
-pip install -e .
+pip install -e ".[parquet]"
 
-# For development
-pip install -e ".[dev]"  # Includes test dependencies
+# For development (tests, linters, and pyarrow)
+pip install -e ".[dev]"
 ```
+
+Parquet is an optional extra: `from_csv` works everywhere, but `from_parquet`
+raises pandas' "Unable to find a usable engine" until `pyarrow` is installed.
 
 ## Quick Start
 
