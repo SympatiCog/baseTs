@@ -2002,4 +2002,37 @@ frame = baseDf.from_df(wide, time_col="time", freq=0.5)
 # already wide.
 ```
 
+### Ragged trials
+
+Trials of one condition rarely share a length, and a hole in the middle of a
+trial (the ~2.6 s after a cpCST crash, say) is an absence of recording, not
+something to draw a line across. `interp_to_uniform_grid` puts each trial on
+one common grid: `fill_value=np.nan` pads the short ones, `max_gap` leaves the
+hole as NaN rather than bridging it. They then share an index, so
+`from_series` stacks them and `average(skipna=True, min_count=k)` reports the
+mean over however many trials are present at each timepoint, writing the count
+of reduced-n timepoints into history.
+
+```python
+# Ragged trials -> one grid -> baseDf -> average with per-timepoint n
+import numpy as np
+from baseTs import baseTs, baseDf
+
+rng = np.random.default_rng(0)
+grid = np.arange(0.0, 8.0, 0.02)            # 50 Hz, 8 s common grid
+trials = []
+for length in (5.0, 6.5, 8.0, 7.2):         # crash epochs of different lengths
+    t = np.arange(0.0, length, 0.02)
+    t = t[(t <= 1.0) | (t >= 3.6)]           # ~2.6 s hole right after the crash
+    trials.append(baseTs(np.exp(-t / 2.0) + 0.05 * rng.standard_normal(len(t)), t))
+
+stacked = [tr.interp_to_uniform_grid(grid, fill_value=np.nan, max_gap=0.5,
+                                     inplace=False) for tr in trials]
+frame = baseDf.from_series(stacked, labels=[f"trial{i}" for i in range(4)])
+recovery = frame.average(skipna=True, min_count=2)
+# recovery is NaN across the hole and past the second-longest trial;
+# trim to the covered span before filtering it, since the filters refuse gaps:
+covered = recovery.trimto_timepoints(3.6, 7.2)
+```
+
 This comprehensive examples document provides practical, real-world usage patterns for baseTs with enhanced pandas Series capabilities, focusing on scientific applications across various domains including biophysical signals, environmental monitoring, experimental data analysis, and advanced frequency analysis techniques.

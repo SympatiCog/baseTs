@@ -63,6 +63,53 @@ when it replaced an outlier or filled an input gap. A call that estimated
 nothing leaves the flag as it found it, and nothing resets it: a series
 derived from interpolated values is still built on estimates.
 
+#### `interp_to_uniform_grid(new_grid=None, kind='linear', inplace=True, fill_value=None, max_gap=None)`
+
+Interpolate onto a uniform grid, by default the series' own span at its
+effective rate. Two keywords control what happens where there is no data to
+interpolate between:
+
+**Parameters:**
+- `new_grid` (np.array, optional): The target grid. Must be monotonically increasing.
+- `kind` (str): scipy `interp1d` kind ('linear', 'cubic', ...).
+- `inplace` (bool): If True, modifies existing object. Otherwise returns new object.
+- `fill_value` (float, optional): Value for grid points outside
+  `[times[0], times[-1]]`. Default `None` raises `ValueError` on such a point.
+  `np.nan` pads a short trial out to a longer common grid, which is how ragged
+  trials get onto one index for `baseDf.from_series`.
+- `max_gap` (float, optional): Widest interval between consecutive source
+  samples, in seconds, that may be bridged. Grid points strictly inside a wider
+  interval are left as NaN; a point landing exactly on a sample keeps it.
+  Default `None` bridges every interval, however wide.
+
+**Returns:** baseTs on the new grid, `is_interpolated` and `is_uniform_grid`
+set. The history entry counts padded and blanked points when either is non-zero.
+
+**Raises:** `ValidationError` for a non-numeric `fill_value` or a non-positive
+`max_gap`; `ValueError` for a bad grid.
+
+`max_gap` is the opposite of `interpolate_gaps()`: that fills holes, this
+refuses to draw a line across one. Use it when the hole is a real absence of
+recording, such as the post-crash period in a cpCST trial, and the average
+across trials should report fewer contributors there rather than a fabricated
+ramp. The padded or blanked series carries NaN, and the filters refuse gapped
+data, so trim to the covered span before filtering an average built this way.
+
+```python
+import numpy as np
+from baseTs import baseTs, baseDf
+
+grid = np.arange(0, 3.0, 0.1)
+trials = []
+for n in (10, 20, 30):                      # trials of different lengths
+    t = np.arange(n) * 0.1
+    trials.append(baseTs(np.sin(t), t))
+stacked = [tr.interp_to_uniform_grid(grid, fill_value=np.nan, max_gap=0.5,
+                                     inplace=False) for tr in trials]
+frame = baseDf.from_series(stacked, labels=["t0", "t1", "t2"])
+mean = frame.average(skipna=True, min_count=2)   # NaN past the second-longest trial
+```
+
 #### `interpolate_gaps(method='linear', limit=None, inplace=False)`
 
 Interpolate missing values (NaN) in the time series.

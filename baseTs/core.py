@@ -1101,16 +1101,40 @@ class baseTs(TimeSeriesData):
         )
         return processed
 
-    def interp_to_uniform_grid(self, new_grid: np.array = None, kind: str = 'linear', inplace: bool = True) -> "baseTs":
+    def interp_to_uniform_grid(
+        self,
+        new_grid: np.array = None,
+        kind: str = 'linear',
+        inplace: bool = True,
+        fill_value: Optional[float] = None,
+        max_gap: Optional[float] = None,
+    ) -> "baseTs":
         """
         Interpolate data to a uniform sampling grid.
         If new_grid is not specified, use the existing info to create a new uniform grid
         of the same duration at the average effective sample rate.
 
+        Interpolation bridges every interval between consecutive samples,
+        however wide. That is right for jitter and wrong for a hole in the
+        recording: pass ``max_gap`` to leave grid points that fall inside an
+        interval wider than that as NaN instead. This is not
+        ``interpolate_gaps()``, which fills holes; this refuses to.
+
         Args:
             new_grid (np.array, optional): The desired new sampling grid. Defaults to None.
             kind (str, optional): The type of interpolation to use. Defaults to 'linear'.
             inplace (bool, optional): If True, modifies existing object. Otherwise returns a new object. Defaults to True.
+            fill_value (float, optional): Value for grid points outside
+                ``[times[0], times[-1]]``. ``np.nan`` pads a short trial out
+                to a longer common grid so that ``baseDf.from_series`` can
+                stack ragged trials and ``average(skipna=True, min_count=k)``
+                can count contributors per timepoint. Default None: a grid
+                point outside the data raises ``ValueError``, as before.
+            max_gap (float, optional): Widest interval between consecutive
+                source samples, in seconds, that may be bridged. Grid points
+                strictly inside a wider interval are left as NaN; a grid point
+                landing exactly on a sample keeps that sample's value.
+                Default None: every interval is bridged, as before.
 
         Returns:
             new_ts: baseTs object with uniform sampling grid
@@ -1120,17 +1144,64 @@ class baseTs(TimeSeriesData):
                     linspace(t0, t1, len(data)), which preserves
                     (len, first, last), so a declaration on the source
                     carries over even though interior spacing changed.
+
+        Raises:
+            ValidationError: If ``fill_value`` is not a number, or ``max_gap``
+                is not a positive finite number.
+            ValueError: If ``new_grid`` is not monotonically increasing, or
+                reaches outside the data with ``fill_value=None``.
+
+        Note:
+            The padded or blanked result carries NaN, and the filters refuse
+            gapped data; trim to the covered span before filtering an average
+            built this way.
         """
+        if fill_value is not None and (
+            isinstance(fill_value, bool) or not isinstance(fill_value, numbers.Real)
+        ):
+            raise ValidationError(
+                f"fill_value must be a number (np.nan to pad with NaN) or None to "
+                f"raise on grid points outside the data; got {fill_value!r}. "
+                f"scipy's 'extrapolate' is deliberately not accepted: extrapolated "
+                f"samples would be indistinguishable from measured ones."
+            )
+        if max_gap is not None and (
+            isinstance(max_gap, bool)
+            or not isinstance(max_gap, numbers.Real)
+            or not math.isfinite(max_gap)
+            or max_gap <= 0
+        ):
+            raise ValidationError(
+                f"max_gap must be a positive finite number of seconds, or None to "
+                f"bridge every interval; got {max_gap!r}."
+            )
         if new_grid is None:
             # create new evenly spaced grid at the effective sample rate
             new_grid = np.linspace(self.times[0], self.times[-1], len(self.data))
         else:
             if not np.all(np.diff(new_grid) > 0):
                 raise ValueError("new_grid must be monotonically increasing.")
-            
-        f1 = interpolate.interp1d(self.times, self.data, kind=kind)
+
+        if fill_value is None:
+            f1 = interpolate.interp1d(self.times, self.data, kind=kind)
+        else:
+            f1 = interpolate.interp1d(self.times, self.data, kind=kind,
+                                      bounds_error=False, fill_value=fill_value)
         last_process = "_unigrid"
-        transfer = f1(new_grid)
+        transfer = np.asarray(f1(new_grid), dtype=float)
+        n_padded = 0
+        if fill_value is not None:
+            n_padded = int(np.count_nonzero(
+                (new_grid < self.times[0]) | (new_grid > self.times[-1])))
+        n_blanked = 0
+        if max_gap is not None:
+            n_blanked = self._blank_wide_gaps(new_grid, transfer, max_gap)
+        extra = ""
+        if n_padded:
+            extra += f"; {n_padded} grid point(s) outside the data padded with {fill_value}"
+        if n_blanked:
+            extra += (f"; {n_blanked} grid point(s) inside gap(s) wider than "
+                      f"{max_gap}s left as NaN")
         # freq is not assigned here - it is read, not computed, whenever the
         # property is accessed below. A surviving declaration is honoured (see
         # breaking change 8: this grid preserves (len, first, last) when
@@ -1142,7 +1213,7 @@ class baseTs(TimeSeriesData):
             newTs.data = transfer
             newTs.times = new_grid
             newTs.is_uniform_grid = True
-            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz"
+            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz{extra}"
             newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_interpolated = True
             newTs.is_uniform_grid = True
@@ -1151,13 +1222,44 @@ class baseTs(TimeSeriesData):
             self.data = transfer
             self.times = new_grid
             self.is_uniform_grid = True
-            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz"
+            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz{extra}"
             self._update_history_and_process(hist_msg, last_process)
             self.is_interpolated = True
             self.is_uniform_grid = True
             return self
-        
-    
+
+    def _blank_wide_gaps(self, new_grid: np.ndarray, values: np.ndarray,
+                         max_gap: float) -> int:
+        """Set to NaN, in place, the grid points bridging a gap wider than max_gap.
+
+        A grid point strictly between two consecutive source samples more
+        than ``max_gap`` apart is a bridge, not data. Points at or outside
+        the data's ends are left alone: they are the ``fill_value`` case.
+
+        Args:
+            new_grid: The grid the data was interpolated onto.
+            values: The interpolated values, modified in place.
+            max_gap: Widest bridgeable interval in seconds.
+
+        Returns:
+            int: How many points were blanked.
+        """
+        times = np.asarray(self.times, dtype=float)
+        if len(times) < 2:
+            return 0
+        widths = np.diff(times)
+        # Index of the source interval each grid point sits in: searchsorted
+        # with side='right' puts an exact hit on times[i] into interval i,
+        # whose left edge is the hit itself, so we must test strictness
+        # separately rather than trust the interval alone.
+        idx = np.searchsorted(times, new_grid, side="right") - 1
+        interior = (idx >= 0) & (idx < len(widths))
+        safe_idx = np.clip(idx, 0, len(widths) - 1)
+        strictly_inside = interior & (new_grid > times[safe_idx])
+        blank = strictly_inside & (widths[safe_idx] > max_gap)
+        values[blank] = np.nan
+        return int(np.count_nonzero(blank))
+
     def notch_at(self, cutoff_hz: float, order: int = 5, inplace: bool = False) -> "baseTs":
         """
         Apply a notch filter at the specified frequency.
