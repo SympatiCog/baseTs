@@ -529,7 +529,20 @@ history.
 is the common prefix of the contributors' histories, then one entry naming
 the selection, `n`, and the NaN policy; divergence beyond the prefix is
 summarised (`inputs diverged after step 4; 3 of 17 additionally
-outlier-filtered`). `outlier_indices`, `lowess_fit`, and `outlier_filter` are
+outlier-filtered`).
+
+**A history entry is "operation; outcome", and steps compare by operation.**
+Everything before the first `"; "` names what was done and with which
+parameters (`Interpolated to uniform grid of n=400 @ 50.0Hz, fill_value=nan,
+max_gap=0.5s`); everything after it is what happened to this one series
+(`; 150 grid point(s) outside the data padded with nan`). Ten trials padded
+by different amounts therefore share that step, and the prefix keeps it as
+the head plus `; per-input details differ` rather than reporting a
+divergence. Two trials regridded with different `max_gap` values differ in
+the head and diverge for real. The constructor's own entry follows the same
+rule (`Created baseTs object; 200 samples`), so trials of different lengths
+share step 0. The rule is `frame_average.operation_head`; a new history
+message should put its parameters before the separator and its counts after. `outlier_indices`, `lowess_fit`, and `outlier_filter` are
 per-column artifacts with no meaning for a mean — dropped, and history says
 so. `signal_name` is `name` if given, else derived from the selection.
 

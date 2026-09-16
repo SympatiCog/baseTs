@@ -367,14 +367,14 @@ class baseTs(TimeSeriesData):
             # absent one by falsiness alone.
             if not _carries_metadata(data):
                 self.history = [
-                    f"Created baseTs object with {len(self)} samples"]
+                    f"Created baseTs object; {len(self)} samples"]
         elif history is None:
             # Supplied as None: the documented request for a fresh entry.
             # Folded into the branch above, it became the one nullable
             # keyword that preserved rather than cleared, disagreeing with
             # the signature and with every sibling argument.
             self.history = [
-                f"Created baseTs object with {len(self)} samples"]
+                f"Created baseTs object; {len(self)} samples"]
         else:
             # normalise_history, not a bare list(): this is the first place a
             # history enters the system, and list('note') would explode a str
@@ -1196,24 +1196,39 @@ class baseTs(TimeSeriesData):
         n_blanked = 0
         if max_gap is not None:
             n_blanked = self._blank_wide_gaps(new_grid, transfer, max_gap)
+        # Parameters go in the operation head, before the first "; ", and the
+        # per-series counts after it: baseDf.average compares histories by
+        # head (frame_average.operation_head), so the same call on trials
+        # padded by different amounts is one shared step rather than a
+        # divergence, while a different max_gap is a real one.
+        params = ""
+        if fill_value is not None:
+            params += f", fill_value={fill_value}"
+        if max_gap is not None:
+            params += f", max_gap={max_gap}s"
         extra = ""
         if n_padded:
             extra += f"; {n_padded} grid point(s) outside the data padded with {fill_value}"
         if n_blanked:
             extra += (f"; {n_blanked} grid point(s) inside gap(s) wider than "
-                      f"{max_gap}s left as NaN")
+                      f"max_gap left as NaN")
         # freq is not assigned here - it is read, not computed, whenever the
         # property is accessed below. A surviving declaration is honoured (see
         # breaking change 8: this grid preserves (len, first, last) when
         # new_grid is None); otherwise the getter derives via
         # _calculate_effective_frequency, which does not over-report by
         # n/(n-1) the way len(new_grid) / self.duration() did.
+        # The rate is rounded in the message: a derived rate carries float
+        # noise from the grid spacing (9.999999999999998) while a surviving
+        # declaration on a same-shape trial reads 10.0, and printing both at
+        # full precision split otherwise identical steps when averaging.
         if inplace is False:
             newTs = self.copy()
             newTs.data = transfer
             newTs.times = new_grid
             newTs.is_uniform_grid = True
-            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {newTs.freq}Hz{extra}"
+            hist_msg = (f"Interpolated to uniform grid of n={len(new_grid)} @ "
+                        f"{round(newTs.freq, 6)}Hz{params}{extra}")
             newTs._update_history_and_process(hist_msg, last_process)
             newTs.is_interpolated = True
             newTs.is_uniform_grid = True
@@ -1222,7 +1237,8 @@ class baseTs(TimeSeriesData):
             self.data = transfer
             self.times = new_grid
             self.is_uniform_grid = True
-            hist_msg = f"Interpolated to uniform grid of n={len(new_grid)} @ {self.freq}Hz{extra}"
+            hist_msg = (f"Interpolated to uniform grid of n={len(new_grid)} @ "
+                        f"{round(self.freq, 6)}Hz{params}{extra}")
             self._update_history_and_process(hist_msg, last_process)
             self.is_interpolated = True
             self.is_uniform_grid = True

@@ -124,8 +124,23 @@ class TestMaxGap:
         grid = np.arange(0, 4.9, 0.1)
         out = ts.interp_to_uniform_grid(grid, max_gap=1.0, inplace=False)
         n = int(np.count_nonzero((grid > 1.0 + 1e-9) & (grid < 3.6 - 1e-9)))
-        assert any(f"{n} grid point(s) inside gap(s) wider than 1.0s left as NaN" in e
+        assert any(f"{n} grid point(s) inside gap(s) wider than max_gap left as NaN" in e
                    for e in out.history)
+
+    def test_history_head_names_the_parameters(self):
+        """Parameters go before '; ' so averaging treats equal calls as one
+        step and different max_gap values as a real divergence."""
+        ts = _gapped(1.0, 3.6)
+        out = ts.interp_to_uniform_grid(np.arange(0, 4.9, 0.1), fill_value=np.nan,
+                                        max_gap=1.0, inplace=False)
+        head = out.history[-1].split("; ")[0]
+        assert "fill_value=nan" in head and "max_gap=1.0s" in head
+
+    def test_history_head_is_unchanged_without_the_keywords(self):
+        ts = _gapped(1.0, 3.6)
+        out = ts.interp_to_uniform_grid(np.arange(0, 4.9, 0.1), inplace=False)
+        assert "fill_value" not in out.history[-1]
+        assert "max_gap" not in out.history[-1]
 
     def test_history_silent_when_nothing_blanked(self):
         ts = _gapped(1.0, 1.5)
@@ -161,6 +176,10 @@ class TestRaggedStackEndToEnd:
         assert np.allclose(vals[keep], grid[keep])
         assert np.all(np.isnan(vals[~keep]))
         assert any("reduced n" in e for e in avg.history)
+        # Same call on every trial, different padded counts: one shared step,
+        # not "inputs diverged".
+        assert "diverged" not in avg.history[-1]
+        assert any(e.startswith("Interpolated to uniform grid") for e in avg.history)
 
     def test_gap_and_tail_together(self):
         grid = np.arange(0, 4.9, 0.1)

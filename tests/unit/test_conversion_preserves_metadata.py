@@ -262,7 +262,7 @@ class TestAnExplicitArgumentStillWins:
         both the signature and every sibling argument.
         """
         assert baseTs(carrying, history=None).history == [
-            "Created baseTs object with 200 samples"]
+            "Created baseTs object; 200 samples"]
 
 
 class TestConstructionFromArraysIsUnchanged:
@@ -283,4 +283,4 @@ class TestConstructionFromArraysIsUnchanged:
         assert ts.ts_offset == 0
         assert ts.last_process == ""
         assert ts.signal_name == ""
-        assert ts.history == ["Created baseTs object with 10 samples"]
+        assert ts.history == ["Created baseTs object; 10 samples"]

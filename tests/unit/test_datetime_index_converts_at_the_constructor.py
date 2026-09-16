@@ -696,7 +696,7 @@ class TestTheNumericPathIsUntouched:
         assert census['ts_offset'] == 0 and type(census['ts_offset']) is int
         assert census['has_timestamp_offset'] is False
         assert census['_freq_declaration'] is None
-        assert census['history'] == ['Created baseTs object with 10 samples']
+        assert census['history'] == ['Created baseTs object; 10 samples']
 
     def test_an_object_index_still_derives_nan_rather_than_raising(self):
         """The TypeError arm in the rate derivation used to be described as
