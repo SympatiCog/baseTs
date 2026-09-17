@@ -536,8 +536,9 @@ history.
 1-10 Hz" is honest only if every input was bandpassed. The result's history
 is the common prefix of the contributors' histories, then one entry naming
 the selection, `n`, and the NaN policy; divergence beyond the prefix is
-summarised (`inputs diverged after step 4; 3 of 17 additionally
-outlier-filtered`).
+summarised (`inputs diverged after step 4: 3 of 17 carried further
+processing`, for an average over 17 ROIs of which 3 were also
+outlier-filtered).
 
 **A history entry is "operation; outcome", and steps compare by operation.**
 Everything before the first `"; "` names what was done and with which
