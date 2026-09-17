@@ -27,6 +27,12 @@ and never dropped. Regenerate with `python examples/figures.py`.
 - **Flexible Join Methods**: Inner, outer, left, and right alignment strategies
 - **Exact-Timestamp Matching**: `align_with()` matches labels exactly, like `pandas.Series.align` — series on different time grids need `interp_to_uniform_grid()` first (see Quick Start)
 - **Cross-Correlation**: Built-in correlation analysis between aligned series
+- **Ragged Trials**: `interp_to_uniform_grid(fill_value=np.nan, max_gap=...)` pads short trials onto one common grid and refuses to bridge holes, so `baseDf.from_series()` can stack them and `average(skipna=True, min_count=k)` can count contributors per timepoint
+
+### 🕳️ **Holes in the Index**
+- **Unmarked Gaps**: `gaps()` lists every jump between consecutive sample times wider than 1.5x the median interval (start, end, width, missing frames) — the holes `freq` cannot see
+- **Segments**: `segments()` returns the contiguous runs between those gaps as separate series, each with an honest rate
+- **Filters That Notice**: every filter takes `max_gap`; given, a wider hole is refused, and by default a gapped index warns rather than being filtered silently
 
 ### ⚙️ **Arbitrary Function Application**
 - **Flexible Processing**: Apply any custom function via `.apply_function()`
@@ -114,6 +120,9 @@ despiked = ts.set_outlier_filter(z_threshold=3.0).filter_outliers()
 # a real acquisition dropout (pre-existing NaN) is left as NaN, and the
 # filters below raise on non-finite input. Run interpolate_gaps() first if
 # your data has gaps: despiked.interpolate_gaps().lowpass_filter(...).
+# A hole in the *index* (a jump between sample times, nothing marked) is
+# different: the filters warn about one by default and refuse it when you
+# pass max_gap=<seconds>. See ts.gaps() and ts.segments().
 processed = (despiked
              .lowpass_filter(cutoff=2.0)
              .detrend(method='linear')
@@ -154,6 +163,9 @@ ts2 = baseTs(data=data2, times=times2, freq=100.0, signal_name="signal2")
 # built from different float grids share almost no exact labels, so align
 # them onto a common grid first with interp_to_uniform_grid(). Pass
 # inplace=False: it defaults to True, unlike baseTs's other transforms.
+# A grid that reaches past a series raises unless you pass
+# fill_value=np.nan, which pads the tail instead (see "Ragged trials" in
+# docs/EXAMPLES.md).
 common_grid = np.linspace(0.5, 99.49, 9899)
 ts1_grid = ts1.interp_to_uniform_grid(new_grid=common_grid, inplace=False)
 ts2_grid = ts2.interp_to_uniform_grid(new_grid=common_grid, inplace=False)

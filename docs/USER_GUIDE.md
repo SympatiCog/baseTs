@@ -87,7 +87,7 @@ print(type(ts).__bases__[0].__bases__)  # (<class 'pandas.core.series.Series'>,)
 
 ## Basic Operations
 
-### Filtering (Unchanged API)
+### Filtering
 
 ```python
 # Low-pass filtering
@@ -100,7 +100,18 @@ smoothed = ts.gauss_filter(sigma=2.0)
 
 # Savitzky-Golay filtering
 sg_filtered = ts.sg_filter(window_length=51, polyorder=3)
+
+# Every filter takes max_gap. A hole in the index (a jump between sample
+# times with nothing marked) is refused when it is wider than this:
+strict = ts.lowpass_at(cutoff=2.0, max_gap=0.5)
 ```
+
+Two things a filter refuses to run over, with different remedies. A NaN in
+the data is a marked gap: fill it with `interpolate_gaps()` first. A jump
+in the index is an unmarked one, and `freq` cannot see it, so the filter
+would run across the hole as if it were a single frame. Pass `max_gap` and
+a wider jump is a typed refusal naming the gaps; leave it at the default
+and the filter runs but warns. See [Holes in the Index](#holes-in-the-index).
 
 ### Normalization (Unchanged API)
 
@@ -240,6 +251,36 @@ print(f"After cubic spline interpolation: {np.sum(np.isnan(spline_filled.data))}
 print(f"After polynomial (order 2) interpolation: {np.sum(np.isnan(polynomial_filled.data))}")
 ```
 
+### Holes in the Index
+
+`interpolate_gaps()` fills gaps that are marked, as NaN in the data. A
+recording with an event structure, such as one epoch after another with
+the acquisition paused between them, has gaps that are not marked: the
+sample times simply jump. `freq` is the mean rate over the whole span and
+cannot see them, so a filter designed at that rate runs across each hole
+as if it were one frame. `gaps()` is where to find out, and `segments()`
+is the remedy.
+
+```python
+# A 30 Hz session with two holes in the index
+fs = 30.0
+t = np.arange(0.0, 60.0, 1 / fs)
+t = np.delete(t, np.r_[601:678, 1201:1278])       # two holes of 77 frames (2.6 s)
+session = baseTs(np.sin(t), t, freq=fs)
+
+holes = session.gaps()                              # start, end, width, n_missing
+print(f"{len(holes)} gap(s), {holes['width'].sum():.1f} s missing in total")
+
+runs = session.segments()                           # the contiguous runs
+clean = [run.lowpass_at(2.0, max_gap=0.5) for run in runs]   # no hole inside any run
+```
+
+The default threshold is 1.5 times the median interval, so a single
+dropped frame counts, and normal timing jitter does not. Trials of
+different lengths that need to be averaged go on from here: see "Ragged
+trials from a session with holes" in `docs/EXAMPLES.md` for the full path
+from a session to an averaged recovery curve.
+
 ### Time Shifting
 
 ```python
@@ -297,8 +338,15 @@ Enhanced Statistics:
 - 75th percentile: {stats['q75']:.4f}
 - Duration: {stats['duration']:.2f}s
 - Sample Rate: {stats['sample_rate']:.1f} Hz
+- Median interval: {stats['median_dt'] * 1000:.1f} ms
+- Index gaps: {stats['n_gaps']} ({stats['gapped_duration']:.2f}s in total)
 """)
 ```
+
+`sample_rate` is the mean rate over the whole span. `n_gaps` and
+`gapped_duration` say whether it can be trusted: a rate lower than the
+declared `freq` with gaps reported beside it is a recording with holes, not
+a slow one. `info()` prints the same two figures next to the rate.
 
 ### Method Chaining (Enhanced)
 

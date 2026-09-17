@@ -61,7 +61,11 @@ table sharing a single index:
 1. **Design**: Consider if pandas has a native method first
 2. **Implementation**: Add to `baseTs/core.py` with proper metadata handling
 3. **Testing**: Add unit tests in `tests/unit/test_core.py`
-4. **Documentation**: Update docstrings and API docs
+4. **Documentation**: Update docstrings and `docs/API.md` (or
+   `docs/API_SERIES.md` for the pandas-era methods documented there), plus
+   `README.md` and `docs/USER_GUIDE.md` if the change adds a user-facing
+   capability rather than a corner case; `docs/API.md` carries a no-run
+   stub test that fails when a documented signature drifts
 
 ### Adding New Methods (`baseDf`)
 1. **Design**: Most new behavior should be a broadcast or reduction over
@@ -102,6 +106,32 @@ def new_method(self, param: type, inplace: bool = False) -> "baseTs":
         new_obj._update_history_and_process("Applied new_method", "_new_method")
         return new_obj
 ```
+
+### History Messages
+A history entry is `"<operation and parameters>; <what happened to this
+series>"`. `baseDf.average()` compares contributors' histories step by
+step on the part before the first `"; "` (`frame_average.operation_head`),
+so:
+- Put every parameter in the head (`"Lowpass filtered at 2.0 Hz"`,
+  `"Interpolated to uniform grid of n=400 @ 50.0Hz, fill_value=nan"`).
+  Two columns filtered at different cutoffs must diverge.
+- Put per-series outcomes after the separator (`"; 150 grid point(s)
+  outside the data padded with nan"`, `"; left 3 pre-existing gap
+  sample(s) as NaN"`). Ten trials padded by different amounts must *not*
+  diverge; the prefix keeps the head plus `"; per-input details differ"`.
+- Round derived numbers in the head (a rate carries float noise).
+Getting this wrong does not fail a test on the method itself; it makes an
+average over its outputs report a spurious "inputs diverged".
+
+### Index Rules
+Anything that reasons about the spacing of the index goes through
+`baseTs._gap_positions`, which enforces the three rules gaps need: every
+timestamp finite, non-decreasing, and a median interval above zero. Do not
+grow a private check. Filters raise only `InvalidParameterError` (the
+`filters` module's type) and check the rate before scanning the index, so a
+degenerate time base still reports "Invalid sampling frequency"; a filter
+that mixes neighbouring samples should call `_check_index_gaps` before it
+runs, with `needs_rate=False` if it is not designed at `freq`.
 
 ### Testing Guidelines
 - **Unit Tests**: Test individual methods in isolation
